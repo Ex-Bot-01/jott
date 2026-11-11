@@ -6,5 +6,6 @@
 
 pub mod app_config;
 pub mod app_paths;
+pub mod hashes;
 pub mod np;
 pub mod vault;

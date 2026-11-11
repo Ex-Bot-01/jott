@@ -240,7 +240,7 @@ fn nested_np_vault(path: &Path) -> Option<PathBuf> {
 /// np keys a workspace by the absolute path it was given (§18.6) — two spellings of one folder
 /// would mean two indexes and two model downloads for one vault. Following symlinks here would
 /// have the same effect through a different door.
-fn to_abs(path: &Path) -> PathBuf {
+pub(crate) fn to_abs(path: &Path) -> PathBuf {
     let mut out = if path.is_absolute() {
         PathBuf::new()
     } else {
