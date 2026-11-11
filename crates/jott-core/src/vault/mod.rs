@@ -1,8 +1,10 @@
 //! The vault: what is registered, what is in it, and what happened to each file there.
 
+pub mod files;
 pub mod stamps;
 pub mod store;
 pub mod walk;
+pub mod watch;
 
 use std::io::Read;
 use std::path::Path;

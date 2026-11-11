@@ -12,6 +12,8 @@ sha2 = "0.10"
 thiserror = "2"
 walkdir = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "sync", "time"] }
+notify = "8.2.2"
+trash = "5.3.0"
 
 
 [dev-dependencies]

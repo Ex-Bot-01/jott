@@ -122,6 +122,38 @@ pub fn walk(root: &Path, stamps: &Stamps) -> Result<Vec<TreeEntry>, WalkError> {
     Ok(entries)
 }
 
+/// The `rel`s of the notes np indexes — the same corpus the tree draws markers for, without the
+/// rows. Used by rename's link scan, which wants every note's text and nothing else.
+///
+/// Dot-names and anything under `processed` are excluded because np excludes them from its index
+/// (measured in 0.3.1: `walk::is_excluded`), so a link written there is not in the index either;
+/// np's own generated catalogs are excluded because they hold no links anybody wrote.
+pub fn note_rels(root: &Path) -> Result<Vec<String>, WalkError> {
+    if !root.is_dir() {
+        return Err(WalkError::NotAFolder { path: root.to_path_buf() });
+    }
+    let mut notes = Vec::new();
+    for item in WalkDir::new(root).min_depth(1).follow_links(false) {
+        let Ok(dir_entry) = item else { continue };
+        if !dir_entry.file_type().is_file() {
+            continue;
+        }
+        let Some(rel) = rel_of(root, dir_entry.path()) else { continue };
+        if is_hidden_below_root(&rel) || is_under_processed(&rel) {
+            continue;
+        }
+        let name = dir_entry.file_name().to_string_lossy();
+        if !rel.contains('/') && is_generated_index(&name) {
+            continue;
+        }
+        if dir_entry.path().extension().is_some_and(|e| e.eq_ignore_ascii_case("md")) {
+            notes.push(rel);
+        }
+    }
+    notes.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+    Ok(notes)
+}
+
 fn entry_for(dir_entry: &walkdir::DirEntry, rel: &str, stamps: &Stamps) -> TreeEntry {
     let path = dir_entry.path();
     let metadata = dir_entry.metadata().ok();
@@ -212,7 +244,7 @@ fn is_hidden_below_root(rel: &str) -> bool {
 
 /// np's own rule (`np-core/src/index_names.rs`): `INDEX.md`, or a name that starts `INDEX-` and
 /// ends `.md`, matched at exact case because those names are np's to write.
-fn is_generated_index(name: &str) -> bool {
+pub fn is_generated_index(name: &str) -> bool {
     let Some(stem) = name.strip_suffix(".md") else { return false };
     stem == "INDEX" || stem.strip_prefix("INDEX").is_some_and(|rest| rest.starts_with('-'))
 }
