@@ -11,6 +11,7 @@ use super::{NpError, NpFault, ProgressNote};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{ChildStdin, Command};
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
@@ -175,19 +176,42 @@ impl NpClient {
 
     /// Ask np to end, then close stdin. Exit 0 at EOF is normal, not a crash.
     pub async fn shutdown(&self) -> Result<(), NpError> {
+        self.shutdown_within(std::time::Duration::from_secs(5)).await
+    }
+
+    /// As [`Self::shutdown`], with the grace period named. A child that is mid-request cannot even
+    /// read the ask — np serves one request at a time (§18.1) — so past the grace it is killed, and a
+    /// killed `np serve` loses nothing: the vault is files and its database commits per run (§11).
+    pub async fn shutdown_within(&self, grace: Duration) -> Result<(), NpError> {
         let id = self.next_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        if let Some(writer) = self.writer.lock().await.take() {
-            let _ = writer.send(encode_request(id, "shutdown", None));
-            drop(writer); // the writer task ends, and np's stdin closes with it
-        }
+        // The stdin lock is held by an in-flight request until its answer comes back, so asking politely
+        // has to be *attempted* within the grace rather than waited for: a child that is mid-request
+        // could not read the ask anyway (np answers one request per connection, §18.1), and waiting for
+        // the lock would make "shut down anyway" wait for the very work we gave up on.
+        let asked = match tokio::time::timeout(grace, self.writer.lock()).await {
+            Ok(mut guard) => {
+                if let Some(writer) = guard.take() {
+                    let _ = writer.send(encode_request(id, "shutdown", None));
+                    drop(writer); // the writer task ends, and np's stdin closes with it
+                    true
+                } else {
+                    false
+                }
+            }
+            Err(_) => false,
+        };
         let Some(mut child) = self.child.lock().await.take() else { return Ok(()) };
-        match tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await {
+        match tokio::time::timeout(grace, child.wait()).await {
             Ok(Ok(status)) if status.success() => Ok(()),
             Ok(Ok(_)) => Err(NpError::Transport("np exited non-zero".into())),
             Ok(Err(e)) => Err(NpError::Transport(format!("could not wait for np: {e}"))),
             Err(_) => {
                 let _ = child.kill().await;
-                Err(NpError::Transport("np did not exit within 5 s of shutdown".into()))
+                Err(NpError::Transport(format!(
+                    "{}: np did not exit within {} ms and was killed",
+                    if asked { "asked to shut down" } else { "still busy, could not be asked" },
+                    grace.as_millis()
+                )))
             }
         }
     }

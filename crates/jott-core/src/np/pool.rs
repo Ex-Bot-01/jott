@@ -13,11 +13,12 @@
 use super::client::NpClient;
 use super::handshake::NpInfo;
 use super::methods;
-use super::outcomes::{EmbedOutcome, Mode, ScanOutcome, SearchAnswer};
+use super::outcomes::{EmbedOutcome, Mode, ScanOutcome, SearchAnswer, ModelListing};
 use super::resolve::NpSource;
 use super::{NpError, NpFault, ProgressNote};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{broadcast, Mutex};
 
 /// Which child a progress line came from. §7's rule: an embed's `embedding 3/7` must never be
@@ -98,6 +99,13 @@ impl NpPool {
         methods::search(&reader, workspace, query, limit, Mode::Hybrid).await
     }
 
+    /// What models this np knows about and where their artifacts stand, on the reader: it answers in
+    /// milliseconds, and the consent gate must be able to ask it while an embed is running (§11).
+    pub async fn models_list(&self, workspace: &Path) -> Result<ModelListing, NpFault> {
+        let reader = self.reader().await?;
+        methods::models_list(&reader, workspace).await
+    }
+
     /// Every progress line from every child this pool has opened, tagged by connection. A
     /// receiver that misses lines gets the lag signal rather than a stalled status line.
     pub fn progress(&self) -> broadcast::Receiver<PoolNote> {
@@ -108,6 +116,13 @@ impl NpPool {
     /// shutdown — it has nothing left to close, and reporting it as a fault would make a crash
     /// recovery look like the app breaking on exit.
     pub async fn close(&self) -> Result<(), NpError> {
+        self.close_within(Duration::from_secs(5)).await
+    }
+
+    /// The same ask with a named grace, for the path that has already decided it is leaving: closing
+    /// the app must not wait for a model that is mid-download (§11), so a child still busy when the
+    /// grace ends is killed rather than followed.
+    pub async fn close_within(&self, grace: Duration) -> Result<(), NpError> {
         self.closed.store(true, std::sync::atomic::Ordering::SeqCst);
         let writer = self.writer.0.lock().await.take();
         let reader = self.reader.0.lock().await.take();
@@ -116,7 +131,7 @@ impl NpPool {
             if client.is_closed() {
                 continue;
             }
-            if let Err(e) = client.shutdown().await {
+            if let Err(e) = client.shutdown_within(grace).await {
                 first_error.get_or_insert(Err(e));
             }
         }

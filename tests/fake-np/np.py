@@ -12,6 +12,11 @@ FAKE_NP_SCENARIO (JSON):
   faults                {method: {code, message}} — an error object instead of a result
   sleep_ms              delay before answering a method
   die_on_call           {method: N} — exit(3) without answering the Nth call: a crashed child
+  progress_counters     {method: [{phase, chunks_done, chunks_total, ...}]} — extra `np/progress`
+                        lines written before the answer, with np's counter keys kept as sent
+  record                a file path: one JSON line per request received, `{"method", "params"}`.
+                        Two connections append to it, so a test can read what np was asked for and
+                        in what order.
   require_mode          refuse a `search` whose mode is not this one, naming what arrived
 
 Anything unlisted gets np's own -32601 sentence. Exits 0 at EOF, the way np does.
@@ -36,6 +41,16 @@ INITIALIZE = SCENARIO.get("initialize", {
     "progress": True,
     "protocol": 1,
 })
+
+
+def record(method, params):
+    path = SCENARIO.get("record")
+    if not path:
+        return
+    # Opened per line on purpose: the writer and reader connections both append, and a short
+    # O_APPEND write keeps one call inside one line.
+    with open(path, "a") as fh:
+        fh.write(json.dumps({"method": method, "params": params}) + "\n")
 
 
 def write(obj):
@@ -64,6 +79,9 @@ for line in sys.stdin:
         continue
     method, req_id = msg.get("method"), msg.get("id")
     params = msg.get("params") or {}
+    # Recorded before anything can delay or refuse it: a test asking "was embed ever sent?" wants
+    # the request as it arrived, not as it was answered.
+    record(method, params)
     if method == "initialize":
         missing = [k for k in SCENARIO.get("initialize_requires", []) if k not in params]
         if missing:
@@ -101,6 +119,13 @@ for line in sys.stdin:
     if sleep := SCENARIO.get("sleep_ms", {}).get(method):
         time.sleep(sleep / 1000.0)
     note(req_id, method, "locking")
+    for extra in SCENARIO.get("progress_counters", {}).get(method, []):
+        # np's own counter keys travel untouched: `chunks_done`/`chunks_total` while embedding,
+        # `bytes_done`/`bytes_total` while fetching. Absent means unknown, and this stand-in keeps it
+        # absent rather than filling in a zero.
+        extra = dict(extra)
+        phase = extra.pop("phase", "working")
+        note(req_id, method, phase, extra)
     if fault := SCENARIO.get("faults", {}).get(method):
         write({"error": {"code": fault["code"], "message": fault["message"]},
                "id": req_id, "jsonrpc": "2.0"})
