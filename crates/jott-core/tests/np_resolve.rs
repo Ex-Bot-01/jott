@@ -15,8 +15,29 @@ fn fake_np(dir: &Path) -> std::path::PathBuf {
     p
 }
 
+/// `NP_PATH` is one variable for the whole process and these tests run on several threads, so the
+/// two that set it take turns: without this, one test's override vanishes under another's
+/// assertion and the failure lands on whichever test lost the race.
+static NP_PATH_TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// What `NP_PATH` was before this test touched it, put back at the end.
+fn with_np_path<T>(value: Option<std::path::PathBuf>, run: impl FnOnce() -> T) -> T {
+    let previous = std::env::var_os("NP_PATH");
+    match value {
+        Some(v) => std::env::set_var("NP_PATH", v),
+        None => std::env::remove_var("NP_PATH"),
+    }
+    let out = run();
+    match previous {
+        Some(v) => std::env::set_var("NP_PATH", v),
+        None => std::env::remove_var("NP_PATH"),
+    }
+    out
+}
+
 #[test]
 fn np_path_wins_and_is_not_silently_forgiven_when_wrong() {
+    let _turn = NP_PATH_TURN.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
     // The override lives somewhere that is *not* the app dir, or it would also be a
     // bundled np and the test would prove nothing about precedence.
@@ -25,27 +46,27 @@ fn np_path_wins_and_is_not_silently_forgiven_when_wrong() {
     let app_dir = dir.path().join("app");
     fs::create_dir_all(&app_dir).unwrap();
     let good = fake_np(&bin);
-    std::env::set_var("NP_PATH", &good);
-    assert!(matches!(resolve_np(&app_dir), Ok(NpSource::Env(p)) if p == good));
+    let found = with_np_path(Some(good.clone()), || resolve_np(&app_dir));
+    assert!(matches!(&found, Ok(NpSource::Env(p)) if *p == good), "{found:?}");
 
     // A bad override must not fall through to PATH: the user said which binary, and a
     // silent fallback would have Jott index with a different np than they installed.
-    std::env::set_var("NP_PATH", bin.join("nope"));
-    match resolve_np(&app_dir) {
+    let refused = with_np_path(Some(bin.join("nope")), || resolve_np(&app_dir));
+    match refused {
         Err(NpMissing::OverrideMissing(p)) => assert!(p.ends_with("nope")),
         other => panic!("expected OverrideMissing, got {other:?}"),
     }
-    std::env::remove_var("NP_PATH");
 }
 
 #[test]
 fn bundled_np_is_used_before_path() {
+    let _turn = NP_PATH_TURN.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let app_dir = dir.path().join("app");
     fs::create_dir_all(&app_dir).unwrap();
     let bundled = fake_np(&app_dir);
-    std::env::remove_var("NP_PATH");
-    assert!(matches!(resolve_np(&app_dir), Ok(NpSource::Bundled(p)) if p == bundled));
+    let found = with_np_path(None, || resolve_np(&app_dir));
+    assert!(matches!(&found, Ok(NpSource::Bundled(p)) if *p == bundled), "{found:?}");
 }
 
 #[test]
