@@ -5,4 +5,6 @@
 //! so it can be tested without a display server.
 
 pub mod app_config;
+pub mod app_paths;
 pub mod np;
+pub mod vault;
