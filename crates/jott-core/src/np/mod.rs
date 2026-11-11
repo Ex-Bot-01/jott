@@ -1,5 +1,7 @@
 //! Everything that crosses the pipe to `np serve`.
 
+pub mod client;
+pub mod frame;
 pub mod handshake;
 pub mod resolve;
 
@@ -28,4 +30,35 @@ pub enum NpError {
 pub struct NpFault {
     pub code: i32,
     pub message: String,
+}
+
+/// One `np/progress` notification. `request` is present only when the request had an id:
+/// "belongs to no request" and "this request had a null id" are different facts (spec §18.4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProgressNote {
+    pub command: String,
+    pub phase: String,
+    pub request: Option<i64>,
+    pub since_ms: u64,
+    /// Whatever else this phase carries — `bytes_done`/`bytes_total` while fetching,
+    /// `chunks_done`/`chunks_total` while embedding, `code` when refused.
+    pub extra: serde_json::Value,
+}
+
+impl ProgressNote {
+    pub(crate) fn from_value(params: &serde_json::Value) -> ProgressNote {
+        let mut extra = params.clone();
+        if let Some(map) = extra.as_object_mut() {
+            for key in ["command", "phase", "request", "since_ms"] {
+                map.remove(key);
+            }
+        }
+        ProgressNote {
+            command: params.get("command").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+            phase: params.get("phase").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+            request: params.get("request").and_then(|v| v.as_i64()),
+            since_ms: params.get("since_ms").and_then(|v| v.as_u64()).unwrap_or(0),
+            extra,
+        }
+    }
 }
