@@ -336,6 +336,18 @@ pub struct LinkRef {
     pub target: String,
 }
 
+/// A folder for new notes to live in. Refuses a name that is taken, because "New folder" pressed twice
+/// should not quietly merge two folders into one.
+pub fn create_folder(root: &Path, rel: &str) -> Result<(), FileError> {
+    let path = PathGuard::new(root).resolve(rel)?;
+    stays_off_np_catalog(rel)?;
+    if std::fs::symlink_metadata(to_open_path(&path)).is_ok() {
+        return Err(FileError::AlreadyExists { rel: rel.to_string() });
+    }
+    default_self_writes().record(rel);
+    std::fs::create_dir_all(to_open_path(&path)).map_err(|source| FileError::Io { rel: rel.to_string(), source })
+}
+
 /// Move one file or folder within the vault and report what referred to it.
 pub fn rename(root: &Path, from: &str, to: &str) -> Result<RenameReport, FileError> {
     let guard = PathGuard::new(root);

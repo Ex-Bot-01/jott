@@ -65,7 +65,7 @@ fn waited_ms(value: &Value, method: &str) -> Result<u64, NpFault> {
 
 /// What one scan did. Field-for-field np's `--json` report; the counts are np's, and our own
 /// per-file stamps (Task 7) are display-only because np reports aggregates (§18.2).
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScanReport {
     pub added: u64,
     pub modified: u64,
@@ -90,7 +90,7 @@ pub struct ScanReport {
 }
 
 /// The loss record beside a scan: what the walk could not read, and up to eight names.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Unindexable {
     pub unreadable: u64,
     pub unkeyable: u64,
@@ -123,7 +123,7 @@ pub fn scan_outcome(value: &Value) -> Result<ScanOutcome, NpFault> {
 
 /// One image link np looked at and would not embed, as `(locator, class)`. The locator is the
 /// figure's path, or the linking note's when there was no figure to name.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ImageRefusal {
     pub path: String,
     pub class: String,
@@ -142,7 +142,10 @@ where
 
 /// What one embed run did. `artifact_check`, `workers` and `fetched` are np's too and are left
 /// out on purpose: nothing in M1 reads them, and a field nobody uses is a field nobody checks.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+/// Serialize is for the window's payload; the two directions are not mirrors. np sends
+/// `image_refusals` as pairs and this writes objects, because a webview wants named fields while §18.5
+/// keeps np's spelling on np's wire.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EmbedReport {
     /// The model this run answered questions about — `None` when configuration named none.
     pub model: Option<String>,

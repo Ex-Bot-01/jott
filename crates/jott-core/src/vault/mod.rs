@@ -1,5 +1,6 @@
 //! The vault: what is registered, what is in it, and what happened to each file there.
 
+pub mod buffers;
 pub mod files;
 pub mod stamps;
 pub mod store;

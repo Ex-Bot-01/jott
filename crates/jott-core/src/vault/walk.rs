@@ -29,7 +29,7 @@ pub const MAX_NOTE_BYTES: u64 = 32 * 1024 * 1024;
 /// What a tree row is, in the vocabulary §9 uses. A file with no extension np cares about is an
 /// `Attachment`: np parses none of them and Jott edits none of them, but they are in someone's
 /// notes folder and hiding them to keep our taxonomy tidy is the wrong trade.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum EntryKind {
     Folder,
     Note,

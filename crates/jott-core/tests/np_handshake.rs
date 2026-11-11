@@ -22,7 +22,7 @@ fn reads_the_captured_handshake() {
 fn a_build_without_notifications_or_methods_is_not_usable() {
     let mut v = real();
     v.as_object_mut().unwrap().remove("progress");
-    assert!(parse_initialize(&v).unwrap().progress == false, "absence is off, not unknown");
+    assert!(!parse_initialize(&v).unwrap().progress, "absence is off, not unknown");
 
     let mut v = real();
     v.as_object_mut().unwrap().remove("methods");

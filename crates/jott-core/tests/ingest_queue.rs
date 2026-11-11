@@ -78,7 +78,7 @@ impl Harness {
         IngestQueue::spawn(self.pool.clone(), self.stamps.clone(), self.vault.clone())
             .with_debounce(Duration::from_millis(80))
             .with_drain_cap(Duration::from_millis(600))
-            .with_np_config(self.np_config.clone())
+            .with_np_config(Some(self.np_config.clone()))
     }
 
     /// What np was asked for, in order, without the handshake.
@@ -228,7 +228,7 @@ async fn flush_now_does_not_wait_for_the_debounce() {
     .await;
     // The production debounce, so "now" is measured against the timer it skips.
     let queue = IngestQueue::spawn(h.pool.clone(), h.stamps.clone(), h.vault.clone())
-        .with_np_config(h.np_config.clone())
+        .with_np_config(Some(h.np_config.clone()))
         .with_drain_cap(Duration::from_millis(600));
 
     queue.note_saved("notes/a.md");
@@ -547,7 +547,7 @@ async fn drain_finishes_the_pass_it_started_and_saves_the_stamps() {
     .await;
     // The real cap: finishing in-flight work is what `drain` is for.
     let queue = IngestQueue::spawn(h.pool.clone(), h.stamps.clone(), h.vault.clone())
-        .with_np_config(h.np_config.clone());
+        .with_np_config(Some(h.np_config.clone()));
 
     queue.note_saved("notes/a.md");
     queue.flush_now();

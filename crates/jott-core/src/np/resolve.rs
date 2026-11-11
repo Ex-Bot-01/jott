@@ -146,10 +146,10 @@ pub fn install_hint(missing: &NpMissing, os: Os) -> String {
              from {release}, verify it with `sha256sum -c SHA256SUMS.txt`, then \
              `install -m 0755 np ~/.local/bin/np` — or set NP_PATH to a build you already have."
         ),
-        (Os::Macos, _) => format!(
-            "There is no macOS asset for np: it has to be built from source with \
+        // No `format!`: nothing is interpolated, and a literal states that in one character.
+        (Os::Macos, _) => "There is no macOS asset for np: it has to be built from source with \
              `cargo install --git https://github.com/Ex-Bot-01/note-processor -p np-cli --locked`, then set \
              NP_PATH to the binary if it is not on PATH."
-        ),
+            .to_string(),
     }
 }

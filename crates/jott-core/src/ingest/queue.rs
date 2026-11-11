@@ -24,6 +24,7 @@ use crate::np::ProgressNote;
 use crate::vault::files::PathGuard;
 use crate::vault::stamps::{StampState, Stamps};
 use crate::vault::store::Consent;
+use serde::Serialize;
 use serde_json::Value;
 use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
@@ -46,14 +47,27 @@ pub fn backoff_ms(attempt: u32) -> u64 {
 }
 
 /// Why the index is behind — a state the status line shows, never an error dialog (§11).
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `camelCase` on the way out: this enum exists to be read by the window, and a payload that arrives as
+/// `waited_ms` in one place and `retryInMs` in another is how a status line gets a `undefined`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub enum StateReason {
-    Locked { waited_ms: u64 },
+    // The field is renamed by hand because serde's container-level `rename_all` on an enum covers the
+    // *variant* names and leaves struct-variant fields alone. Getting that wrong is how `waited_ms`
+    // arrives in one place and `retryInMs` in another — exactly what the note above warns about — so
+    // `tests/ipc_surface.rs` pins every key the window reads.
+    Locked { #[serde(rename = "waitedMs")] waited_ms: u64 },
     Offline,
 }
 
 /// What the queue tells the window. The shell emits these as `ingest://event` (Task 10).
-#[derive(Debug, Clone, PartialEq)]
+///
+/// Variant and field names are `camelCase` for the webview; the reports inside `Indexed` and `Embedded`
+/// keep np's own field spellings on purpose — they are np's documents, and §18 says to show np's words
+/// rather than a translation of them.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub enum IngestEvent {
     /// A line from np's own progress stream. Phases that carry no counters (`locking`, `indexing`, and
     /// any build with no progress at all, §18.12) arrive as `done: 0, total: None`, which the status
@@ -64,18 +78,18 @@ pub enum IngestEvent {
     /// An embed run finished. Its `errors` count travels with it, so the window can say "3 chunks
     /// failed" from np's number rather than from this module deciding what a failure means.
     Embedded(EmbedReport),
-    Behind { reason: StateReason, retry_in_ms: u64 },
+    Behind { reason: StateReason, #[serde(rename = "retryInMs")] retry_in_ms: u64 },
     /// The prompt (§8): the model np's config names and the folder its bytes would land in. `bytes` is
     /// `None` because np 0.3.1 sends no artifact size anywhere — `models.list` rows have none (measured
     /// against `main.rs`'s `model_json`) — and Jott does not invent a download size to make a dialog
     /// look complete (§4).
-    NeedsConsent { model_id: Option<String>, bytes: Option<u64>, data_dir: PathBuf },
+    NeedsConsent { #[serde(rename = "modelId")] model_id: Option<String>, bytes: Option<u64>, #[serde(rename = "dataDir")] data_dir: PathBuf },
     /// A refusal, in np's words where np sent words. When it sent only a state token
     /// (`artifact-absent`), that token is the message: np's word, not ours (§18.5).
     Refused { message: String },
     /// Embedding is off in np's configuration, so nothing was embedded and keyword search carries on
     /// (§11). `hint` is np's own suggested command, when it sent one.
-    Disabled { key: Option<String>, model_id: Option<String>, hint: Option<String> },
+    Disabled { key: Option<String>, #[serde(rename = "modelId")] model_id: Option<String>, hint: Option<String> },
 }
 
 #[derive(Debug)]
@@ -174,8 +188,8 @@ impl IngestQueue {
 
     /// np's `config.toml` — the file §11 says consent is written to. Unset means a decision lives in
     /// memory only, and the gate cannot tell which model is configured, so it asks for nothing.
-    pub fn with_np_config(self, path: PathBuf) -> Self {
-        self.shared.options.lock().unwrap().np_config = Some(path);
+    pub fn with_np_config(self, path: Option<PathBuf>) -> Self {
+        self.shared.options.lock().unwrap().np_config = path;
         self
     }
 
@@ -229,6 +243,12 @@ impl IngestQueue {
     /// [`Self::DRAIN_CAP`] has passed, because closing must not wait for a model (§11). A note whose
     /// pass did not finish stays *waiting*, which is what "owed at next launch" means.
     pub async fn drain(self) {
+        self.drain_now().await
+    }
+
+    /// The same close-out through a borrow, for an owner that holds the queue behind an `Arc` (the shell
+    /// keeps one per open vault). Same cap, same forced kill, same nothing-left-behind.
+    pub async fn drain_now(&self) {
         let (done, waited) = oneshot::channel::<()>();
         self.shared.closing.store(true, Ordering::SeqCst);
         let cap = self.shared.options.lock().unwrap().drain_cap;

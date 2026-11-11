@@ -134,7 +134,7 @@ impl VaultStore {
             .into_iter()
             .filter(|e| to_abs(&e.path) != path)
             .collect();
-        let consent = self.consent_of(&path);
+        let consent = self.consent(&path);
         entries.push(VaultEntry { path, last_opened: SystemTime::now(), consent });
         self.save(&entries)?;
         Ok(warning)
@@ -168,7 +168,8 @@ impl VaultStore {
             .map(|(_, e)| e.path)
     }
 
-    fn consent_of(&self, path: &Path) -> Consent {
+    /// What was decided about embedding for this vault (§8). `Undecided` for a folder never opened here.
+    pub fn consent(&self, path: &Path) -> Consent {
         self.load()
             .into_iter()
             .find(|e| to_abs(&e.path) == path)

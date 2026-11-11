@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 
 /// What the tree marks a note with (§9). `Refused` carries a reason because §9 promises one — and
 /// only ever a reason somebody actually reported: ours from the walk, or np's token from a scan.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum StampState {
     /// These bytes have vectors.
     Embedded,
@@ -56,6 +56,7 @@ impl Default for StateFile {
     }
 }
 
+#[derive(Clone)]
 pub struct Stamps {
     vault: PathBuf,
     file: PathBuf,
