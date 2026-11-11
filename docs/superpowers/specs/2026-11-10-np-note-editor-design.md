@@ -181,7 +181,7 @@ Closing the app never blocks on embedding: it flushes what it can and the rest i
 
 ## 12. Settings the app writes
 
-App data dir (`~/.config/note-processor-editor/` on Linux, `%APPDATA%\note-processor-editor\` on Windows):
+App data dir — `~/.config/jott/` on Linux, `%APPDATA%\jott\` on Windows (Windows' own per-user app-data root, which is where an installed app belongs and what the bundler expects):
 
 | File | Contents |
 |---|---|
