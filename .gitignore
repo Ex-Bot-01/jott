@@ -1,0 +1,14 @@
+# build output
+node_modules/
+dist/
+target/
+*.tsbuildinfo
+
+# tauri / vite
+src-tauri/gen/
+.tauri/
+
+# local scratch and tooling state
+.superpowers/
+.tmp/
+*.log
