@@ -5,3 +5,4 @@
 //! so it can be tested without a display server.
 
 pub mod app_config;
+pub mod np;
