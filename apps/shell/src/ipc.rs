@@ -7,6 +7,7 @@
 //! emission, nothing else.
 
 use jott_core::app_paths::app_data_dir;
+use jott_core::diagnostics::Journal;
 use jott_core::ipc::{
     self, IpcError, NpMissingPayload, NoteContent, RegistryInfo, RenameOutcome, SearchResults, VaultListing, WriteResult,
 };
@@ -30,6 +31,9 @@ pub struct App {
     /// (`np://missing`). An event emitted before the webview has listeners is a message into an empty room.
     problem: Mutex<Option<NpMissingPayload>>,
     session: Mutex<Option<Arc<VaultSession>>>,
+    /// `<app_data>/logs/jott.jsonl` — the file §19's hand-off asks for. One per run, shared by every vault
+    /// opened in it, because "what happened this afternoon" is the question it answers.
+    journal: Arc<Journal>,
 }
 
 impl App {
@@ -38,9 +42,10 @@ impl App {
     pub fn startup() -> App {
         let data = app_data_dir().unwrap_or_else(|_| std::env::temp_dir().join("jott"));
         let store = VaultStore::new(data.clone());
+        let journal = Arc::new(Journal::open(&data));
         App {
             data,
-            store,
+            journal,
             np: Mutex::new(None),
             problem: Mutex::new(None),
             session: Mutex::new(None),
@@ -82,7 +87,8 @@ impl App {
         let warning = self.store.register(path).ok().flatten();
         let consent = self.store.consent(path);
         let (source, info) = self.np_pair().await;
-        let session = VaultSession::open_in(source, info, path, consent, np_config_path(), self.data.clone());
+        let session = VaultSession::open_in(source, info, path, consent, np_config_path(), self.data.clone())
+            .with_journal(self.journal.clone());
         bridge(handle, &session);
 
         let previous = self.session.lock().unwrap().replace(session.clone());

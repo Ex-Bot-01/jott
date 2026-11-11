@@ -10,6 +10,7 @@
 //! * **Answers carry facts, not adjectives.** A save returns the hash that landed; a delete says where
 //!   the file went; a search says which halves answered. The window never has to guess what happened.
 
+use crate::diagnostics::{Journal, RequestRecord};
 use crate::ingest::queue::{IngestEvent, IngestQueue};
 use crate::np::handshake::NpInfo;
 use crate::np::pool::NpPool;
@@ -182,6 +183,9 @@ pub struct NpMissingPayload {
 /// The session for one open vault: its np pool, its ingest queue, its external-change watcher.
 pub struct VaultSession {
     vault: PathBuf,
+    /// One line per np request, for the hand-off (§19). `void()` until the shell says where the log lives;
+    /// a diagnostic never fails a command, so this is an attachment and not a dependency.
+    journal: Arc<Mutex<Arc<Journal>>>,
     /// Where this vault's state lives: stamps, and the mirrored unsaved buffers (§12, §18.13). Named at
     /// open rather than read from the environment, so a test — or a portable build with its data beside
     /// the vault — decides, and nothing in one process depends on another's `$XDG_DATA_HOME`.
@@ -228,6 +232,7 @@ impl VaultSession {
         queue.set_consent(consent);
         let session = Arc::new(VaultSession {
             vault: vault.to_path_buf(),
+            journal: Arc::new(Mutex::new(Arc::new(Journal::void()))),
             data: data.clone(),
             pool,
             stamps,
@@ -239,6 +244,19 @@ impl VaultSession {
         });
         session.start_watching();
         session
+    }
+
+    /// Attach the hand-off log. Also reaches the ingest queue, so a scan or an embed is recorded where it
+    /// happened rather than being reconstructed later from what the window was told.
+    pub fn with_journal(self: &Arc<Self>, journal: Arc<Journal>) -> Arc<VaultSession> {
+        *self.journal.lock().unwrap() = journal.clone();
+        self.queue.set_journal(journal);
+        Arc::clone(self)
+    }
+
+    /// Where the log goes, for whoever opens a second window on the same vault.
+    pub fn journal(&self) -> Arc<Journal> {
+        self.journal.lock().unwrap().clone()
     }
 
     pub fn vault(&self) -> &Path {
@@ -412,7 +430,12 @@ impl VaultSession {
     /// 102.1 s for a search queued behind an embed on one connection, and a frozen overlay is the whole
     /// reason there are two connections.
     pub async fn search(&self, query: &str, limit: u8) -> Result<SearchResults, IpcError> {
-        let answer = self.pool.search(&self.vault, query, limit).await.map_err(|f| IpcError { kind: ErrorKind::NpGone, message: f.message })?;
+        let started = std::time::Instant::now();
+        let answer = self.pool.search(&self.vault, query, limit).await.map_err(|fault| {
+            self.record_fault("search", started.elapsed(), fault.code, &fault.message);
+            IpcError { kind: ErrorKind::NpGone, message: fault.message }
+        })?;
+        self.record("search", started.elapsed(), "applied");
         Ok(SearchResults {
             hits: answer.hits.into_iter().map(HitDto::from).collect(),
             // np's own word for which half answered (§18.11), not a translation of it.
@@ -448,6 +471,20 @@ impl VaultSession {
             queue.drain_now().await;
         })
         .await;
+    }
+
+    /// One line in the hand-off log. Same shape as the queue's: never questioned, never fatal.
+    fn record(&self, method: &str, elapsed: std::time::Duration, outcome: &'static str) {
+        let _ = self.journal.lock().unwrap().clone().record(&RequestRecord::new(method, &self.vault, elapsed, outcome));
+    }
+
+    fn record_fault(&self, method: &str, elapsed: std::time::Duration, code: i32, message: &str) {
+        let _ = self
+            .journal
+            .lock()
+            .unwrap()
+            .clone()
+            .record(&RequestRecord::fault(method, &self.vault, elapsed, code as i64, message));
     }
 
     fn write_result(&self, rel: &str) -> Result<WriteResult, IpcError> {

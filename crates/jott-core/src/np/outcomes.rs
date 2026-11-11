@@ -110,6 +110,17 @@ pub enum ScanOutcome {
     Locked { waited_ms: u64 },
 }
 
+impl ScanOutcome {
+    /// The word the log writes for this outcome (`applied`, `locked`). Same words as the status line's
+    /// states, so a line in `jott.jsonl` and a sentence in the window cannot disagree (§11).
+    pub fn label(&self) -> &'static str {
+        match self {
+            ScanOutcome::Applied(_) => "applied",
+            ScanOutcome::Locked { .. } => "locked",
+        }
+    }
+}
+
 pub fn scan_outcome(value: &Value) -> Result<ScanOutcome, NpFault> {
     if is_locked(value) {
         return Ok(ScanOutcome::Locked { waited_ms: waited_ms(value, "scan")? });
@@ -201,6 +212,21 @@ pub enum EmbedOutcome {
 
 fn field(value: &Value, key: &str) -> Option<String> {
     value.get(key).and_then(Value::as_str).map(str::to_string)
+}
+
+impl EmbedOutcome {
+    /// The log's word for this outcome. `refused` covers every state that names itself (`artifact-absent`
+    /// and friends): the *which* is in the event and, on a fault, in np's sentence — the log's job is the
+    /// shape of the exchange, not a copy of np's documents.
+    pub fn label(&self) -> &'static str {
+        match self {
+            EmbedOutcome::Applied(_) => "applied",
+            EmbedOutcome::Locked { .. } => "locked",
+            EmbedOutcome::Offline { .. } => "offline",
+            EmbedOutcome::Disabled { .. } => "disabled",
+            EmbedOutcome::Refused { .. } => "refused",
+        }
+    }
 }
 
 pub fn embed_outcome(value: &Value) -> Result<EmbedOutcome, NpFault> {

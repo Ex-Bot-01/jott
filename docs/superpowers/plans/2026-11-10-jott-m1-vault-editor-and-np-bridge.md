@@ -327,15 +327,21 @@ component-local logic; the editor reports its phase up rather than the parent gu
 ### Task 11: Hand-off build for Windows
 
 **Files:**
-- Create: `docs/testing-on-windows.md`, `src-tauri/src/diagnostics.rs`
+- Create: `docs/testing-on-windows.md`, `crates/jott-core/src/diagnostics.rs` (with
+  `crates/jott-core/tests/diagnostics_journal.rs`)
 - Modify: `.github/workflows/build.yml`
+
+> **Amended while executing.** The journal lives in `jott-core`, not in the shell, for the same reason the
+> command surface did (Task 10's amendment): rotation, verbatim fault text and "no note contents in here"
+> are behaviour, and behaviour that can only be tested on a desktop gets tested once a week. The shell's
+> only job is to open the journal at `<app_data>/logs/jott.jsonl` and hand it to each session.
 
 **Interfaces:**
 - Consumes: Tasks 1–10.
 - Produces: a downloadable Windows artifact plus the log Jott writes where they can find it.
 
 - [ ] **Step 1:** `diagnostics.rs`: JSONL to `<app_data>/logs/jott.jsonl`, one record per np request (`method`, `workspace`, `elapsed_ms`, outcome variant, and np's own code/message on a fault), rotating at 2 MiB keeping two files. Failing test first: a fault record contains np's message verbatim and never the vault's file contents.
-- [ ] **Step 2:** `build.yml`: keep artifacts for 30 days; name them `jott-windows-x64.msi` and `jott-linux-x64.deb`/`.AppImage`; add `np --version` to the build log so a release proves which backend it was tested against.
+- [ ] **Step 2:** `build.yml`: a `test` job (Vitest + build + svelte-check + `cargo test` + clippy `-D warnings`) gating the artifact job; keep artifacts for 30 days; name them `jott-windows-x64.msi` and `jott-linux-x64.deb`/`.AppImage`; add `np --version` to the build log so a release proves which backend it was tested against.
 - [ ] **Step 3:** `docs/testing-on-windows.md`: what to install (release asset + `np` per [`INSTALL.md`](../../INSTALL.md) §2 Windows), the five things to try (first run, save→embed timing, rename, a file changed by another editor, closing mid-embed), and exactly which file to send back (`%APPDATA%\jott\logs\jott.jsonl`).
 - [ ] **Step 4:** Tag `v0.0.1`, confirm both artifacts appear, and hand the link over as the third hand-off: by now the spike answered "does a window work on Windows" (Task 1) and "does the editor behave" (Task 10); this one answers the question np's own author could not — **write-lock contention on Windows** — by running `np scan <vault>` in a terminal while Jott is mid-embed, and checking that Jott reports `index behind · retrying` rather than an error or a frozen window.
 - [ ] **Step 5:** Commit `ci: publish Windows and Linux artifacts with a log worth reading`.

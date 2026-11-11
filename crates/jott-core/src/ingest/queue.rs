@@ -16,6 +16,7 @@
 //! * **A close that does not wait for a model.** [`IngestQueue::drain`] finishes what it started, gives
 //!   up after five seconds, and leaves the file waiting. The vault is files; nothing owed but time.
 
+use crate::diagnostics::{Journal, RequestRecord};
 use crate::hashes::sha256_file;
 use crate::ingest::consent::{embedding_model_named, set_auto_fetch};
 use crate::np::outcomes::{EmbedOutcome, EmbedReport, ScanOutcome, ScanReport};
@@ -125,6 +126,9 @@ impl Default for Options {
 struct Shared {
     options: Mutex<Options>,
     consent: Mutex<Consent>,
+    /// Where to write a line about each np request (Task 11). `None` until the shell says where, and a
+    /// journal that has given up writing is treated the same way as `None`.
+    journal: Mutex<Option<Arc<Journal>>>,
     /// Set when the app is closing: no new work starts, and no events go out — a child we killed at the
     /// drain cap would otherwise arrive as a refusal the user did not do anything to deserve.
     closing: AtomicBool,
@@ -133,7 +137,12 @@ struct Shared {
 impl Default for Shared {
     fn default() -> Self {
         // A vault nobody has asked about yet is undecided — the same answer the registry gives (§8).
-        Self { options: Mutex::new(Options::default()), consent: Mutex::new(Consent::Undecided), closing: AtomicBool::new(false) }
+        Self {
+            options: Mutex::new(Options::default()),
+            consent: Mutex::new(Consent::Undecided),
+            journal: Mutex::new(None),
+            closing: AtomicBool::new(false),
+        }
     }
 }
 
@@ -191,6 +200,12 @@ impl IngestQueue {
     pub fn with_np_config(self, path: Option<PathBuf>) -> Self {
         self.shared.options.lock().unwrap().np_config = path;
         self
+    }
+
+    /// Where the log goes. Takes `&self` where its siblings take `self`, because the shell attaches it to
+    /// a queue it already holds behind an `Arc`.
+    pub fn set_journal(&self, journal: Arc<Journal>) {
+        *self.shared.journal.lock().unwrap() = Some(journal);
     }
 
     /// A live view of what the queue says. Broadcast, so a window can come and go; a receiver that
@@ -300,6 +315,20 @@ struct Worker {
 }
 
 impl Worker {
+    /// One line in the hand-off log for one np request. Never questioned: a diagnostic that can make a
+    /// save fail is worse than no diagnostic (`Journal` already stops trying once writing fails).
+    fn record(&self, method: &str, elapsed: Duration, outcome: &'static str) {
+        if let Some(journal) = self.shared.journal.lock().unwrap().clone() {
+            let _ = journal.record(&RequestRecord::new(method, &self.vault, elapsed, outcome));
+        }
+    }
+
+    fn record_fault(&self, method: &str, elapsed: Duration, code: i32, message: &str) {
+        if let Some(journal) = self.shared.journal.lock().unwrap().clone() {
+            let _ = journal.record(&RequestRecord::fault(method, &self.vault, elapsed, code as i64, message));
+        }
+    }
+
     async fn run(mut self, mut rx: mpsc::UnboundedReceiver<Msg>) {
         let mut progress = Some(self.pool.progress());
         let mut drain_reply: Option<oneshot::Sender<()>> = None;
@@ -435,7 +464,13 @@ impl Worker {
         }
 
         // ---- index. Never gated: keyword search has to work whatever someone decided about models.
-        let scanned = match self.pool.scan(&self.vault).await {
+        let started = std::time::Instant::now();
+        let scan_result = self.pool.scan(&self.vault).await;
+        match &scan_result {
+            Ok(outcome) => self.record("scan", started.elapsed(), outcome.label()),
+            Err(fault) => self.record_fault("scan", started.elapsed(), fault.code, &fault.message),
+        }
+        let scanned = match scan_result {
             Ok(ScanOutcome::Locked { waited_ms }) => {
                 self.requeue(&owed, StateReason::Locked { waited_ms });
                 return;
@@ -505,7 +540,13 @@ impl Worker {
 
     /// The embed half — shared by a normal pass and by an answer that arrived after a pass was held.
     async fn embed(&mut self, owed: &[(String, String)]) {
-        match self.pool.embed(&self.vault).await {
+        let started = std::time::Instant::now();
+        let embed_result = self.pool.embed(&self.vault).await;
+        match &embed_result {
+            Ok(outcome) => self.record("embed", started.elapsed(), outcome.label()),
+            Err(fault) => self.record_fault("embed", started.elapsed(), fault.code, &fault.message),
+        }
+        match embed_result {
             Ok(EmbedOutcome::Applied(report)) => {
                 if report.errors == 0 {
                     let mut stamps = self.stamps.lock().unwrap();
@@ -589,7 +630,13 @@ impl Worker {
             // state, and a prompt about an unnamed download is a dialog about nothing.
             return Gate::NothingToAsk;
         };
-        match self.pool.models_list(&self.vault).await {
+        let started = std::time::Instant::now();
+        let listing_result = self.pool.models_list(&self.vault).await;
+        match &listing_result {
+            Ok(_) => self.record("models.list", started.elapsed(), "applied"),
+            Err(fault) => self.record_fault("models.list", started.elapsed(), fault.code, &fault.message),
+        }
+        match listing_result {
             Ok(listing) if listing.artifact_present(&model_id) => Gate::Proceed,
             // An unreadable models directory (`models_dir_error`) is not "no artifact", but it is "we
             // cannot promise a download we may already have" — so the gate holds and asks rather than

@@ -7,15 +7,45 @@ on:
     paths-ignore: ["docs/**"]
 
 jobs:
+  # The suites run on Linux and on every pull request. They are a separate job because the app job is
+  # about producing an artifact on two operating systems, and a red test should stop a release rather than
+  # be visible only as a missing download.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "22", cache: npm }
+      - run: npm ci
+      - name: front end
+        run: |
+          npm run test
+          npm run build
+          npx svelte-check --tsconfig ./tsconfig.app.json --output human
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: rustfmt, clippy }
+      - name: core suites
+        working-directory: crates/jott-core
+        run: cargo test
+      - name: clippy
+        working-directory: crates/jott-core
+        run: cargo clippy --all-targets -- -D warnings
+
   app:
+    needs: test
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: windows-latest
-            artifact: jott-windows-x64
+            bundles: msi
+            artifacts:
+              - { path: apps/shell/target/release/bundle/msi/*.msi, name: jott-windows-x64.msi }
           - os: ubuntu-latest
-            artifact: jott-linux-x64
+            bundles: deb,appimage
+            artifacts:
+              - { path: apps/shell/target/release/bundle/deb/*.deb, name: jott-linux-x64.deb }
+              - { path: apps/shell/target/release/bundle/appimage/*.AppImage, name: jott-linux-x64.AppImage }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -28,9 +58,32 @@ jobs:
       - run: npm ci
       - run: npm run build
       - uses: dtolnay/rust-toolchain@stable
+      # The artifacts ship without np by design (spec §2: Jott finds it or says how to install it), but a
+      # release should still prove which backend the runner had in front of it, because "it worked" without
+      # a version is not a fact anyone can use six weeks later.
       - name: backend under test
-        run: np --version || echo "np not on the runner; artifacts ship without it by design"
-      - uses: tauri-apps/tauri-action@v0
+        shell: bash
+        run: |
+          echo "== np on this runner =="
+          np --version || echo "np not on the runner; artifacts ship without it by design"
+      - name: bundle
+        run: npm run tauri build -- --bundles ${{ matrix.bundles }}
+      # Named exactly, kept for 30 days, and uploaded here rather than by `tauri-action`: a hand-off link
+      # that reads `2_jott-windows-x64_…msi` is a file someone has to rename before they can tell a
+      # colleague which build they are running (§19).
+      - name: upload
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          projectPath: apps/shell
-          artifactName: ${{ matrix.artifact }}
+          name: ${{ matrix.artifacts[0].name }}
+          path: ${{ matrix.artifacts[0].path }}
+          retention-days: 30
+          if-no-files-found: error
+      - name: upload (second bundle)
+        if: matrix.os == 'ubuntu-latest' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifacts[1].name }}
+          path: ${{ matrix.artifacts[1].path }}
+          retention-days: 30
+          if-no-files-found: error

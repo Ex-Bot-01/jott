@@ -6,6 +6,7 @@
 
 pub mod app_config;
 pub mod app_paths;
+pub mod diagnostics;
 pub mod hashes;
 pub mod ipc;
 pub mod ingest;
