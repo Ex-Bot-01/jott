@@ -3,9 +3,15 @@
 pub mod client;
 pub mod frame;
 pub mod handshake;
+pub mod methods;
+pub mod outcomes;
 pub mod resolve;
 
 pub use handshake::{check_version, NpFeatures, NpInfo};
+pub use outcomes::{
+    EmbedOutcome, EmbedReport, Hit, ImageRefusal, ModelListing, ModelRow, ModelState, Mode,
+    ScanOutcome, ScanReport, SearchAnswer, Unindexable,
+};
 pub use resolve::{install_hint, resolve_np, NpMissing, NpSource, Os};
 
 use thiserror::Error;
@@ -19,7 +25,7 @@ pub enum NpError {
     #[error("could not talk to np: {0}")]
     Transport(String),
     #[error(transparent)]
-    Fault(NpFault),
+    Fault(#[from] NpFault),
 }
 
 /// A JSON-RPC error object from np. The message is np's own sentence, kept verbatim:

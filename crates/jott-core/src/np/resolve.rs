@@ -58,16 +58,23 @@ fn exe_name(base: &str) -> String {
 fn is_executable(p: &Path) -> bool {
     p.is_file()
         && p.file_name().map(|n| n == std::ffi::OsString::from(exe_name("np"))).unwrap_or(false)
-        && p.metadata().map(|m| {
-            #[allow(unused_mut)]
-            let mut ok = true;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                ok = m.permissions().mode() & 0o111 != 0;
-            }
-            ok
-        }).unwrap_or(false)
+        && p.metadata().map(|m| is_runnable(&m)).unwrap_or(false)
+}
+
+/// Whether the operating system would let this file run. Unix keeps that fact in the mode bits;
+/// elsewhere there is no such bit to read, so a file that exists under the right name is what
+/// "runnable" means — which is why `NP_PATH` gets checked by hand rather than trusted.
+fn is_runnable(metadata: &std::fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        true
+    }
 }
 
 pub fn resolve_np(app_dir: &Path) -> Result<NpSource, NpMissing> {

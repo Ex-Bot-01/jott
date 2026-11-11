@@ -128,7 +128,9 @@ impl NpClient {
         writer
             .send(encode_request(id, method, Some(&params)))
             .map_err(|_| NpFault { code: -32603, message: "np's stdin is closed".into() })?;
-        drop(writer);
+        // The guard is held until the answer arrives, on purpose: it is what makes `shutdown`
+        // wait for in-flight work rather than closing np's stdin mid-request (the queue's drain
+        // step depends on that), and np answers one request per connection regardless.
         rx.await.map_err(|_| NpFault {
             code: -32603,
             message: format!("np ended while answering {method}"),

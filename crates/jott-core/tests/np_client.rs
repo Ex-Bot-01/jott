@@ -1,11 +1,8 @@
-use jott_core::np::client::NpClient;
+mod common;
+
+use common::{repo_root, spawn};
 use jott_core::np::frame::Frame;
 use jott_core::np::ProgressNote;
-use std::path::PathBuf;
-
-fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).ancestors().nth(2).unwrap().to_path_buf()
-}
 
 /// The captured np 0.3.1 transcript is the spec for this module: 22 lines, a mix of
 /// responses, faults (one with a null id), and notifications interleaved anywhere.
@@ -40,19 +37,9 @@ async fn replays_the_captured_transcript() {
     assert_eq!(responses + faults + notes, 22);
 }
 
-fn fake_np(scenario: Option<&std::path::Path>) -> PathBuf {
-    let script = repo_root().join("tests/fake-np/np.py");
-    if let Some(s) = scenario {
-        std::env::set_var("FAKE_NP_SCENARIO", s);
-    } else {
-        std::env::remove_var("FAKE_NP_SCENARIO");
-    }
-    script
-}
-
 #[tokio::test]
 async fn requests_are_answered_by_id_while_notifications_flow_past() {
-    let client = NpClient::spawn(&fake_np(None)).await.unwrap();
+    let (_dir, client) = spawn(serde_json::json!({})).await;
     let mut notes = client.notifications();
     let init = client.request("initialize", serde_json::json!({"notifications": true})).await.unwrap();
     assert_eq!(init["protocol"], 1);
@@ -76,20 +63,13 @@ async fn requests_are_answered_by_id_while_notifications_flow_past() {
 
 #[tokio::test]
 async fn a_slow_embed_does_not_block_a_search_on_another_connection() {
-    let dir = tempfile::tempdir().unwrap();
-    let scenario = dir.path().join("s.json");
-    std::fs::write(
-        &scenario,
-        serde_json::json!({"sleep_ms": {"embed": 1200},
-                           "replies": {"embed": {"embedded": 1, "current": 0},
-                                       "search": {"hits": [], "mode": "keyword", "vectors": false,
-                                                  "offline": false, "reason": null}}})
-        .to_string(),
-    )
-    .unwrap();
+    let scenario = serde_json::json!({"sleep_ms": {"embed": 1200},
+                       "replies": {"embed": {"embedded": 1, "current": 0},
+                                   "search": {"hits": [], "mode": "keyword", "vectors": false,
+                                              "offline": false, "reason": null}}});
 
-    let writer = NpClient::spawn(&fake_np(Some(&scenario))).await.unwrap();
-    let reader = NpClient::spawn(&fake_np(Some(&scenario))).await.unwrap();
+    let (_wd, writer) = spawn(scenario.clone()).await;
+    let (_rd, reader) = spawn(scenario).await;
     let embed = writer.request("embed", serde_json::json!({"workspace": "/x"}));
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     let started = std::time::Instant::now();

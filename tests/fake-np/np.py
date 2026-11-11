@@ -2,9 +2,18 @@
 """A stand-in for `np serve`, so protocol behaviour is testable without the real binary.
 
 Reads NDJSON on stdout-sized lines and answers from a scenario file named by
-FAKE_NP_SCENARIO (JSON: {"initialize": {...}, "replies": {"scan": {...}}, "sleep_ms":
-{"embed": 1500}}). Anything unknown gets np's own -32601 sentence. Exits 0 at EOF, the
-way np does. Deliberately dumb: it exists to be wrong in specific ways on request.
+FAKE_NP_SCENARIO (JSON):
+
+  initialize            the result object for `initialize`
+  initialize_requires   param keys `initialize` must carry, else -32602
+  initialize_progress_by_param  answer with `progress: true` only when the request
+                                asked for notifications — what real np does
+  replies               result object per method
+  faults                {method: {code, message}} — an error object instead of a result
+  sleep_ms              delay before answering a method
+
+Anything unlisted gets np's own -32601 sentence. Exits 0 at EOF, the way np does.
+Deliberately dumb: it exists to be wrong in specific ways on request.
 """
 import json
 import os
@@ -51,9 +60,25 @@ for line in sys.stdin:
                "id": None, "jsonrpc": "2.0"})
         continue
     method, req_id = msg.get("method"), msg.get("id")
+    params = msg.get("params") or {}
     if method == "initialize":
-        write({"id": req_id, "jsonrpc": "2.0", "result": INITIALIZE})
-        note(req_id, "initialize", "completed")
+        missing = [k for k in SCENARIO.get("initialize_requires", []) if k not in params]
+        if missing:
+            write({"error": {"code": -32602,
+                             "message": f'params need a "{missing[0]}" value'},
+                   "id": req_id, "jsonrpc": "2.0"})
+            note(req_id, method, "refused", {"code": -32602})
+            continue
+        result = dict(INITIALIZE)
+        if SCENARIO.get("initialize_progress_by_param"):
+            # np advertises progress support by the key's presence, and only on a connection
+            # that asked for it — so a client that hardcodes the flag cannot pass for one.
+            if params.get("notifications") is True:
+                result["progress"] = True
+            else:
+                result.pop("progress", None)
+        write({"id": req_id, "jsonrpc": "2.0", "result": result})
+        note(req_id, method, "completed")
         continue
     if method == "shutdown":
         write({"id": req_id, "jsonrpc": "2.0", "result": {"protocol": 1}})
@@ -61,6 +86,11 @@ for line in sys.stdin:
     if sleep := SCENARIO.get("sleep_ms", {}).get(method):
         time.sleep(sleep / 1000.0)
     note(req_id, method, "locking")
+    if fault := SCENARIO.get("faults", {}).get(method):
+        write({"error": {"code": fault["code"], "message": fault["message"]},
+               "id": req_id, "jsonrpc": "2.0"})
+        note(req_id, method, "refused", {"code": fault["code"]})
+        continue
     result = SCENARIO.get("replies", {}).get(method)
     if result is None:
         write({"error": {"code": -32601,
