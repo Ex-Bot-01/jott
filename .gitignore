@@ -1,14 +1,15 @@
-# build output
+# node / vite
 node_modules/
 dist/
+*.local
+
+# rust
 target/
-*.tsbuildinfo
 
-# tauri / vite
-src-tauri/gen/
-.tauri/
+# tauri generated
+apps/shell/src-tauri/gen/
 
-# local scratch and tooling state
+# local scratch, tooling state
 .superpowers/
 .tmp/
 *.log
