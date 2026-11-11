@@ -181,7 +181,9 @@ Closing the app never blocks on embedding: it flushes what it can and the rest i
 
 ## 12. Settings the app writes
 
-App data dir — `~/.config/jott/` on Linux, `%APPDATA%\jott\` on Windows (Windows' own per-user app-data root, which is where an installed app belongs and what the bundler expects):
+App data dir — `$XDG_DATA_HOME/jott`, or `~/.local/share/jott` when that is unset, on Linux; `%APPDATA%\jott\` on Windows. Each platform's own per-user **app-data** root: where an installed app belongs, what the bundler expects, and where the Tauri shell puts its own files.
+
+> Amended 2026-11-11 while building M1. This line said `~/.config/jott/` on Linux. Everything in the table below is state rather than configuration — a registry of folders, ingest stamps, mirrored unsaved buffers, a trash fallback, logs — and one app should not be split across two roots when the platform already names one for it.
 
 | File | Contents |
 |---|---|
