@@ -268,11 +268,21 @@ tests/                         Rust integration tests (in src-tauri/tests/)
 - Test: `src-tauri/tests/ingest_queue.rs`, `tests/np_consent.rs`
 
 **Interfaces:**
-- Consumes: `NpPool` (Task 5), `Stamps` (Task 7), `VaultStore::set_consent` (Task 6).
+- Consumes: `NpPool` (Task 5), `Stamps` (Task 7). The registry's `VaultStore::set_consent` (Task 6) is
+  written by the shell when it calls `IngestQueue::set_consent`: `spawn`'s signature has no room for the
+  registry, and a queue that reached into app state on its own would be two owners of one decision.
 - Produces:
-  `pub struct IngestQueue` with `pub fn spawn(pool: NpPool, stamps: Arc<Mutex<Stamps>>, vault: PathBuf) -> IngestQueue`,
-  `pub fn note_saved(&self, rel: &str)`, `pub fn flush_now(&self)`, `pub async fn drain(self)`
-  `pub enum IngestEvent { Working { phase: String, done: u64, total: Option<u64> }, Indexed(ScanReport), Embedded(EmbedReport), Behind { reason: StateReason, retry_in_ms: u64 }, NeedsConsent { model_id: String, bytes: u64, data_dir: PathBuf }, Refused { message: String } }` (emitted as `ingest://event`)
+  `pub struct IngestQueue` with `pub fn spawn(pool: Arc<NpPool>, stamps: Arc<Mutex<Stamps>>, vault: PathBuf) -> IngestQueue`,
+  `pub fn note_saved(&self, rel: &str)`, `pub fn flush_now(&self)`, `pub fn set_consent(&self, consent: Consent)`, `pub async fn drain(self)`
+  `pub enum IngestEvent { Working { phase: String, done: u64, total: Option<u64> }, Indexed(ScanReport), Embedded(EmbedReport), Behind { reason: StateReason, retry_in_ms: u64 }, NeedsConsent { model_id: Option<String>, bytes: Option<u64>, data_dir: PathBuf }, Refused { message: String }, Disabled { key: Option<String>, model_id: Option<String>, hint: Option<String> } }` (emitted as `ingest://event`)
+
+  Three shapes differ from the brief, each for a reason measured against np 0.3.1: `Arc<NpPool>`,
+  because `drain` has to force-kill a child that is still busy at its cap (§11) and a pool moved into
+  the task leaves nobody able to do that; optional `model_id`/`bytes`, because nothing in 0.3.1 reports
+  an artifact size (`models.list` rows carry none, measured) and np's config may name no model at all —
+  §4 forbids inventing either to fill a dialog; and the `Disabled` arm, because np's configuration state
+  carries no sentence for `Refused.message` unless it sent a `hint`, and filing a settled configuration
+  under "refused" would make a setting look like a failure.
   `pub enum StateReason { Locked { waited_ms: u64 }, Offline }`
   `pub fn set_auto_fetch(config_path: &Path, allow: bool) -> Result<(), ConsentError>` (via `toml_edit`; preserves comments and unknown keys), `pub fn auto_fetch_allowed(config_path: &Path) -> bool`.
 
