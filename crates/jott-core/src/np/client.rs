@@ -24,6 +24,9 @@ pub struct NpClient {
     next_id: std::sync::atomic::AtomicI64,
     notes: broadcast::Sender<ProgressNote>,
     child: Mutex<Option<tokio::process::Child>>,
+    /// Set once np's stdout ended: the child is gone, and every request still owed an answer
+    /// never will get one. The pool reads this to decide when a connection needs replacing.
+    closed: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 fn command_for(np: &Path) -> Command {
@@ -79,7 +82,9 @@ impl NpClient {
         let pending: std::sync::Arc<Pending> =
             std::sync::Arc::new(Mutex::new(HashMap::new()));
         let (notes_tx, _) = broadcast::channel(256);
-        let (reader_pending, reader_notes) = (pending.clone(), notes_tx.clone());
+        let closed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (reader_pending, reader_notes, reader_closed) =
+            (pending.clone(), notes_tx.clone(), closed.clone());
         tokio::spawn(async move {
             let mut lines = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = lines.next_line().await {
@@ -102,6 +107,19 @@ impl NpClient {
                     Frame::Ignored => {}
                 }
             }
+            // EOF on stdout, or a read error: nothing more will be answered. Say so to everyone
+            // still waiting *before* publishing that the connection is gone, so a request that
+            // races this either gets drained here or sees the flag and faults at once. A caller
+            // left holding an answer that will never come is a frozen window (spec §11).
+            reader_closed.store(true, std::sync::atomic::Ordering::SeqCst);
+            let owed: Vec<(i64, oneshot::Sender<Result<Value, NpFault>>)> =
+                reader_pending.lock().await.drain().collect();
+            for (_, tx) in owed {
+                let _ = tx.send(Err(NpFault {
+                    code: -32603,
+                    message: "np ended before answering".into(),
+                }));
+            }
         });
 
         Ok(NpClient {
@@ -110,7 +128,14 @@ impl NpClient {
             next_id: std::sync::atomic::AtomicI64::new(1),
             notes: notes_tx,
             child: Mutex::new(Some(child)),
+            closed,
         })
+    }
+
+    /// Whether this child's stdout has ended. A connection that reports true is a connection to
+    /// something that is no longer there.
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     pub fn notifications(&self) -> broadcast::Receiver<ProgressNote> {
@@ -120,7 +145,18 @@ impl NpClient {
     pub async fn request(&self, method: &str, params: Value) -> Result<Value, NpFault> {
         let id = self.next_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let (tx, rx) = oneshot::channel();
-        self.pending.lock().await.insert(id, tx);
+        {
+            // Registered under the same lock the reader loop drains under, and after checking
+            // that np is still there: one of the two always covers a child that dies right now.
+            let mut pending = self.pending.lock().await;
+            if self.is_closed() {
+                return Err(NpFault {
+                    code: -32603,
+                    message: format!("np is gone: nothing is left to answer {method}"),
+                });
+            }
+            pending.insert(id, tx);
+        }
         let writer = self.writer.lock().await;
         let Some(writer) = writer.as_ref() else {
             return Err(NpFault { code: -32603, message: "np's stdin is closed".into() });

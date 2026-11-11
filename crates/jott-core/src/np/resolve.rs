@@ -29,6 +29,16 @@ pub enum NpSource {
     Path(PathBuf),
 }
 
+impl NpSource {
+    /// The binary to run, whichever way it was found. Where it came from stays on the enum
+    /// because the message about a missing np has to name the place it looked.
+    pub fn path(&self) -> &Path {
+        match self {
+            NpSource::Bundled(p) | NpSource::Env(p) | NpSource::Path(p) => p,
+        }
+    }
+}
+
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum NpMissing {
     #[error("np was not found (nothing bundled, NP_PATH unset, nothing on PATH)")]

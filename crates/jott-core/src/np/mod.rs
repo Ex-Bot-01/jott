@@ -5,6 +5,7 @@ pub mod frame;
 pub mod handshake;
 pub mod methods;
 pub mod outcomes;
+pub mod pool;
 pub mod resolve;
 
 pub use handshake::{check_version, NpFeatures, NpInfo};
@@ -12,6 +13,7 @@ pub use outcomes::{
     EmbedOutcome, EmbedReport, Hit, ImageRefusal, ModelListing, ModelRow, ModelState, Mode,
     ScanOutcome, ScanReport, SearchAnswer, Unindexable,
 };
+pub use pool::{Connection, NpPool, PoolNote};
 pub use resolve::{install_hint, resolve_np, NpMissing, NpSource, Os};
 
 use thiserror::Error;
@@ -26,6 +28,17 @@ pub enum NpError {
     Transport(String),
     #[error(transparent)]
     Fault(#[from] NpFault),
+}
+
+impl From<NpError> for NpFault {
+    /// Flatten "could not even ask" into a fault, so one caller of the pool branches once.
+    /// The sentence survives: what np said, or what stopped us from asking it, is the message.
+    fn from(source: NpError) -> NpFault {
+        match source {
+            NpError::Fault(fault) => fault,
+            other => NpFault { code: -32603, message: other.to_string() },
+        }
+    }
 }
 
 /// A JSON-RPC error object from np. The message is np's own sentence, kept verbatim:

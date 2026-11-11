@@ -11,6 +11,8 @@ FAKE_NP_SCENARIO (JSON):
   replies               result object per method
   faults                {method: {code, message}} — an error object instead of a result
   sleep_ms              delay before answering a method
+  die_on_call           {method: N} — exit(3) without answering the Nth call: a crashed child
+  require_mode          refuse a `search` whose mode is not this one, naming what arrived
 
 Anything unlisted gets np's own -32601 sentence. Exits 0 at EOF, the way np does.
 Deliberately dumb: it exists to be wrong in specific ways on request.
@@ -21,6 +23,7 @@ import sys
 import time
 
 SCENARIO = {}
+CALLS = {}
 if path := os.environ.get("FAKE_NP_SCENARIO"):
     with open(path) as fh:
         SCENARIO = json.load(fh)
@@ -83,6 +86,18 @@ for line in sys.stdin:
     if method == "shutdown":
         write({"id": req_id, "jsonrpc": "2.0", "result": {"protocol": 1}})
         sys.exit(0)
+    CALLS[method] = CALLS.get(method, 0) + 1
+    if SCENARIO.get("die_on_call", {}).get(method) == CALLS[method]:
+        # A child that dies mid-request: no answer, no goodbye, exit status nobody asked for.
+        sys.stdout.flush()
+        os._exit(3)
+    if method == "search" and (want := SCENARIO.get("require_mode")):
+        if params.get("mode") != want:
+            write({"error": {"code": -32602,
+                             "message": f"this stand-in answers only mode `{want}`, not `{params.get('mode')}`"},
+                   "id": req_id, "jsonrpc": "2.0"})
+            note(req_id, method, "refused", {"code": -32602})
+            continue
     if sleep := SCENARIO.get("sleep_ms", {}).get(method):
         time.sleep(sleep / 1000.0)
     note(req_id, method, "locking")
