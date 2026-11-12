@@ -234,7 +234,11 @@ pub fn extended_length_prefix(path: &str) -> String {
 
 /// What Jott wrote itself, process-wide. One app, one writer, so the watcher and the writer agree
 /// without any call site having to thread a registry through (§14).
-fn default_self_writes() -> &'static Arc<SelfWrites> {
+/// The registry every write path in this crate records into, so a watcher handed the same `Arc` can tell
+/// its own app's saves from somebody else's edit (Task 8's suppression window). Public to the crate for
+/// exactly that: a session that hands its watcher a *different* registry reports every save of its own as
+/// an outside change.
+pub(crate) fn default_self_writes() -> &'static Arc<SelfWrites> {
     static REGISTRY: OnceLock<Arc<SelfWrites>> = OnceLock::new();
     REGISTRY.get_or_init(|| Arc::new(SelfWrites::new()))
 }

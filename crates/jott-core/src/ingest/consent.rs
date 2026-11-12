@@ -39,6 +39,13 @@ pub fn np_config_path() -> Option<PathBuf> {
     root.map(|dir| dir.join("note-processor").join("config.toml"))
 }
 
+/// Whether np's config exists and cannot be read as TOML. Absent is readable (nothing to misread); a file
+/// that fails to parse is not, and the difference decides whether the consent gate can trust what it saw.
+pub fn consent_file_is_unreadable(path: &Path) -> bool {
+    // `is_err`, not a match: unreadable is exactly "could not be loaded as TOML".
+    load(path).is_err()
+}
+
 /// What the file says about fetching, with np's default when it says nothing.
 ///
 /// A file that cannot be parsed answers `false`, and that is the survivable direction: `true` here

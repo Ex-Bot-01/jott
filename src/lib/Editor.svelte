@@ -2,7 +2,7 @@
   // The note itself: CodeMirror 6 with markdown tinting, line wrap on, no minimap (§9), and every
   // save-or-not decision taken by `saveState()` rather than by anything in this file (§11, §14).
 
-  import { onDestroy } from 'svelte'
+  import { onDestroy, untrack } from 'svelte'
   import { EditorView, keymap, type ViewUpdate } from '@codemirror/view'
   import { EditorState } from '@codemirror/state'
   import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
@@ -153,7 +153,11 @@
   $effect(() => {
     const which = rel
     if (!which || !host) return
-    const text = note?.text ?? ''
+    // `rel` is the only thing tracked. The text is read once, untracked: App replaces `note` after every
+    // save and on every outside change, and rebuilding an editor from that signal would throw away the
+    // buffer, the caret and the undo history the moment someone pressed Ctrl+S (§4). Content arriving from
+    // outside has its own effect below, driven by a token the parent bumps deliberately.
+    const text = untrack(() => note?.text ?? '')
     void hashText(text).then((hash) => setBaseline(text, hash))
     open(text)
     return () => {

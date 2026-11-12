@@ -35,7 +35,10 @@ pub struct IpcError {
     pub message: String,
 }
 
+// `camelCase` for the webview's union in `src/lib/ipc.ts`; the contract test pins every spelling, because a
+// kind that arrives as `EscapesRoot` while the front end matches on `escapesRoot` is a silent fall-through.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub enum ErrorKind {
     EscapesRoot,
     NotFound,
@@ -229,7 +232,9 @@ impl VaultSession {
         let queue = Arc::new(
             IngestQueue::spawn(pool.clone(), stamps.clone(), vault.to_path_buf()).with_np_config(np_config),
         );
-        queue.set_consent(consent);
+        // The registry's remembered answer, applied without touching np's config file (§12): opening a
+        // vault is not the same event as deciding about a download.
+        queue.seed_consent(consent);
         let session = Arc::new(VaultSession {
             vault: vault.to_path_buf(),
             journal: Arc::new(Mutex::new(Arc::new(Journal::void()))),
@@ -237,7 +242,10 @@ impl VaultSession {
             pool,
             stamps,
             queue,
-            self_writes: crate::vault::watch::SelfWrites::new().shared(),
+            // The same registry the write paths record into. A fresh one here would make every save by
+            // Jott arrive back as `vault://changed`, and the window would reload the note under the
+            // person typing in it.
+            self_writes: crate::vault::files::default_self_writes().clone(),
             changed: tokio::sync::broadcast::channel(64).0,
             watch_task: Mutex::new(None),
             stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -435,7 +443,9 @@ impl VaultSession {
             self.record_fault("search", started.elapsed(), fault.code, &fault.message);
             IpcError { kind: ErrorKind::NpGone, message: fault.message }
         })?;
-        self.record("search", started.elapsed(), "applied");
+        // `offline` is its own outcome here: §4 wants a degraded answer visible, and a log that calls a
+        // keyword-only search "applied" hides the one thing worth knowing about it.
+        self.record("search", started.elapsed(), if answer.offline { "offline" } else { "applied" });
         Ok(SearchResults {
             hits: answer.hits.into_iter().map(HitDto::from).collect(),
             // np's own word for which half answered (§18.11), not a translation of it.

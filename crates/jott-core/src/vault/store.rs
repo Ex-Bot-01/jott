@@ -241,7 +241,10 @@ fn nested_np_vault(path: &Path) -> Option<PathBuf> {
 /// np keys a workspace by the absolute path it was given (§18.6) — two spellings of one folder
 /// would mean two indexes and two model downloads for one vault. Following symlinks here would
 /// have the same effect through a different door.
-pub(crate) fn to_abs(path: &Path) -> PathBuf {
+/// The path as the registry understands it: absolute, lexically cleaned, with any trailing separator gone.
+/// Public so the shell can ask "is this the vault that is already open?" with the same ruler the recents
+/// list uses, rather than inventing a second notion of sameness.
+pub fn to_abs(path: &Path) -> PathBuf {
     let mut out = if path.is_absolute() {
         PathBuf::new()
     } else {

@@ -66,8 +66,10 @@ jobs:
         run: |
           echo "== np on this runner =="
           np --version || echo "np not on the runner; artifacts ship without it by design"
+      # `--config` because the config lives beside the crate's Cargo.toml (where tauri-build looks), not in
+      # a `src-tauri/` next to the working directory the CLI would otherwise assume.
       - name: bundle
-        run: npm run tauri build -- --bundles ${{ matrix.bundles }}
+        run: npx tauri build --config apps/shell/tauri.conf.json --bundles ${{ matrix.bundles }}
       # Named exactly, kept for 30 days, and uploaded here rather than by `tauri-action`: a hand-off link
       # that reads `2_jott-windows-x64_…msi` is a file someone has to rename before they can tell a
       # colleague which build they are running (§19).

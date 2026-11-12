@@ -23,7 +23,10 @@ pub fn mirror_path(vault: &Path, rel: &str) -> std::io::Result<PathBuf> {
 /// every test uses — a path that comes from `$XDG_DATA_HOME` would make two tests in one process depend
 /// on each other's environment, which is a flake waiting to happen rather than a design.
 pub fn mirror_path_in(root: &Path, vault: &Path, rel: &str) -> PathBuf {
-    let key = format!("{}\n{}", vault.display(), rel);
+    // Normalised the same way the stamps normalise the vault (`to_abs`): a picker that hands back
+    // `C:\notes\` and a registry entry reading `C:\notes` are one vault, and a draft keyed on the raw
+    // string would simply never come back (§18.13).
+    let key = format!("{}\n{}", crate::vault::store::to_abs(vault).display(), rel);
     buffers_dir_in(root).join(format!("{}.{}", sha256_prefix(key.as_bytes(), 16), "buffer"))
 }
 

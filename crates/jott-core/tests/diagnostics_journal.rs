@@ -120,7 +120,7 @@ fn a_line_has_no_field_that_could_hold_note_text() {
 }
 
 #[test]
-fn it_rotates_at_two_mebibytes_and_keeps_two_files() {
+fn it_rotates_at_two_mebibytes_and_keeps_two_older_copies() {
     let dir = tempfile::tempdir().expect("app data");
     let journal = Journal::open(dir.path());
     // A message long enough that a few hundred records pass the cap, rather than 10 000 of them.
@@ -131,6 +131,15 @@ fn it_rotates_at_two_mebibytes_and_keeps_two_files() {
         written += long.len();
     }
 
+    // A second rotation: "keeps two older copies" means `.1` moves to `.2` and the older `.2` goes, which
+    // only happens on the second crossing. Counted in bytes written rather than in the size of the live
+    // file, since that is what a rotation resets (`bytes_on_disk` would never reach the cap again).
+    let mut second_pass = 0usize;
+    while second_pass < jott_core::diagnostics::ROTATE_AT_BYTES as usize + 64 * 1024 {
+        journal.record(&RequestRecord::fault("embed", Path::new("/v"), Duration::from_millis(1), -32603, &long)).expect("record");
+        second_pass += long.len();
+    }
+
     let logs = std::fs::read_dir(dir.path().join("logs"))
         .expect("logs dir")
         .filter_map(|entry| entry.ok())
@@ -138,7 +147,8 @@ fn it_rotates_at_two_mebibytes_and_keeps_two_files() {
         .collect::<Vec<_>>();
     assert!(logs.contains(&"jott.jsonl".to_string()), "the current file is still there: {logs:?}");
     assert!(logs.contains(&"jott.jsonl.1".to_string()), "one older copy is kept: {logs:?}");
-    assert!(!logs.iter().any(|name| name.ends_with(".2")), "no third copy: {logs:?}");
+    assert!(logs.contains(&"jott.jsonl.2".to_string()), "the copy before that survives one rotation: {logs:?}");
+    assert!(!logs.iter().any(|name| name.ends_with(".3")), "and nothing further back: {logs:?}");
     assert!(journal.bytes_on_disk() < jott_core::diagnostics::ROTATE_AT_BYTES, "the newest file starts again after a rotation");
 
     // And the newest record is readable in it, because a log that rotated away what just happened is

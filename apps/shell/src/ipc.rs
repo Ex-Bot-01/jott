@@ -8,12 +8,13 @@
 
 use jott_core::app_paths::app_data_dir;
 use jott_core::diagnostics::Journal;
+use jott_core::ingest::consent::np_config_path;
 use jott_core::ipc::{
     self, IpcError, NpMissingPayload, NoteContent, RegistryInfo, RenameOutcome, SearchResults, VaultListing, WriteResult,
 };
 use jott_core::np::resolve::{current_os, resolve_np, NpSource};
 use jott_core::np::NpInfo;
-use jott_core::vault::store::{Consent, RegisterWarning, VaultStore};
+use jott_core::vault::store::{to_abs, Consent, RegisterWarning, VaultStore};
 use jott_core::vault::VaultSession;
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -84,6 +85,14 @@ impl App {
     /// vault's session is closed on a task of its own: it drains its ingest queue up to its cap (§11), and
     /// switching folders should not wait on that.
     async fn open(&self, handle: &AppHandle, path: &Path) -> Result<VaultListing, IpcError> {
+        // The same folder again (a picker re-picked, a recent clicked twice) is the same session. Two
+        // queues on one workspace would race over np's lock and both write the same stamp file, so this is
+        // not a nicety.
+        if let Some(current) = self.session.lock().unwrap().clone() {
+            if to_abs(current.vault()) == to_abs(path) {
+                return current.listing();
+            }
+        }
         let warning = self.store.register(path).ok().flatten();
         let consent = self.store.consent(path);
         let (source, info) = self.np_pair().await;
@@ -107,17 +116,6 @@ impl App {
         }
         Ok(listing)
     }
-}
-
-/// np's own configuration file, which is where a consent answer has to be written for np to see it (§11).
-fn np_config_path() -> Option<PathBuf> {
-    // `np-cli` reads `$XDG_CONFIG_HOME/note-processor/config.toml`, and `%APPDATA%\note-processor\` on
-    // Windows; both are what its `main.rs` calls the config dir, measured rather than assumed.
-    let dir = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
-        .or_else(|| std::env::var_os("APPDATA").map(PathBuf::from))?;
-    Some(dir.join("note-processor").join("config.toml"))
 }
 
 /// Forward the two streams the window listens to. Each ends by itself when its session is dropped, because

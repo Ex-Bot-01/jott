@@ -18,7 +18,7 @@
 
 use crate::diagnostics::{Journal, RequestRecord};
 use crate::hashes::sha256_file;
-use crate::ingest::consent::{embedding_model_named, set_auto_fetch};
+use crate::ingest::consent::{consent_file_is_unreadable, embedding_model_named, set_auto_fetch};
 use crate::np::outcomes::{EmbedOutcome, EmbedReport, ScanOutcome, ScanReport};
 use crate::np::pool::{Connection, NpPool, PoolNote};
 use crate::np::ProgressNote;
@@ -228,7 +228,18 @@ impl IngestQueue {
     /// The user answered the consent prompt. Granted writes `auto_fetch = true` and runs what was held
     /// at the gate; declined writes `false` and keeps indexing, because keyword search must not stop
     /// working (§11).
+    /// What the registry already remembers, applied at open. Memory only: re-opening a vault is not
+    /// re-consenting, and writing np's file on every launch would overwrite an edit someone made in a text
+    /// editor between sessions (§12 says show a diff before that; here there is no reason to write at all).
+    pub fn seed_consent(&self, consent: Consent) {
+        *self.shared.consent.lock().unwrap() = consent;
+    }
+
     pub fn set_consent(&self, consent: Consent) {
+        // Always writes, even when the memory already holds this answer: what is remembered from a earlier
+        // session is not the same fact as somebody pressing a button now (§11), and the file is where np
+        // reads it. Writing the same value twice leaves the file unchanged anyway — `toml_edit` keeps the
+        // rest of it as it was.
         let config = self.shared.options.lock().unwrap().np_config.clone();
         // The file first, then the in-memory answer: the file is where np reads it, so if writing failed,
         // the answer has not been given anywhere that matters and saying so beats promising a download
@@ -355,8 +366,13 @@ impl Worker {
                         }
                     }
                     Some(Msg::Drain(done)) => {
-                        drain_reply = Some(done);
-                        if !self.state.pending.is_empty() {
+                        if self.state.pending.is_empty() && self.state.held_for_consent.is_empty() {
+                            // Nothing owed: closing is stopping, not waiting. Answering here is the
+                            // difference between quitting promptly and a window that appears to hang for
+                            // the whole drain cap on its way out (§11's cap is for work in flight).
+                            let _ = done.send(());
+                        } else {
+                            drain_reply = Some(done);
                             self.state.flush = true;
                         }
                     }
@@ -516,7 +532,15 @@ impl Worker {
         match self.consent() {
             Consent::Undecided => match self.gate(&np_config).await {
                 Gate::Blocked(model_id) => {
-                    self.state.held_for_consent = owed;
+                    // Added, not assigned: two saves that both stop at the gate are two batches of work,
+                    // and replacing the first would leave those notes `Indexed` with nothing left to
+                    // requeue them — the queue would consider them done (§11: owed work waits, it does not
+                    // disappear).
+                    for item in owed {
+                        if !self.state.held_for_consent.iter().any(|held| held.0 == item.0) {
+                            self.state.held_for_consent.push(item);
+                        }
+                    }
                     if !self.state.consent_asked {
                         // Once per vault per session (§11), not once per save.
                         self.state.consent_asked = true;
@@ -625,6 +649,12 @@ impl Worker {
     /// `models.list`, never by starting a fetch (§11).
     async fn gate(&mut self, np_config: &Option<PathBuf>) -> Gate {
         let Some(path) = np_config.clone() else { return Gate::NothingToAsk };
+        if consent_file_is_unreadable(&path) {
+            // A file we cannot parse is not a file that names no model. np reads its own config and may
+            // well fetch on its default; asking without knowing which model is at stake is the honest
+            // answer, and embedding blind is how §4's surprise download happens.
+            return Gate::Blocked(None);
+        }
         let Some(model_id) = embedding_model_named(&path) else {
             // No model named means nothing to fetch: np answers the embed itself with its configuration
             // state, and a prompt about an unnamed download is a dialog about nothing.

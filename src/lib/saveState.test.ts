@@ -31,6 +31,12 @@ describe('saveState', () => {
     expect(saveState({ dirty: false, diskChanged: true, saving: false, savedHash: 'ccc', currentHash: 'ddd' })).toBe('clean')
   })
 
+  it('is not "saved" when the disk moved after our own write', () => {
+    // The case the name of the test above almost described: same bytes in the buffer and in what we sent,
+    // but `diskChanged` says the file has been written since. Nothing is lost; nothing is vouched for.
+    expect(saveState({ dirty: false, diskChanged: true, saving: false, savedHash: 'same', currentHash: 'same' })).toBe('clean')
+  })
+
   it('is a conflict when the file moved under unsaved typing', () => {
     expect(saveState({ dirty: true, diskChanged: true, saving: false, currentHash: 'eee' })).toBe('conflict')
   })

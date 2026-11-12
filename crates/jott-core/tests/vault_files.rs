@@ -160,7 +160,7 @@ fn a_windows_path_at_260_chars_gets_one_extended_length_prefix() {
     let path = r"C:\Users\someone\Notes".to_string() + &"\\a-very-long-note-name-part".repeat(9);
     assert!(path.len() >= 260, "the fixture has to be long enough to matter: {}", path.len());
     let prefixed = files::extended_length_prefix(&path);
-    assert_eq!(prefixed, format!(r"\\?\{path}"), "np's rule, applied once");
+    assert_eq!(prefixed, format!(r"\\?\{path}"), "Jott's own prefix rule (np 0.3.1 has none): one prefix, once");
     // Applying it twice is the bug that makes a path nobody can open.
     assert_eq!(files::extended_length_prefix(&prefixed), prefixed);
 }
@@ -216,8 +216,9 @@ fn jott_does_not_write_over_nps_own_catalogs() {
 
 #[test]
 fn to_open_path_leaves_a_unix_path_exactly_as_it_is() {
-    // The probe switch exists so this can be asserted on every platform the suite runs on.
-    std::env::set_var("JOTT_LONG_PATH_PROBE", "1");
+    // No switch and no `cfg` branch to reach into: `to_open_path` is a pure function, so the assertion
+    // below means the same thing on every platform the suite runs on. (An earlier draft of this test set a
+    // `JOTT_LONG_PATH_PROBE` variable that nothing has ever read.)
     let (_dir, root) = vault();
     // Length from the folders: 255 bytes is a *name* limit, so one long name is not a long path.
     let deep = format!("{}/note.md", "a-long-folder-name/".repeat(12));
@@ -227,10 +228,9 @@ fn to_open_path_leaves_a_unix_path_exactly_as_it_is() {
     if cfg!(windows) {
         assert!(opened.starts_with(r"\\?\"), "on Windows a long path is prefixed: {}", opened.display());
     } else {
-        assert_eq!(opened, root.join(&deep), "Linux has no MAX_PATH to route around: {}", opened.display());
+        assert_eq!(opened, root.join(&deep), "Linux needs no prefix, so the path is untouched: {}", opened.display());
     }
     assert_eq!(files::read_note(&root, &deep).unwrap(), b"# deep\n", "and it still opens");
-    std::env::remove_var("JOTT_LONG_PATH_PROBE");
 }
 
 // ---- create, rename, move, delete

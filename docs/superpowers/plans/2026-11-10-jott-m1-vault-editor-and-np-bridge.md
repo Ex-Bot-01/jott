@@ -340,11 +340,23 @@ component-local logic; the editor reports its phase up rather than the parent gu
 - Consumes: Tasks 1–10.
 - Produces: a downloadable Windows artifact plus the log Jott writes where they can find it.
 
-- [ ] **Step 1:** `diagnostics.rs`: JSONL to `<app_data>/logs/jott.jsonl`, one record per np request (`method`, `workspace`, `elapsed_ms`, outcome variant, and np's own code/message on a fault), rotating at 2 MiB keeping two files. Failing test first: a fault record contains np's message verbatim and never the vault's file contents.
-- [ ] **Step 2:** `build.yml`: a `test` job (Vitest + build + svelte-check + `cargo test` + clippy `-D warnings`) gating the artifact job; keep artifacts for 30 days; name them `jott-windows-x64.msi` and `jott-linux-x64.deb`/`.AppImage`; add `np --version` to the build log so a release proves which backend it was tested against.
-- [ ] **Step 3:** `docs/testing-on-windows.md`: what to install (release asset + `np` per [`INSTALL.md`](../../INSTALL.md) §2 Windows), the five things to try (first run, save→embed timing, rename, a file changed by another editor, closing mid-embed), and exactly which file to send back (`%APPDATA%\jott\logs\jott.jsonl`).
+- [x] **Step 1:** `diagnostics.rs`: JSONL to `<app_data>/logs/jott.jsonl`, one record per np request (`method`, `workspace`, `elapsed_ms`, outcome variant, and np's own code/message on a fault), rotating at 2 MiB keeping two files. Failing test first: a fault record contains np's message verbatim and never the vault's file contents. *(Clarified after review: "two files" is the live file plus two older copies — `jott.jsonl`, `.1`, `.2`, about 6 MiB worst case — because two in total throws away the pass before last, which is the one that explains a lock fight. The rotation test crosses the cap twice, since asserting after a single crossing passes without ever moving `.1` to `.2`.)*
+- [x] **Step 2:** `build.yml`: a `test` job (Vitest + build + svelte-check + `cargo test` + clippy `-D warnings`) gating the artifact job; keep artifacts for 30 days; name them `jott-windows-x64.msi` and `jott-linux-x64.deb`/`.AppImage`; add `np --version` to the build log so a release proves which backend it was tested against. There is no `release.yml`, and there will not be one: a tag run of `build.yml` is the release mechanism until §20's signing story gives a reason for more.
+  *(Added after review, because the bundle step could not have worked as written: this repo's shell crate lives at
+  `apps/shell`, and `tauri_build::build()` reads `tauri.conf.json` from the package root — the CLI defaults to
+  `src-tauri/` beside the working directory. So `tauri.conf.json` and `capabilities/` moved up to `apps/shell/`,
+  the bundle step passes `--config apps/shell/tauri.conf.json`, and `frontendDist` became `../../dist`: from
+  either folder it was `../dist`, which points at a directory that does not exist, and the webview would have
+  loaded nothing. `crates/jott-core/tests/app_config.rs` now resolves `frontendDist` against the config file's
+  own directory and requires an `index.html` in it — that check failed on its first run for exactly this
+  reason, which is what makes it worth keeping. Building a Windows bundle still cannot be done on this box, so
+  the release run remains the proof of the rest.)*
+- [x] **Step 3:** `docs/testing-on-windows.md`: what to install (release asset + `np` per [`INSTALL.md`](../../INSTALL.md) §2 Windows), the five things to try (first run, save→embed timing, rename, a file changed by another editor, closing mid-embed), and exactly which file to send back (`%APPDATA%\jott\logs\jott.jsonl`).
 - [ ] **Step 4:** Tag `v0.0.1`, confirm both artifacts appear, and hand the link over as the third hand-off: by now the spike answered "does a window work on Windows" (Task 1) and "does the editor behave" (Task 10); this one answers the question np's own author could not — **write-lock contention on Windows** — by running `np scan <vault>` in a terminal while Jott is mid-embed, and checking that Jott reports `index behind · retrying` rather than an error or a frozen window.
-- [ ] **Step 5:** Commit `ci: publish Windows and Linux artifacts with a log worth reading`.
+- [x] **Step 5:** Commit `ci: publish Windows and Linux artifacts with a log worth reading`.
+
+**Step 4 stays open on purpose.** Tagging `v0.0.1` and confirming the two artifacts appear needs a person
+watching a release page, and the write-lock test in it is the one measurement this whole plan exists to make.
 
 ---
 

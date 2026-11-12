@@ -29,7 +29,10 @@ export function saveState(input: SaveInput): SavePhase {
   if (input.dirty) return 'dirty'
   // "Saved" is a claim about the disk, so it is made only about bytes we can name: the ones this app
   // wrote and can still match against what is there.
-  if (input.savedHash !== undefined && input.savedHash === input.currentHash) return 'saved'
+  // `diskChanged` belongs in this condition for the reason in the comment below: our write landed, then
+  // something else rewrote the file. The buffer matching what we sent is exactly why "saved" would be a
+  // lie about the disk.
+  if (!input.diskChanged && input.savedHash !== undefined && input.savedHash === input.currentHash) return 'saved'
   // Includes the case that looks like "saved" and is not: our write landed, then something else rewrote
   // the file. The buffer is still what it was, so nothing of ours is lost — but the app does not vouch
   // for content it did not see land (§4).

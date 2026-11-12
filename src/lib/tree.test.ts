@@ -67,7 +67,7 @@ describe('flattenTree', () => {
     expect(rows.map((r) => [r.marker, r.title])).toEqual([
       ['·', 'embedded'],
       ['●', 'waiting to embed'],
-      ['●', 'never indexed yet'],
+      ['●', 'waiting for the index'],
       ['!', 'refused · unreadable'],
     ])
   })

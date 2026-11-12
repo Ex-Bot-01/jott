@@ -57,7 +57,9 @@ function markerFor(state: StampState | null): { marker: string; title: string } 
   if (state === null || state === undefined) return { marker: '', title: '' }
   if (state === 'Embedded') return { marker: '·', title: 'embedded' }
   if (state === 'Indexed') return { marker: '●', title: 'waiting to embed' }
-  if (state === 'Waiting') return { marker: '●', title: 'never indexed yet' }
+  // Not "never indexed": `Waiting` also means "changed since np last saw it" (`stamps.rs`). The plan's word
+  // for both is *waiting*, and saying more than that would be a claim about history nobody has (§4).
+  if (state === 'Waiting') return { marker: '●', title: 'waiting for the index' }
   if (typeof state === 'object' && 'Refused' in state) {
     // §18.5: when np gave no reason, the marker says refused and stops there.
     return { marker: '!', title: state.Refused ? `refused · ${state.Refused}` : 'refused' }

@@ -593,3 +593,79 @@ async fn a_note_that_is_not_on_disk_anymore_is_not_queued() {
 
     assert!(h.calls().is_empty(), "a whole-vault pass for a file that is not there: {:?}", h.calls());
 }
+
+#[tokio::test]
+async fn closing_a_queue_with_nothing_owed_answers_at_once() {
+    let _turn = SERIAL.lock().await;
+    let h = Harness::new(json!({})).await;
+    // A cap long enough that answering at the cap would be obvious: production's 5 s is what a person
+    // closing the app feels, and the test queue shortens it for other tests' sake.
+    let queue = IngestQueue::spawn(h.pool.clone(), h.stamps.clone(), h.vault.clone())
+        .with_debounce(Duration::from_millis(80))
+        .with_drain_cap(Duration::from_secs(3));
+
+    // The drain cap is for work in flight. With nothing owed, a close that waits the full cap is a window
+    // that appears to hang on quit (§11).
+    let started = Instant::now();
+    tokio::time::timeout(Duration::from_secs(5), queue.drain_now()).await.expect("an idle queue drains");
+    assert!(started.elapsed() < Duration::from_millis(1_000), "an idle close waited {:?} — that is the drain cap, not work", started.elapsed());
+}
+
+#[tokio::test]
+async fn two_batches_held_at_the_gate_are_both_embedded_once_it_is_answered() {
+    let _turn = SERIAL.lock().await;
+    let h = Harness::new(json!({
+        "replies": {"scan": fixture_result(2), "models.list": models_list_missing(), "embed": embed_current()}
+    }))
+    .await;
+    std::fs::write(&h.np_config, config_naming("bge-m3")).unwrap();
+    for rel in ["notes/first.md", "notes/second.md"] {
+        std::fs::write(h.vault.join(rel), format!("# {}\n", rel)).unwrap();
+    }
+    let queue = h.queue();
+
+    // Two batches, both parked at the consent gate: the second must not replace the first.
+    queue.note_saved("notes/first.md");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    queue.note_saved("notes/second.md");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(!h.calls().contains(&"embed".to_string()), "nothing embeds before an answer");
+
+    queue.set_consent(Consent::Granted);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        if h.state("notes/first.md") == StampState::Embedded && h.state("notes/second.md") == StampState::Embedded {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    for rel in ["notes/first.md", "notes/second.md"] {
+        assert_eq!(h.state(rel), StampState::Embedded, "{rel} was dropped on the way through the gate");
+    }
+    assert!(h.calls().contains(&"embed".to_string()), "granting consent runs what was held: {:?}", h.calls());
+    queue.drain_now().await;
+}
+
+#[tokio::test]
+async fn reopening_a_vault_does_not_rewrite_nps_configuration() {
+    let _turn = SERIAL.lock().await;
+    let h = Harness::new(json!({})).await;
+    // A hand-edited config: comments and all, exactly as someone left them.
+    let text = "# mine\n[embeddings]\nprovider = \"local\"\nmodel = \"bge-m3\"\n";
+    std::fs::write(&h.np_config, text).unwrap();
+
+    // §12: Jott writes np's file to record a *decision*, not to re-assert one it already has.
+    let queue = h.queue();
+    queue.seed_consent(Consent::Granted);
+    assert_eq!(std::fs::read_to_string(&h.np_config).unwrap(), text, "seeding is memory only");
+
+    // An answer still writes, and writes it once: the second identical answer changes nothing.
+    queue.set_consent(Consent::Granted);
+    let after_answer = std::fs::read_to_string(&h.np_config).unwrap();
+    assert!(after_answer.contains("auto_fetch"), "the decision is recorded where np reads it: {after_answer}");
+    assert!(after_answer.contains("# mine"), "np's file, with the person's comment still in it: {after_answer}");
+    queue.set_consent(Consent::Granted);
+    assert_eq!(std::fs::read_to_string(&h.np_config).unwrap(), after_answer);
+    queue.drain_now().await;
+}

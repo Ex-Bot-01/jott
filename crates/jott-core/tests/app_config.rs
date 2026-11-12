@@ -10,12 +10,30 @@ fn shell_config_declares_jott() {
         .ancestors()
         .nth(2)  // <root>/crates/jott-core -> crates -> root
         .expect("repo root");
-    let conf = std::fs::read_to_string(root.join("apps/shell/src-tauri/tauri.conf.json"))
-        .expect("apps/shell/src-tauri/tauri.conf.json exists");
+    // Beside the crate's Cargo.toml, because that is where `tauri_build::build()` looks: its default is a
+    // `tauri.conf.json` in the build script's working directory, which is the package root — not a
+    // `src-tauri/` subfolder. A config in the wrong drawer is a build that fails on the release machine
+    // only, so the location is asserted here, where every platform runs it.
+    let shell = root.join("apps/shell");
+    assert!(shell.join("Cargo.toml").is_file(), "the shell crate's manifest");
+    let conf_path = shell.join("tauri.conf.json");
+    let conf = std::fs::read_to_string(&conf_path).expect("apps/shell/tauri.conf.json exists");
     let cfg = parse_app_config(&conf).expect("parses");
     assert_eq!(cfg.product_name, "Jott");
     assert_eq!(cfg.identifier, "dev.jott.app");
-    assert_eq!(cfg.frontend_dist, "../dist");
+    // `frontendDist` is resolved against the *config file's* directory, so it has to be a path that exists
+    // from there. This is the check that catches "the bundle shipped an empty folder" without building.
+    // Two levels up from `apps/shell`, which is where the repository's `dist/` actually sits. The literal
+    // was `"../dist"` while the config lived in `apps/shell/src-tauri/`, and is wrong either way from
+    // either folder — which is precisely the mistake the existence check below exists to catch.
+    assert_eq!(cfg.frontend_dist, "../../dist");
+    let dist = conf_path
+        .parent()
+        .expect("config dir")
+        .join(cfg.frontend_dist.trim_start_matches("./"))
+        .canonicalize()
+        .expect("`build.frontendDist` resolves to a real folder (the webview has nothing to load otherwise)");
+    assert!(dist.join("index.html").is_file(), "{} holds the built window", dist.display());
     assert_eq!(cfg.dev_url.as_deref(), Some("http://localhost:5173"));
 }
 

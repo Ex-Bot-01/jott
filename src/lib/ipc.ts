@@ -38,7 +38,9 @@ export interface NoteContent {
   diskHash: string
   diskMtimeMs: number
   /** §18.13: a mirrored unsaved buffer newer than the file, replayed at launch. */
-  mirrored?: { text: string; mtimeMs: number }
+  /** §18.13's unsaved buffer from an earlier session. `hash` is what the buffer held when it was mirrored,
+   * so "this is the text you already have on screen" is checkable rather than assumed. */
+  mirrored?: { text: string; mtimeMs: number; hash: string }
 }
 
 export interface WriteResult {
@@ -131,7 +133,19 @@ export interface VaultChanged {
 
 /** The error every command returns in place of a result. `kind` is for branching; `message` is shown. */
 export interface IpcError {
-  kind: 'escapesRoot' | 'notFound' | 'alreadyExists' | 'intoItself' | 'tooLarge' | 'npGenerated' | 'noVault' | 'npMissing' | 'io'
+  // camelCase because that is how `ErrorKind` serialises (`ipc_surface.rs` pins each spelling). A kind the
+  // front end does not list is a branch that silently falls through, so this union is the whole list.
+  kind:
+    | 'escapesRoot'
+    | 'notFound'
+    | 'alreadyExists'
+    | 'intoItself'
+    | 'tooLarge'
+    | 'notUtf8'
+    | 'npGenerated'
+    | 'noVault'
+    | 'npGone'
+    | 'io'
   message: string
 }
 

@@ -12,8 +12,8 @@ Everything below runs on a normal Windows machine. Nothing here needs this repos
    Windows may warn about an unsigned build: that is expected until the signing story in spec §20 exists.
 2. **np** — Jott needs the note-processor command, version 0.3.1 or newer. Follow
    [`INSTALL.md` §2, "Windows (PowerShell)"](../INSTALL.md#windows-powershell--same-procedure): download
-   `np-0.3.1-x86_64-pc-windows-msvc.zip`, check the hash against `SHA256SUMS.txt`, and put `np.exe` somewhere
-   on `PATH` (or set `NP_PATH` to it).
+   `np-0.3.1-x86_64-pc-windows-gnu-cross.zip`, check the hash against `SHA256SUMS.txt`, and put `np.exe`
+   somewhere on `PATH` (or set `NP_PATH` to it).
 
 Without np, Jott still opens and everything except search and embedding works; the bottom-left of the window
 says what is missing and how to install it. That state is worth a look too — it is what a colleague with no
@@ -72,9 +72,10 @@ Jott must treat "someone else is indexing" as a state, not an error.
 
    (An absolute path works the same way if you are not standing in the folder.)
 
-3. What should happen: whichever of the two is waiting reports **`index behind · retrying in 5 s`** (the
-   number grows if it has to wait again), the window stays responsive, and within a couple of minutes the
-   markers settle. What must not happen: an error dialog, a frozen window, or a note that stops saving.
+3. What should happen: whichever of the two is waiting reports **`index behind · retrying in 2 s`** (then 5,
+   15 and a minute at most — the ladder §11 names), the window stays responsive, and within a couple of
+   minutes the markers settle. What must not happen: an error dialog, a frozen window, or a note that stops
+   saving.
 
 Then do it the other way round — `np scan .` running first, and a save in Jott while it works.
 
@@ -88,9 +89,9 @@ One file, plus anything you noticed in words:
 
 That is the whole log: one line per request Jott made to np — the method, which vault, how long it took, and
 the outcome (`applied`, `locked`, `offline`, `disabled`, `refused`, `fault`) — with np's own error sentence on
-a fault. It rotates at 2 MiB and keeps one older copy (`jott.jsonl.1`). **It never contains the contents of
-your notes**; if you would rather look first, open it in Notepad and read it — each line is one JSON object
-with seven possible keys and nothing else.
+a fault. It rotates at 2 MiB and keeps older copies behind it (`jott.jsonl.1`, `jott.jsonl.2`). **It never
+contains the contents of your notes**; if you would rather look first, open it in Notepad and read it — each
+line is one JSON object with seven possible keys and nothing else.
 
 Also useful if something lost data, and only if it did:
 

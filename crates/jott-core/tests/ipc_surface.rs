@@ -66,16 +66,35 @@ impl Harness {
     }
 
     fn session_with(&self, np: NpSource) -> Arc<VaultSession> {
-        VaultSession::open_in(np, info(), self.vault.path(), Consent::Undecided, None, self.data.path().to_path_buf())
+        self.session_with_consent(np, Consent::Undecided)
+    }
+
+    fn session_with_consent(&self, np: NpSource, consent: Consent) -> Arc<VaultSession> {
+        VaultSession::open_in(np, info(), self.vault.path(), consent, None, self.data.path().to_path_buf())
     }
 }
 
 /// Point the stand-in at a scenario; the caller holds `SERIAL`.
 fn scenario(value: Value) -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("scenario dir");
+    // Both the scenario and a record file, so a test can prove what np was actually asked rather than
+    // inferring it from timing.
+    std::fs::write(dir.path().join("calls.ndjson"), "").expect("write record");
+    let mut value = value;
+    value["record"] = json!(dir.path().join("calls.ndjson").display().to_string());
     std::fs::write(dir.path().join("scenario.json"), value.to_string()).expect("write scenario");
     std::env::set_var("FAKE_NP_SCENARIO", dir.path().join("scenario.json"));
     dir
+}
+
+/// The methods the stand-in was asked for, in order, handshake excluded.
+fn recorded(dir: &Path) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(dir.join("calls.ndjson")) else { return Vec::new() };
+    text.lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter_map(|line| line["method"].as_str().map(str::to_string))
+        .filter(|m| m != "initialize" && m != "shutdown")
+        .collect()
 }
 
 fn fake_np() -> NpSource {
@@ -86,6 +105,12 @@ const SCAN_REPORT: &str = r#"{"added": 1, "modified": 0, "moved": 0, "removed": 
     "skipped": [], "notes": 1, "unresolved_links": 0, "unresolved_targets": [],
     "index_files": ["INDEX.md"], "elapsed_ms": 7, "upgrade_orphans": null, "merged_notes": null,
     "recorded_upgrade_orphans": null, "recorded_merged_notes": null, "unindexable": null}"#;
+
+const EMBED_REPORT: &str = r#"{"model": "embeddinggemma-2", "chunks_seen": 4, "current": 4, "embedded": 4,
+    "refused_budget": 0, "busy_gap": 0, "errors": 0, "images_seen": 0, "images_embedded": 0,
+    "images_refused": 0, "images_pruned": 0, "images_unchecked": 0, "images_sweep_ran": true,
+    "image_refusals": [], "verification": "self-consistent, not verified", "offline": false,
+    "outcome": "current"}"#;
 
 const SEARCH_REPLY: &str = r#"{"hits": [{"path": "a.md", "snippet": "the [A] note", "kind": "note",
      "score": 1.4, "bm25": 1.4, "cosine": null}], "mode": "keyword", "vectors": false,
@@ -194,15 +219,33 @@ async fn a_search_answers_while_an_embed_is_still_running() {
     let _turn = SERIAL.lock().await;
     let harness = Harness::new();
     harness.write("a.md", b"# A\n");
-    let _scenario = scenario(json!({
+    let scenario_dir = scenario(json!({
         "sleep_ms": {"embed": 1500},
-        "replies": {"search": serde_json::from_str::<Value>(SEARCH_REPLY).unwrap()}
+        "replies": {
+            "search": serde_json::from_str::<Value>(SEARCH_REPLY).unwrap(),
+            "scan": serde_json::from_str::<Value>(SCAN_REPORT).unwrap(),
+            "embed": serde_json::from_str::<Value>(EMBED_REPORT).unwrap()
+        }
     }));
-    let session = harness.session_with(fake_np());
+    // Granted, not Declined: with a refusal there is no embed to be queued behind, and the test would be
+    // timing a search against nothing.
+    let session = harness.session_with_consent(fake_np(), Consent::Granted);
 
-    // The `[embed]` button's own path: fire the queue and carry on talking to the window.
+    // The `[embed]` button's own path, from a save that actually owes work: without a save there is no
+    // batch, the flush is ignored, and the "search during an embed" below would race nothing at all.
+    session.save_note("a.md", "# A changed
+").expect("save");
     session.ingest_all();
-    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    // Wait until the stand-in has been asked to embed — that is the thing the search must not queue behind.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        if recorded(scenario_dir.path()).iter().any(|m| m == "embed") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(recorded(scenario_dir.path()).contains(&"embed".to_string()), "no embed was running: {:?}", recorded(scenario_dir.path()));
 
     let started = std::time::Instant::now();
     let answer = session.search("A", 8).await.expect("the reader answers");
@@ -503,4 +546,111 @@ async fn a_vault_still_opens_when_np_cannot_be_asked_anything() {
     // And the `[embed]` button's queue does not spin: it fails its batch and moves on.
     session.ingest_all();
     session.close().await;
+}
+
+// ---- findings from the whole-branch review, each pinned by the test that was missing ----
+
+#[tokio::test]
+async fn a_save_by_jott_is_not_reported_as_an_outside_change() {
+    let _turn = SERIAL.lock().await;
+    let harness = Harness::new();
+    harness.write("a.md", b"# A\n");
+    let session = harness.session();
+    let mut changes = session.subscribe_changes();
+
+    // Drain anything the watcher noticed while the vault was being set up.
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    while changes.try_recv().is_ok() {}
+
+    session.save_note("a.md", "# A changed by Jott\n").expect("save");
+    session.create_note("new.md").expect("create");
+
+    // Our own writes are suppressed (§8's watcher rule, tested at the unit level in Task 8 and here at the
+    // one place they are actually wired together: a session). An echo of our own save makes the window
+    // reload the note the person is typing in.
+    let quiet = tokio::time::timeout(std::time::Duration::from_millis(1_500), async {
+        loop {
+            match changes.recv().await {
+                Ok(rel) => return Some(rel),
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(_) => return None,
+            }
+        }
+    })
+    .await;
+    assert!(quiet.is_err(), "Jott's own save came back as an outside change: {:?}", quiet.ok().flatten());
+}
+
+#[tokio::test]
+async fn closing_an_idle_vault_does_not_wait_for_the_drain_cap() {
+    let _turn = SERIAL.lock().await;
+    let harness = Harness::new();
+    let session = harness.session();
+
+    // Nothing is owed: closing means stopping, not counting to five. §11's cap is for work in flight.
+    let started = std::time::Instant::now();
+    tokio::time::timeout(std::time::Duration::from_secs(2), session.close())
+        .await
+        .expect("an idle session closes promptly");
+    assert!(started.elapsed() < std::time::Duration::from_secs(2), "idle close took {:?}", started.elapsed());
+}
+
+#[tokio::test]
+async fn a_note_refused_by_kind_arrives_with_the_name_ipc_ts_uses() {
+    // The webview branches on `kind`; the union in `src/lib/ipc.ts` is written by hand, so the casing is
+    // part of the contract and nothing else in the suite touches it.
+    let error = ipc::IpcError::no_vault();
+    assert_eq!(serde_json::to_value(&error).expect("error"), json!({ "kind": "noVault", "message": "no vault is open" }));
+
+    for (kind, word) in [
+        (ErrorKind::EscapesRoot, "escapesRoot"),
+        (ErrorKind::NotFound, "notFound"),
+        (ErrorKind::AlreadyExists, "alreadyExists"),
+        (ErrorKind::IntoItself, "intoItself"),
+        (ErrorKind::TooLarge, "tooLarge"),
+        (ErrorKind::NotUtf8, "notUtf8"),
+        (ErrorKind::NpGenerated, "npGenerated"),
+        (ErrorKind::NoVault, "noVault"),
+        (ErrorKind::NpGone, "npGone"),
+        (ErrorKind::Io, "io"),
+    ] {
+        let value = serde_json::to_value(ipc::IpcError { kind, message: "x".into() }).expect("kind");
+        assert_eq!(value["kind"], word, "{word} must arrive as the webview spells it");
+    }
+
+    // The mirror's hash travels too: §18.13's offer is only checkable if the buffer can be compared to it.
+    let mirrored = serde_json::to_value(jott_core::ipc::MirroredText { text: "t".into(), mtime_ms: 1, hash: "h".into() }).expect("mirror");
+    assert_eq!(mirrored, json!({ "text": "t", "mtimeMs": 1, "hash": "h" }));
+}
+
+#[tokio::test]
+async fn a_draft_survives_the_folder_being_opened_with_a_trailing_separator() {
+    let _turn = SERIAL.lock().await;
+    let harness = Harness::new();
+    harness.write("draft.md", b"on disk\n");
+    let plain = VaultSession::open_in(
+        NpSource::Env(PathBuf::from("/nonexistent/np")),
+        info(),
+        harness.vault.path(),
+        Consent::Undecided,
+        None,
+        harness.data.path().to_path_buf(),
+    );
+    plain.mirror_buffer("draft.md", "typed and unsaved").expect("mirror");
+
+    // The same folder spelled differently — a picker that returns `\\?\C:\notes\`, a recent entry with a
+    // trailing slash. The stamps already treat these as one vault (Task 6); a draft keyed on the raw string
+    // would simply never come back (§18.13).
+    let messy = format!("{}/", harness.vault.path().display());
+    let again = VaultSession::open_in(
+        NpSource::Env(PathBuf::from("/nonexistent/np")),
+        info(),
+        Path::new(&messy),
+        Consent::Undecided,
+        None,
+        harness.data.path().to_path_buf(),
+    );
+
+    let note = again.read_note("draft.md").expect("read");
+    assert_eq!(note.mirrored.map(|m| m.text).as_deref(), Some("typed and unsaved"), "one vault, one key, whatever the spelling");
 }
