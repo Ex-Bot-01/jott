@@ -16,8 +16,8 @@ Everything below runs on a normal Windows machine. Nothing here needs this repos
    No download at all — because CI has not produced one yet, or you want a build newer than the last tag —
    then [`docs/building-on-windows.md`](building-on-windows.md) is four commands.
 2. **np comes with it.** The installer carries the pinned np build inside it — that is why installing one
-   program is enough. Check `%APPDATA%\jott\logs\jott.jsonl` if you are curious which binary answered; it
-   names the version. If you would rather Jott used an np you built or installed yourself, set `NP_PATH` to
+   program is enough. The bottom-left of the window says which np version is answering. If you would rather
+   Jott used an np you built or installed yourself, set `NP_PATH` to
    it: an override you set beats the copy we ship, deliberately (§14).
 3. **Check what you downloaded**, if you want the certainty rather than the assumption. In PowerShell, in the
    folder you downloaded to, next to `SHA256SUMS.txt` from the same release:
