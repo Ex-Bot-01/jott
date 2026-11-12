@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+members = ["crates/jott-core"]
+# The Tauri shell is its own workspace: it needs webkit2gtk/gtk system headers that the
+# headless core must never depend on, so `cargo test` here stays runnable on a build box.
+exclude = ["apps/shell"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+license = "MIT"

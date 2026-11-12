@@ -255,7 +255,7 @@ tests/                         Rust integration tests (in src-tauri/tests/)
   `pub struct PathGuard` — every entry point rejects a `rel` that escapes the root (`..`, absolute paths, symlink out).
 
 - [ ] **Step 1: Failing tests for byte fidelity:** a file containing `line one\r\nline two\r\n` round-trips through `read_note`/`write_note` with an identical SHA-256; a file with no trailing newline keeps none; a UTF-8 BOM survives. These are the Windows guarantees (spec §18.8).
-- [ ] **Step 2: Failing test for long paths:** with `JOTT_LONG_PATH_PROBE=1` (a test-only switch), `to_open_path` on Windows adds `\\?\` once and only for paths ≥ 260 chars, mirroring np's own rule; on Linux the path is untouched.
+- [ ] **Step 2: Failing test for long paths:** `to_open_path` on Windows adds `\\?\` once and only for paths ≥ 260 chars; on Linux the path is untouched. Written as a pure string rule (`extended_length_prefix`) so it is tested on every platform instead of hiding behind an env switch inside a `cfg(windows)` branch. **Measured correction:** np 0.3.1 has no such rule to mirror — no `\\?\`, no `MAX_PATH` anywhere in its crates — so this is Jott's own, and the Windows pass (§19) still has to confirm a deep vault opens.
 - [ ] **Step 3: Failing tests for containment:** `rel` values `../escape.md`, `/etc/passwd`, and a symlink inside the vault pointing outside are all refused with `FileError::EscapesRoot`.
 - [ ] **Step 4:** Run `cargo test vault_files` — expect FAIL. Implement (read/write with `File::open`/`create` on raw bytes; `trash` for deletion, falling back to `<app_data>/trash/<unix>-<name>` and reporting which happened), then pass.
 - [ ] **Step 5: Failing tests for `decide`:** identical hashes → `NoChange`; disk changed with a clean buffer → `ReloadSilently`; disk changed with a dirty buffer → `KeepAndWarn`. Wire a `notify` watcher on the vault in `watch.rs` that emits `vault://changed(rel)` events and does **not** react to our own writes within 200 ms of them.
@@ -268,11 +268,21 @@ tests/                         Rust integration tests (in src-tauri/tests/)
 - Test: `src-tauri/tests/ingest_queue.rs`, `tests/np_consent.rs`
 
 **Interfaces:**
-- Consumes: `NpPool` (Task 5), `Stamps` (Task 7), `VaultStore::set_consent` (Task 6).
+- Consumes: `NpPool` (Task 5), `Stamps` (Task 7). The registry's `VaultStore::set_consent` (Task 6) is
+  written by the shell when it calls `IngestQueue::set_consent`: `spawn`'s signature has no room for the
+  registry, and a queue that reached into app state on its own would be two owners of one decision.
 - Produces:
-  `pub struct IngestQueue` with `pub fn spawn(pool: NpPool, stamps: Arc<Mutex<Stamps>>, vault: PathBuf) -> IngestQueue`,
-  `pub fn note_saved(&self, rel: &str)`, `pub fn flush_now(&self)`, `pub async fn drain(self)`
-  `pub enum IngestEvent { Working { phase: String, done: u64, total: Option<u64> }, Indexed(ScanReport), Embedded(EmbedReport), Behind { reason: StateReason, retry_in_ms: u64 }, NeedsConsent { model_id: String, bytes: u64, data_dir: PathBuf }, Refused { message: String } }` (emitted as `ingest://event`)
+  `pub struct IngestQueue` with `pub fn spawn(pool: Arc<NpPool>, stamps: Arc<Mutex<Stamps>>, vault: PathBuf) -> IngestQueue`,
+  `pub fn note_saved(&self, rel: &str)`, `pub fn flush_now(&self)`, `pub fn set_consent(&self, consent: Consent)`, `pub async fn drain(self)`
+  `pub enum IngestEvent { Working { phase: String, done: u64, total: Option<u64> }, Indexed(ScanReport), Embedded(EmbedReport), Behind { reason: StateReason, retry_in_ms: u64 }, NeedsConsent { model_id: Option<String>, bytes: Option<u64>, data_dir: PathBuf }, Refused { message: String }, Disabled { key: Option<String>, model_id: Option<String>, hint: Option<String> } }` (emitted as `ingest://event`)
+
+  Three shapes differ from the brief, each for a reason measured against np 0.3.1: `Arc<NpPool>`,
+  because `drain` has to force-kill a child that is still busy at its cap (§11) and a pool moved into
+  the task leaves nobody able to do that; optional `model_id`/`bytes`, because nothing in 0.3.1 reports
+  an artifact size (`models.list` rows carry none, measured) and np's config may name no model at all —
+  §4 forbids inventing either to fill a dialog; and the `Disabled` arm, because np's configuration state
+  carries no sentence for `Refused.message` unless it sent a `hint`, and filing a settled configuration
+  under "refused" would make a setting look like a failure.
   `pub enum StateReason { Locked { waited_ms: u64 }, Offline }`
   `pub fn set_auto_fetch(config_path: &Path, allow: bool) -> Result<(), ConsentError>` (via `toml_edit`; preserves comments and unknown keys), `pub fn auto_fetch_allowed(config_path: &Path) -> bool`.
 
@@ -287,8 +297,16 @@ tests/                         Rust integration tests (in src-tauri/tests/)
 ### Task 10: The window — tree, editor, status line
 
 **Files:**
-- Create: `src/ipc.rs`, `src/App.svelte`, `src/lib/Tree.svelte`, `src/lib/Editor.svelte`, `src/lib/StatusLine.svelte`, `src/lib/saveState.ts`
-- Test: `src/lib/saveState.test.ts` (Vitest), `src-tauri/tests/ipc_surface.rs`
+- Create: `crates/jott-core/src/ipc.rs` (the command surface), `apps/shell/src/ipc.rs` + `main.rs` (thin Tauri wiring), `src/App.svelte`, `src/lib/Tree.svelte`, `src/lib/Editor.svelte`, `src/lib/StatusLine.svelte`, `src/lib/saveState.ts`, `src/lib/tree.ts`, `src/lib/statusLine.ts`, `src/lib/ipc.ts`, `src/lib/hashText.ts`
+- Test: `src/lib/saveState.test.ts`, `src/lib/tree.test.ts`, `src/lib/statusLine.test.ts`, `src/lib/hashText.test.ts` (Vitest), `crates/jott-core/tests/ipc_surface.rs`
+
+> **Amended while executing.** The command surface lives in `jott-core`, not in the shell, and its test is
+> `crates/jott-core/tests/ipc_surface.rs` rather than `src-tauri/tests/ipc_surface.rs`. Reason, measured on
+> this box: building the Tauri crate needs webkit2gtk/gtk/dbus headers that a headless machine does not
+> have and cannot install without root, so a test inside the shell can only ever run on a desktop — and
+> "does the webview get told when a `rel` climbs out of the vault?" is not a question whose answer should
+> depend on which machine is asking. The shell keeps `#[tauri::command]` wrappers, argument passing, and
+> event emission; its compile check happens at Task 11's Windows build.
 
 **Interfaces:**
 - Consumes: everything above.
@@ -297,29 +315,48 @@ tests/                         Rust integration tests (in src-tauri/tests/)
 
 - [ ] **Step 1: Failing Vitest tests for `saveState`:** unmodified buffer + Ctrl+S → `clean` (no write, no ingest); typing → `dirty`; save in flight → `saving`; hash match → `saved`; disk changed while dirty → `conflict`. This is the one place "did the content change?" is decided (spec §11).
 - [ ] **Step 2:** Run `npm run test -- run` — expect FAIL. Implement `saveState.ts`, pass.
-- [ ] **Step 3: Failing Rust test for the IPC surface:** `readNote` refuses an escaping `rel` with the same `EscapesRoot` error as Task 8 (the webview is not a trusted caller); `saveNote` returns the new hash so the front end can compute `saved`; `searchVault` routes to the pool's reader connection — assert by scenario that calling it during a sleeping embed returns promptly.
+- [ ] **Step 3: Failing Rust test for the IPC surface** (`crates/jott-core/tests/ipc_surface.rs`): `readNote` refuses an escaping `rel` with the same `EscapesRoot` error as Task 8 (the webview is not a trusted caller); `saveNote` returns the new hash so the front end can compute `saved`; `searchVault` routes to the pool's reader connection — assert by scenario that calling it during a sleeping embed returns promptly.
 - [ ] **Step 4:** Implement `ipc.rs` commands and event bridging (each `IngestEvent` becomes an `ingest://event` payload; `NpMissing` becomes `np://missing` with `install_hint`).
 - [ ] **Step 5:** `Tree.svelte`: entries with their stamp marker (`●` waiting, `·` embedded, `!` refused with the reason in the title attribute), `Generated` entries greyed with a "generated by np" tooltip, dot-folders absent, folders collapsible with the open/closed set kept per session.
-- [ ] **Step 6:** `Editor.svelte`: CodeMirror 6 with markdown highlighting, line wrap on, no minimap; Ctrl+S saves; autosave at 2 s idle plus on blur and unload; an unsaved-buffer mirror at `<app_data>/buffers/<hash-of-rel>`, replayed at launch only when the buffer is newer than the file (spec §18.13). Reload-vs-keep comes from Task 8's `decide`, never from component-local logic.
+- [ ] **Step 6:** `Editor.svelte`: CodeMirror 6 with markdown highlighting, line wrap on, no minimap; Ctrl+S saves; autosave at 2 s idle plus on blur and unload; an unsaved-buffer mirror at `<app_data>/buffers/<hash-of-rel>`, replayed at launch only when the buffer is newer than the file (spec §18.13). Reload-vs-keep comes from Task 8's `decide` — whose webview counterpart is `saveState()` — never from
+component-local logic; the editor reports its phase up rather than the parent guessing at it.
 - [ ] **Step 7:** `StatusLine.svelte`: one line from `ingest://event` — `indexed 1.2 s ago`, `embedding 3/7 chunks`, `index behind · retrying in 5 s`, `keyword-only: model not installed [set it up]` — plus `[embed]` calling `ingestAll()`, and the consent prompt rendered once from `NeedsConsent` using the model id, byte count and `data_dir` carried on that event.
-- [ ] **Step 8:** Run `npm run test -- run` and `cargo test --manifest-path src-tauri/Cargo.toml` — expect PASS. Commit `feat: tree, editor and status line wired to the ingest queue`.
+- [ ] **Step 8:** Run `npm run test`, `npm run build`, `npx svelte-check --tsconfig ./tsconfig.app.json`, `cargo test -p jott-core` and `cargo clippy -p jott-core --all-targets` — expect PASS. The shell crate's own compile is Task 11's job (see the amendment above). Commit `feat: tree, editor and status line wired to the ingest queue`.
 - [ ] **Step 9 — second hand-off:** publish artifacts and ask them to look at what only a desktop reveals: markdown tinting and cursor behaviour under WebView2, and whether the buffer mirror ever resurrects text they deleted on purpose (spec §15's second risk).
 
 ### Task 11: Hand-off build for Windows
 
 **Files:**
-- Create: `docs/testing-on-windows.md`, `src-tauri/src/diagnostics.rs`
+- Create: `docs/testing-on-windows.md`, `crates/jott-core/src/diagnostics.rs` (with
+  `crates/jott-core/tests/diagnostics_journal.rs`)
 - Modify: `.github/workflows/build.yml`
+
+> **Amended while executing.** The journal lives in `jott-core`, not in the shell, for the same reason the
+> command surface did (Task 10's amendment): rotation, verbatim fault text and "no note contents in here"
+> are behaviour, and behaviour that can only be tested on a desktop gets tested once a week. The shell's
+> only job is to open the journal at `<app_data>/logs/jott.jsonl` and hand it to each session.
 
 **Interfaces:**
 - Consumes: Tasks 1–10.
 - Produces: a downloadable Windows artifact plus the log Jott writes where they can find it.
 
-- [ ] **Step 1:** `diagnostics.rs`: JSONL to `<app_data>/logs/jott.jsonl`, one record per np request (`method`, `workspace`, `elapsed_ms`, outcome variant, and np's own code/message on a fault), rotating at 2 MiB keeping two files. Failing test first: a fault record contains np's message verbatim and never the vault's file contents.
-- [ ] **Step 2:** `build.yml`: keep artifacts for 30 days; name them `jott-windows-x64.msi` and `jott-linux-x64.deb`/`.AppImage`; add `np --version` to the build log so a release proves which backend it was tested against.
-- [ ] **Step 3:** `docs/testing-on-windows.md`: what to install (release asset + `np` per [`INSTALL.md`](../../INSTALL.md) §2 Windows), the five things to try (first run, save→embed timing, rename, a file changed by another editor, closing mid-embed), and exactly which file to send back (`%APPDATA%\jott\logs\jott.jsonl`).
+- [x] **Step 1:** `diagnostics.rs`: JSONL to `<app_data>/logs/jott.jsonl`, one record per np request (`method`, `workspace`, `elapsed_ms`, outcome variant, and np's own code/message on a fault), rotating at 2 MiB keeping two files. Failing test first: a fault record contains np's message verbatim and never the vault's file contents. *(Clarified after review: "two files" is the live file plus two older copies — `jott.jsonl`, `.1`, `.2`, about 6 MiB worst case — because two in total throws away the pass before last, which is the one that explains a lock fight. The rotation test crosses the cap twice, since asserting after a single crossing passes without ever moving `.1` to `.2`.)*
+- [x] **Step 2:** `build.yml`: a `test` job (Vitest + build + svelte-check + `cargo test` + clippy `-D warnings`) gating the artifact job; keep artifacts for 30 days; name them `jott-windows-x64.msi` and `jott-linux-x64.deb`/`.AppImage`; add `np --version` to the build log so a release proves which backend it was tested against. There is no `release.yml`, and there will not be one: a tag run of `build.yml` is the release mechanism until §20's signing story gives a reason for more.
+  *(Added after review, because the bundle step could not have worked as written: this repo's shell crate lives at
+  `apps/shell`, and `tauri_build::build()` reads `tauri.conf.json` from the package root — the CLI defaults to
+  `src-tauri/` beside the working directory. So `tauri.conf.json` and `capabilities/` moved up to `apps/shell/`,
+  the bundle step passes `--config apps/shell/tauri.conf.json`, and `frontendDist` became `../../dist`: from
+  either folder it was `../dist`, which points at a directory that does not exist, and the webview would have
+  loaded nothing. `crates/jott-core/tests/app_config.rs` now resolves `frontendDist` against the config file's
+  own directory and requires an `index.html` in it — that check failed on its first run for exactly this
+  reason, which is what makes it worth keeping. Building a Windows bundle still cannot be done on this box, so
+  the release run remains the proof of the rest.)*
+- [x] **Step 3:** `docs/testing-on-windows.md`: what to install (release asset + `np` per [`INSTALL.md`](../../INSTALL.md) §2 Windows), the five things to try (first run, save→embed timing, rename, a file changed by another editor, closing mid-embed), and exactly which file to send back (`%APPDATA%\jott\logs\jott.jsonl`).
 - [ ] **Step 4:** Tag `v0.0.1`, confirm both artifacts appear, and hand the link over as the third hand-off: by now the spike answered "does a window work on Windows" (Task 1) and "does the editor behave" (Task 10); this one answers the question np's own author could not — **write-lock contention on Windows** — by running `np scan <vault>` in a terminal while Jott is mid-embed, and checking that Jott reports `index behind · retrying` rather than an error or a frozen window.
-- [ ] **Step 5:** Commit `ci: publish Windows and Linux artifacts with a log worth reading`.
+- [x] **Step 5:** Commit `ci: publish Windows and Linux artifacts with a log worth reading`.
+
+**Step 4 stays open on purpose.** Tagging `v0.0.1` and confirming the two artifacts appear needs a person
+watching a release page, and the write-lock test in it is the one measurement this whole plan exists to make.
 
 ---
 
