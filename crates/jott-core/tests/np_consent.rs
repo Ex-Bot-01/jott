@@ -3,7 +3,9 @@
 //! consent does — and np re-reads config per request (§18.6), so flipping the key needs no respawn.
 //! Everything else in that file is somebody's own configuration, so it has to come back unchanged.
 
-use jott_core::ingest::consent::{auto_fetch_allowed, embedding_model_named, np_config_path, set_auto_fetch};
+use jott_core::ingest::consent::{
+    auto_fetch_allowed, consent_file_is_unreadable, embedding_model_named, np_config_path, set_auto_fetch,
+};
 
 /// `NP_PATH`-style env games again: one variable, several threads.
 static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -124,16 +126,62 @@ fn the_config_path_is_nps_rule_not_jotts() {
     let _turn = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
 
-    std::env::set_var("XDG_CONFIG_HOME", dir.path());
-    assert_eq!(np_config_path().unwrap(), dir.path().join("note-processor").join("config.toml"));
+    #[cfg(windows)]
+    {
+        // Windows is `%APPDATA%` and nothing else — which is the whole reason the shell's own guess at this
+        // path was a bug: git-bash, VS Code and CI all set `HOME`, and np does not look there. The assertion
+        // is that a `HOME` pointing somewhere else changes nothing.
+        let previous_appdata = std::env::var_os("APPDATA");
+        let previous_home = std::env::var_os("HOME");
+        std::env::set_var("APPDATA", dir.path());
+        std::env::set_var("HOME", dir.path().join("not-here"));
 
-    std::env::remove_var("XDG_CONFIG_HOME");
-    let previous_home = std::env::var_os("HOME");
-    std::env::set_var("HOME", dir.path());
-    assert_eq!(np_config_path().unwrap(), dir.path().join(".config").join("note-processor").join("config.toml"));
+        assert_eq!(np_config_path().unwrap(), dir.path().join("note-processor").join("config.toml"));
 
-    match previous_home {
-        Some(home) => std::env::set_var("HOME", home),
-        None => std::env::remove_var("HOME"),
+        match previous_appdata {
+            Some(value) => std::env::set_var("APPDATA", value),
+            None => std::env::remove_var("APPDATA"),
+        }
+        match previous_home {
+            Some(home) => std::env::set_var("HOME", home),
+            None => std::env::remove_var("HOME"),
+        }
     }
+
+    #[cfg(not(windows))]
+    {
+        std::env::set_var("XDG_CONFIG_HOME", dir.path());
+        assert_eq!(np_config_path().unwrap(), dir.path().join("note-processor").join("config.toml"));
+
+        std::env::remove_var("XDG_CONFIG_HOME");
+        let previous_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", dir.path());
+        assert_eq!(
+            np_config_path().unwrap(),
+            dir.path().join(".config").join("note-processor").join("config.toml")
+        );
+
+        match previous_home {
+            Some(home) => std::env::set_var("HOME", home),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+}
+
+#[test]
+fn a_config_that_will_not_parse_is_not_a_config_that_names_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let good = dir.path().join("good.toml");
+    let broken = dir.path().join("broken.toml");
+    std::fs::write(&good, "[embeddings]\nmodel = \"bge-m3\"\n").unwrap();
+    // Half-typed, or truncated by a failed sync: it exists, and it says nothing anyone can act on.
+    std::fs::write(&broken, "[embeddings\nmodel = ").unwrap();
+
+    // The consent gate's question, exactly: absent is readable (there is nothing to misread), a file that
+    // loads is readable, and one that does not is *not* "no model configured" — reading it that way is how
+    // a broken file ends up embedding without asking.
+    assert!(!consent_file_is_unreadable(&dir.path().join("absent.toml")));
+    assert!(!consent_file_is_unreadable(&good));
+    assert!(consent_file_is_unreadable(&broken));
+    assert_eq!(embedding_model_named(&broken), None, "and it does name no model, which is the trap");
 }

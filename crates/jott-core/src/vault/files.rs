@@ -232,12 +232,10 @@ pub fn extended_length_prefix(path: &str) -> String {
     format!(r"\\?\{normalized}")
 }
 
-/// What Jott wrote itself, process-wide. One app, one writer, so the watcher and the writer agree
-/// without any call site having to thread a registry through (§14).
-/// The registry every write path in this crate records into, so a watcher handed the same `Arc` can tell
-/// its own app's saves from somebody else's edit (Task 8's suppression window). Public to the crate for
-/// exactly that: a session that hands its watcher a *different* registry reports every save of its own as
-/// an outside change.
+/// What Jott wrote itself, process-wide. One app, one writer, so the watcher and the writer agree without
+/// any call site having to thread a registry through (§14) — which is also the trap: a session that hands
+/// its watcher a *different* registry reports every save of its own as an outside change, so there is one
+/// registry here and everybody uses it.
 pub(crate) fn default_self_writes() -> &'static Arc<SelfWrites> {
     static REGISTRY: OnceLock<Arc<SelfWrites>> = OnceLock::new();
     REGISTRY.get_or_init(|| Arc::new(SelfWrites::new()))
@@ -405,10 +403,32 @@ fn move_within(from: &str, to: &str, source: PathBuf, target: PathBuf) -> Result
     if let Some(parent) = target.parent() {
         std::fs::create_dir_all(parent).map_err(|source| FileError::Io { rel: to.to_string(), source })?;
     }
+    // The folder and everything inside it, on both sides. A watcher sees `notes/2026/a.md` disappear and
+    // `archive/2026/a.md` appear; suppressing only the folder's own name leaves every child arriving as an
+    // outside change, and the window offering to reload notes nobody touched (§14).
+    for rel in moved_rels(&source, from, to) {
+        default_self_writes().record(&rel);
+    }
     default_self_writes().record(from);
     default_self_writes().record(to);
     std::fs::rename(to_open_path(&source), to_open_path(&target))
         .map_err(|source| FileError::Io { rel: from.to_string(), source })
+}
+
+/// Every note inside the thing being moved, named on the side it leaves and the side it arrives on. If
+/// `source` is a single note rather than a folder, that is just its two names.
+fn moved_rels(source: &Path, from: &str, to: &str) -> Vec<String> {
+    let subs = match crate::vault::walk::note_rels(source) {
+        Ok(subs) => subs,
+        // Not a folder, or unreadable: the two names we already have are all there is to say.
+        Err(_) => return Vec::new(),
+    };
+    let mut rels = Vec::with_capacity(subs.len() * 2);
+    for sub in subs {
+        rels.push(format!("{from}/{sub}"));
+        rels.push(format!("{to}/{sub}"));
+    }
+    rels
 }
 
 /// Where a deleted file went.

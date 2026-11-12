@@ -85,15 +85,27 @@ impl App {
     /// vault's session is closed on a task of its own: it drains its ingest queue up to its cap (§11), and
     /// switching folders should not wait on that.
     async fn open(&self, handle: &AppHandle, path: &Path) -> Result<VaultListing, IpcError> {
-        // The same folder again (a picker re-picked, a recent clicked twice) is the same session. Two
+        // Register first, always: it is what notices a folder sitting inside another np vault, and that
+        // sentence belongs in the listing a re-pick returns as much as in the first one (§8.2).
+        let warning = self.store.register(path).ok().flatten();
+        let nested = match warning {
+            Some(RegisterWarning::NestedVault { parent }) => Some(format!(
+                "{} is inside another np vault ({}) — indexing here builds a second index",
+                path.display(),
+                parent.display()
+            )),
+            None => None,
+        };
+
+        // The same folder again (a picker re-picked, a recent clicked twice) is the same session: two
         // queues on one workspace would race over np's lock and both write the same stamp file, so this is
-        // not a nicety.
+        // not a nicety. It does not re-detect np — the session speaks to the child it was opened with, and
+        // installing np mid-session is what `np_problem` and a reopen are for.
         if let Some(current) = self.session.lock().unwrap().clone() {
             if to_abs(current.vault()) == to_abs(path) {
-                return current.listing();
+                return Ok(with_nested_warning(current.listing()?, nested));
             }
         }
-        let warning = self.store.register(path).ok().flatten();
         let consent = self.store.consent(path);
         let (source, info) = self.np_pair().await;
         let session = VaultSession::open_in(source, info, path, consent, np_config_path(), self.data.clone())
@@ -105,17 +117,19 @@ impl App {
             tauri::async_runtime::spawn(async move { previous.close().await });
         }
 
-        let mut listing = session.listing()?;
-        if let Some(RegisterWarning::NestedVault { parent }) = warning {
-            // §8.2: a vault inside a vault is legal, and worth one sentence about the second index it means.
-            listing.warnings.push(format!(
-                "{} is inside another np vault ({}) — indexing here builds a second index",
-                path.display(),
-                parent.display()
-            ));
-        }
-        Ok(listing)
+        // §8.2: a vault inside a vault is legal, and worth one sentence about the second index it means.
+        with_nested_warning(session.listing()?, nested)
     }
+}
+
+/// One sentence, added once. The listing already carries whatever the walk itself had to complain about.
+fn with_nested_warning(mut listing: VaultListing, nested: Option<String>) -> VaultListing {
+    if let Some(sentence) = nested {
+        if !listing.warnings.contains(&sentence) {
+            listing.warnings.push(sentence);
+        }
+    }
+    listing
 }
 
 /// Forward the two streams the window listens to. Each ends by itself when its session is dropped, because

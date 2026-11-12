@@ -7,7 +7,7 @@ dist/
 target/
 
 # tauri generated
-apps/shell/src-tauri/gen/
+apps/shell/gen/
 
 # local scratch, tooling state
 .superpowers/

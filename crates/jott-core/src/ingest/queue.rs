@@ -225,9 +225,6 @@ impl IngestQueue {
         let _ = self.tx.send(Msg::Flush);
     }
 
-    /// The user answered the consent prompt. Granted writes `auto_fetch = true` and runs what was held
-    /// at the gate; declined writes `false` and keeps indexing, because keyword search must not stop
-    /// working (§11).
     /// What the registry already remembers, applied at open. Memory only: re-opening a vault is not
     /// re-consenting, and writing np's file on every launch would overwrite an edit someone made in a text
     /// editor between sessions (§12 says show a diff before that; here there is no reason to write at all).
@@ -235,6 +232,9 @@ impl IngestQueue {
         *self.shared.consent.lock().unwrap() = consent;
     }
 
+    /// The user answered the consent prompt. Granted writes `auto_fetch = true` and runs what was held at
+    /// the gate; declined writes `false` and keeps indexing, because keyword search must not stop working
+    /// (§11).
     pub fn set_consent(&self, consent: Consent) {
         // Always writes, even when the memory already holds this answer: what is remembered from a earlier
         // session is not the same fact as somebody pressing a button now (§11), and the file is where np
@@ -366,10 +366,12 @@ impl Worker {
                         }
                     }
                     Some(Msg::Drain(done)) => {
-                        if self.state.pending.is_empty() && self.state.held_for_consent.is_empty() {
-                            // Nothing owed: closing is stopping, not waiting. Answering here is the
-                            // difference between quitting promptly and a window that appears to hang for
-                            // the whole drain cap on its way out (§11's cap is for work in flight).
+                        if self.state.pending.is_empty() {
+                            // Nothing that a pass could run: closing is stopping, not waiting. Held-for-
+                            // consent work does not count as owed here — it is parked precisely because a
+                            // human has not answered, its notes are already `Indexed`, and a drain cannot
+                            // answer on their behalf. So quitting with the banner up quits promptly; §11's
+                            // cap is for a pass in flight, which is what `pending` means.
                             let _ = done.send(());
                         } else {
                             drain_reply = Some(done);
@@ -537,8 +539,12 @@ impl Worker {
                     // requeue them — the queue would consider them done (§11: owed work waits, it does not
                     // disappear).
                     for item in owed {
-                        if !self.state.held_for_consent.iter().any(|held| held.0 == item.0) {
-                            self.state.held_for_consent.push(item);
+                        // The newest hash wins. Held twice and then granted means np embedded what is on
+                        // disk *now*; stamping the older bytes would leave the note answering `Indexed`
+                        // for its own current content, and the tree would say "waiting to embed" forever.
+                        match self.state.held_for_consent.iter_mut().find(|held| held.0 == item.0) {
+                            Some(held) => *held = item,
+                            None => self.state.held_for_consent.push(item),
                         }
                     }
                     if !self.state.consent_asked {

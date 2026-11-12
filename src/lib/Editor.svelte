@@ -103,6 +103,11 @@
     })
   }
 
+  // Which note these numbers describe. Hashing is async and a fast switch (or a save that finishes after
+  // one) would otherwise let the previous note's digest land as the new note's baseline — after which the
+  // window calls untouched text "unsaved" and offers to write it somewhere it was never typed (§4).
+  let generation = 0
+
   function setBaseline(text: string, hash: string) {
     baseline = text
     baselineHash = hash
@@ -113,14 +118,19 @@
 
   async function saveNow() {
     if (!rel || !view || saving) return
+    const which = rel
+    const gen = generation
     const text = view.state.doc.toString()
     const hash = await hashText(text)
+    // The note changed while the digest was being computed: this text belongs to a buffer that is gone.
+    if (which !== rel || gen !== generation) return
     if (!wantsSave({ dirty: hash !== baselineHash, diskChanged: (note?.diskHash ?? '') !== baselineHash, saving, savedHash, currentHash: hash })) {
       return
     }
     saving = true
     try {
-      const result = await onsave(rel, text)
+      const result = await onsave(which, text)
+      if (which !== rel || gen !== generation) return
       // The answer carries the hash of the bytes that landed, so `saved` is a fact about the disk (§11).
       setBaseline(text, result.hash)
       savedHash = result.hash
@@ -158,7 +168,10 @@
     // buffer, the caret and the undo history the moment someone pressed Ctrl+S (§4). Content arriving from
     // outside has its own effect below, driven by a token the parent bumps deliberately.
     const text = untrack(() => note?.text ?? '')
-    void hashText(text).then((hash) => setBaseline(text, hash))
+    const gen = ++generation
+    void hashText(text).then((hash) => {
+      if (gen === generation) setBaseline(text, hash)
+    })
     open(text)
     return () => {
       clearTimeout(mirrorTimer)
@@ -173,7 +186,10 @@
     const token = external?.token ?? 0
     if (!token || !view) return
     const text = external!.text
-    void hashText(text).then((hash) => setBaseline(text, hash))
+    const gen = ++generation
+    void hashText(text).then((hash) => {
+      if (gen === generation) setBaseline(text, hash)
+    })
     view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } })
   })
 

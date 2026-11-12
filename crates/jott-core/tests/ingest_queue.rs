@@ -669,3 +669,95 @@ async fn reopening_a_vault_does_not_rewrite_nps_configuration() {
     assert_eq!(std::fs::read_to_string(&h.np_config).unwrap(), after_answer);
     queue.drain_now().await;
 }
+
+#[tokio::test]
+async fn quitting_with_the_consent_banner_up_does_not_wait_for_the_drain_cap() {
+    let _turn = SERIAL.lock().await;
+    // The first-run path, and the one a person actually hits: save a note, the banner appears, nobody
+    // answers, and the window is closed. Same fixture as the two-batch test above, because that is the
+    // shape that really parks work at the gate rather than merely failing to start any.
+    let h = Harness::new(json!({
+        "replies": {"scan": fixture_result(2), "models.list": models_list_missing()}
+    }))
+    .await;
+    std::fs::write(&h.np_config, config_naming("bge-m3")).unwrap();
+    std::fs::write(h.vault.join("notes/first.md"), "# First\n").unwrap();
+    let queue = IngestQueue::spawn(h.pool.clone(), h.stamps.clone(), h.vault.clone())
+        .with_debounce(Duration::from_millis(80))
+        .with_drain_cap(Duration::from_secs(3))
+        .with_np_config(Some(h.np_config.clone()));
+
+    queue.note_saved("notes/first.md");
+    let mut events = queue.events();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let asked = loop {
+        if Instant::now() > deadline {
+            break false;
+        }
+        if let Ok(Ok(IngestEvent::NeedsConsent { .. })) =
+            tokio::time::timeout(Duration::from_millis(200), events.recv()).await
+        {
+            break true;
+        }
+    };
+    assert!(asked, "the gate never asked, so this test would be timing nothing");
+
+    // The gate only holds work that scan confirmed. If the note were never indexed there would be no
+    // embed owed and nothing parked, and this test would be measuring an idle queue — which has its own
+    // test above.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline && h.state("notes/first.md") != StampState::Indexed {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(h.state("notes/first.md"), StampState::Indexed, "scan did not index the note, so nothing is parked");
+
+    // Work parked at a gate is not work in flight: a drain cannot answer on someone's behalf, and those
+    // notes are already `Indexed`. Waiting the cap here is a quit that looks like a hang (§11).
+    let started = Instant::now();
+    tokio::time::timeout(Duration::from_secs(5), queue.drain_now())
+        .await
+        .expect("a queue with only parked work drains");
+    assert!(started.elapsed() < Duration::from_millis(1_000), "quitting with the banner up waited {:?} — that is the drain cap, not work", started.elapsed());
+}
+
+#[tokio::test]
+async fn a_note_saved_twice_while_held_is_stamped_with_its_newest_bytes() {
+    let _turn = SERIAL.lock().await;
+    let h = Harness::new(json!({
+        "replies": {"scan": fixture_result(2), "models.list": models_list_missing(), "embed": embed_current()}
+    }))
+    .await;
+    std::fs::write(&h.np_config, config_naming("bge-m3")).unwrap();
+    let queue = h.queue();
+
+    queue.note_saved("notes/a.md");
+    let mut events = queue.events();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        // A short timeout on each receive, so a gate that never speaks cannot hang the test.
+        if let Ok(Ok(IngestEvent::NeedsConsent { .. })) =
+            tokio::time::timeout(Duration::from_millis(200), events.recv()).await
+        {
+            break;
+        }
+    }
+
+    // Edited again while the banner is up. What np will embed after the answer is what is on disk then, so
+    // the held entry has to carry the second version's hash: stamping the first would leave the note
+    // answering "not embedded" about content that is embedded, and the tree would sit on `●` until that
+    // note is saved again for some other reason.
+    std::fs::write(h.vault.join("notes/a.md"), "# A, rewritten while you were deciding\n").unwrap();
+    queue.note_saved("notes/a.md");
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
+    queue.set_consent(Consent::Granted);
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while Instant::now() < deadline {
+        if h.state("notes/a.md") == StampState::Embedded {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(h.state("notes/a.md"), StampState::Embedded, "the stamp describes the bytes np embedded");
+    queue.drain_now().await;
+}
