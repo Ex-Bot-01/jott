@@ -221,10 +221,6 @@
   }
 
   onMount(async () => {
-    // The window is hidden until there is something in it (§13). Asked first, because the startup work below
-    // talks to np — and a cold np can take a second, which is exactly the second that used to be blank.
-    void ipc.reveal()
-
     registry = await call(ipc.registryInfo)
     // §9: the window comes back to the folder it had. A vault that has gone missing is not an error worth
     // shouting about at startup — the empty state asks for a folder instead.

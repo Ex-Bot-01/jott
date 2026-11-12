@@ -161,18 +161,6 @@ fn bridge(handle: &AppHandle, session: &Arc<VaultSession>) {
     });
 }
 
-/// The window's own "I have painted" signal. The window starts hidden (§13's first-launch feel): showing a
-/// frame before the webview has anything in it is the blank rectangle people notice. If the front end never
-/// gets here — a JavaScript error, a failed import — the watchdog in `main.rs` shows the window anyway,
-/// because an invisible app is worse than an empty one.
-#[tauri::command]
-pub fn reveal_window(handle: AppHandle) {
-    if let Some(window) = handle.get_webview_window("main") {
-        let _ = window.show();
-        let _ = window.set_focus();
-    }
-}
-
 /// Say what is wrong with np, if anything is. Called at startup and asked about by the window as well.
 pub async fn announce_np(handle: &AppHandle) {
     let app = handle.state::<App>();
