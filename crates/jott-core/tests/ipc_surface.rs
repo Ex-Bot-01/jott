@@ -518,22 +518,23 @@ async fn a_startup_handshake_that_fails_is_a_value_the_window_can_show() {
     assert_eq!(fault.payload(Os::Linux).message, "np said: workspace is locked");
 }
 
-/// The startup handshake used to end with the child being killed and another one started when a vault opened.
-/// Now the same child answers, which means Jott starts np once per run instead of twice — and if the session
-/// had spawned its own, this stand-in would have answered the search on a *different* process than the one we
-/// handed over, and the scenario's reply would not arrive.
+/// The startup handshake used to end with the child being killed and another started when a folder opened. Now
+/// the session takes that child as its writer, which means two things worth pinning: the child is *owned* by the
+/// pool, so closing the session shuts it down; and nothing starts a second one behind our back.
+///
+/// It deliberately does not send a search through the session to prove the hand-off. Search goes to the *reader*,
+/// which is a different connection, so that version of the test passed here by finding a real np on PATH and
+/// failed on CI with "No such file or directory" — the second time this box's installed np has made a test lie.
 #[tokio::test]
-async fn a_session_uses_the_child_the_app_already_started() {
+async fn a_session_adopts_the_child_the_app_already_started() {
     let _turn = SERIAL.lock().await;
     let harness = Harness::new();
     harness.write("a.md", b"# A\n");
 
-    let scenario = serde_json::json!({
-        "replies": { "search": { "hits": [], "mode": "keyword", "offline": false, "vectors": false, "note": null } }
-    });
-    let (dir, client) = common::spawn(scenario).await;
+    let (dir, client) = common::spawn(serde_json::json!({})).await;
     let warm = Arc::new(client);
-    let (source, info) = ipc::np_absent();
+    let (_sentinel, info) = ipc::np_absent();
+    let source = common::unreachable_np();
 
     let session = VaultSession::open_in_with(
         source,
@@ -545,19 +546,15 @@ async fn a_session_uses_the_child_the_app_already_started() {
         harness.data.path().to_path_buf(),
     );
 
-    // The warmed child was a *reader* of this scenario, so the answer can only arrive if the session asked it.
-    let hits = session.search("anything", 5).await.expect("the warmed child answers the search");
-    assert!(hits.hits.is_empty());
-
+    // Nothing was asked of it. The session only has to own it — and owning means letting go at the end.
     session.close().await;
-    // The child's stdout ends when it exits, which is asynchronous after the shutdown ask.
     for _ in 0..40 {
         if warm.is_closed() {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
-    assert!(warm.is_closed(), "closing the session should have shut the warmed child down too");
+    assert!(warm.is_closed(), "the session took the child and never shut it down");
     drop(dir);
 }
 
@@ -579,12 +576,12 @@ async fn a_vault_still_opens_when_np_cannot_be_asked_anything() {
     harness.write("a.md", b"# A\n");
     // The shell's fallback for a machine with no usable np: same window, and every index question answers
     // honestly that there is nobody to ask.
-    let (_fallback_source, info) = ipc::np_absent();
+    let (_sentinel, info) = ipc::np_absent();
     // `np_absent` names the program `np` and lets PATH answer, which is honest on a machine that has no np
     // and a false premise in a test suite on a box that does — where it starts the real one and this test
     // quietly stops testing anything. Name a binary that cannot exist instead. (Until 0.0.6 this passed by
     // accident: Jott forgot to tell np to `serve`, so even a real np on PATH died at once.)
-    let source = NpSource::Env(harness.data.path().join("no-such-np"));
+    let source = common::unreachable_np();
     let session = VaultSession::open_in(source, info, harness.vault.path(), Consent::Undecided, None, harness.data.path().to_path_buf());
 
     assert_eq!(session.listing().expect("the tree needs no np").nodes.len(), 1);

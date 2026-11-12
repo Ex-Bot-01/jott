@@ -5,6 +5,7 @@
 //! configured by an environment variable, and a test binary runs its tests on several threads.
 
 use jott_core::np::client::NpClient;
+use jott_core::np::NpSource;
 use serde_json::Value;
 use std::path::PathBuf;
 use tempfile::TempDir;
@@ -51,6 +52,20 @@ pub async fn spawn(scenario: Value) -> (TempDir, NpClient) {
     let client = NpClient::spawn(&script).await.expect("fake np starts");
     drop(guard);
     (dir, client)
+}
+
+/// A source that cannot start, for tests whose whole subject is "np is not here".
+///
+/// Do not use `ipc::np_absent()`'s source for that: it names the program `np` and lets PATH answer, which is
+/// honest in the app and a false premise on a development box that has np installed. Twice now a test written
+/// that way has passed here and failed on CI ("could not start np: No such file or directory"). Check the suite
+/// the way CI sees it before pushing:
+///
+/// ```text
+/// PATH=$HOME/.cargo/bin:/usr/bin:/bin cargo test -p jott-core
+/// ```
+pub fn unreachable_np() -> NpSource {
+    NpSource::Env(PathBuf::from("/nonexistent/np"))
 }
 
 /// A workspace path for tests that never touch a disk: the stand-in answers from its scenario
