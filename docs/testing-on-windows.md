@@ -13,6 +13,8 @@ Everything below runs on a normal Windows machine. Nothing here needs this repos
    build is unsigned until the signing story in spec §20 exists — *More info → Run anyway* is the expected
    path. (If you were sent a link to a workflow run instead of a release, that is an artifact: it needs a
    GitHub account with access to this repository and it disappears after 30 days. A release needs neither.)
+   No download at all — because CI has not produced one yet, or you want a build newer than the last tag —
+   then [`docs/building-on-windows.md`](building-on-windows.md) is four commands.
 2. **Check what you downloaded**, if you want the certainty rather than the assumption. In PowerShell, in the
    folder you downloaded to, next to `SHA256SUMS.txt` from the same release:
 

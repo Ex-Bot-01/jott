@@ -28,7 +28,10 @@ fn shell_config_declares_jott() {
     let conf = std::fs::read_to_string(&conf_path).expect("apps/shell/tauri.conf.json exists");
     let cfg = parse_app_config(&conf).expect("parses");
     assert_eq!(cfg.product_name, "Jott");
-    assert_eq!(cfg.identifier, "dev.jott.app");
+    // Not `dev.jott.app`: Tauri warns that an identifier ending in `.app` collides with the macOS bundle
+    // extension, and its own build printed that warning on the first Windows compile of this app. The
+    // identifier is also the Windows upgrade code, so it is cheaper to fix before anyone installs a build.
+    assert_eq!(cfg.identifier, "dev.jott.desktop");
     assert_eq!(cfg.dev_url.as_deref(), Some("http://localhost:5173"));
 
     // `frontendDist` is resolved against the *config file's* directory, so it has to be a path that works

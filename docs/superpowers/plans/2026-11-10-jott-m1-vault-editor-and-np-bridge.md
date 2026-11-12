@@ -87,7 +87,8 @@ tests/                         Rust integration tests (in src-tauri/tests/)
 
 `app_config()` in a new `src-tauri/src/lib.rs` returns `Result<tauri::Config, String>` parsed from `tauri.conf.json`.
 - [ ] **Step 3:** Run `cargo test --manifest-path src-tauri/Cargo.toml` — expect FAIL (crate missing `lib.rs` / unresolved import).
-- [ ] **Step 4:** Implement the scaffold: `lib.rs` with `pub fn run()` and `pub fn app_config()`; `main.rs` calls `jott_lib::run()`; `tauri.conf.json` pins `productName: "Jott"`, `identifier: "dev.jott.app"`, `build.frontendDist: "../dist"`, `beforeBuildCommand: "npm run build"`, `beforeDevCommand: "npm run dev"`, `devUrl: "http://localhost:5173"`.
+- [ ] **Step 4:** Implement the scaffold: `lib.rs` with `pub fn run()` and `pub fn app_config()`; `main.rs` calls `jott_lib::run()`; `tauri.conf.json` pins `productName: "Jott"`, `identifier: "dev.jott.app"` *(changed to `dev.jott.desktop` during the first Windows build: Tauri warns that a
+  trailing `.app` collides with the macOS bundle extension)*, `build.frontendDist: "../dist"`, `beforeBuildCommand: "npm run build"`, `beforeDevCommand: "npm run dev"`, `devUrl: "http://localhost:5173"`.
 - [ ] **Step 5:** Run the test again — expect PASS. Then `npm run build` — expect `dist/` produced with no errors.
 - [ ] **Step 6:** `.github/workflows/build.yml`: `on: push: tags: ["v*"]`, matrix `[windows-latest, ubuntu-latest]`, steps: checkout → node 22 → `npm ci && npm run build` → rust stable → `cargo tauri build` (via `tauri-apps/tauri-action@v0`) → `actions/upload-artifact@v4` with name `jott-{os}`. On Linux install the deps `libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev patchelf`.
 - [ ] **Step 7:** Commit `feat: scaffold Jott as a Tauri v2 app with Windows and Linux builds`.
