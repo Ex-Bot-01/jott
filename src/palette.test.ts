@@ -9,11 +9,16 @@
  * jsdom cannot check contrast, and neither can I from here, but a test can refuse the shape that made it
  * possible.
  */
+/// <reference types="node" />
+// This one reads files rather than importing them, and it is deliberate: under Vitest a `.css?raw` import
+// came back empty in CI while passing here, which is the wrong kind of flaky for a test whose whole job is to
+// be a guard. The bytes on disk are what the bundler ships.
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
-// Vite's `?raw`, so this reads the same bytes the build ships and needs no Node types in the browser project.
-import appCss from './app.css?raw'
-import shell from '../index.html?raw'
+const appCss = readFileSync(fileURLToPath(new URL('./app.css', import.meta.url)), 'utf8')
+const shell = readFileSync(fileURLToPath(new URL('../index.html', import.meta.url)), 'utf8')
 
 /** The dark block is the `@media` rule that follows the light one, not a stray mention of the word. */
 function darkBlock(css: string): string {
