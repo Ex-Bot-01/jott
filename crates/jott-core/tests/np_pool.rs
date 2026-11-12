@@ -7,6 +7,7 @@
 mod common;
 
 use common::repo_root;
+use jott_core::np::client::NpClient;
 use jott_core::np::outcomes::{EmbedOutcome, Mode, ScanOutcome};
 use jott_core::np::pool::{Connection, NpPool};
 use jott_core::np::{NpFeatures, NpInfo, NpSource};
@@ -258,4 +259,36 @@ async fn a_search_asks_for_hybrid_because_that_is_what_the_overlay_wants() {
     let answer = pool.search(&vault(), "both halves", 12).await.unwrap();
     assert_eq!(answer.mode, Mode::Hybrid);
     pool.close().await.unwrap();
+}
+
+/// The startup handshake and the first session's writer used to be two conversations with np: start it, ask
+/// `initialize`, kill it, then start another one when a vault opened. A warmed child handed to the pool removes
+/// the second one — and this counts processes rather than trusting that it did.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_warmed_child_becomes_the_writer_instead_of_a_second_one() {
+    let _turn = SERIAL.lock().await;
+    // Held for the test's scope: it is the temp dir the stand-in reads its scenario from.
+    let (_dir, _pool) = pool_answering(json!({}));
+    let script = repo_root().join("tests/fake-np/np.py");
+
+    let warm = Arc::new(NpClient::spawn(&script).await.expect("the startup child starts"));
+    wait_for_live_children(1).await;
+
+    let pool = Arc::new(NpPool::with_writer(NpSource::Env(script), info(), Arc::clone(&warm)));
+
+    let writer = pool.writer().await.expect("the warmed child answers");
+    assert!(Arc::ptr_eq(&writer, &warm), "the pool started a second writer instead of using ours");
+    wait_for_live_children(1).await;
+
+    // The reader is still lazy: an idle second np for someone who never searches is 8 MB they did not ask for.
+    let reader = pool.reader().await.expect("a reader spawns on first search");
+    assert!(!Arc::ptr_eq(&reader, &warm), "the search connection is the writer's");
+    wait_for_live_children(2).await;
+
+    // Closing takes both of them, including the one the pool did not spawn. An np left behind at quit keeps its
+    // index open on Windows — exactly the lock friction §3 is about.
+    pool.close().await.expect("a polite shutdown");
+    wait_for_live_children(0).await;
+    assert!(warm.is_closed(), "the warmed child was never asked to leave");
 }

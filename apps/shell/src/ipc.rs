@@ -14,6 +14,7 @@ use jott_core::ipc::{
     self, IpcError, NpMissingPayload, NoteContent, RegistryInfo, RenameOutcome, SearchResults, VaultListing, VaultSession,
     WriteResult,
 };
+use jott_core::np::client::NpClient;
 use jott_core::np::resolve::{current_os, resolve_np, NpSource};
 use jott_core::np::NpInfo;
 use jott_core::vault::store::{to_abs, Consent, RegisterWarning, VaultStore};
@@ -39,6 +40,10 @@ pub struct App {
     /// The folder holding the np we ship inside the installer (`$RESOURCES/np`). Empty when there is none —
     /// a source build without `scripts/fetch-np` — and resolution then falls through to PATH as it always did.
     np_bundle: PathBuf,
+    /// The child the startup handshake started, kept for the first vault to use instead of being killed and
+    /// started again. Taken when a session opens; shut down at quit if no vault ever claimed it, because an np
+    /// left running after Jott exits keeps its index open on Windows.
+    warm: Mutex<Option<Arc<NpClient>>>,
 }
 
 impl App {
@@ -56,6 +61,7 @@ impl App {
             np: Mutex::new(None),
             problem: Mutex::new(None),
             session: Mutex::new(None),
+            warm: Mutex::new(None),
         }
     }
 
@@ -75,7 +81,16 @@ impl App {
         // outranks both — see §14 as amended.
         let lookup = if self.np_bundle.as_os_str().is_empty() { &self.data } else { &self.np_bundle };
         let outcome = match resolve_np(lookup) {
-            Ok(source) => ipc::read_np_info(&source).await.map(|info| (source.clone(), info)).map_err(|gone| gone.payload(os)),
+            // The handshake child is kept, not killed: the first vault opened uses it as its writer. An idle
+            // np costs about 8 MB and a spawn-and-handshake is about 2 ms, so this is not a speed-up — it is
+            // one process that stops existing purely to answer one question.
+            Ok(source) => ipc::read_np_info_warm(&source)
+                .await
+                .map(|(client, info)| {
+                    *self.warm.lock().unwrap() = Some(client);
+                    (source.clone(), info)
+                })
+                .map_err(|gone| gone.payload(os)),
             Err(missing) => Err(ipc::np_missing_payload(&missing, os)),
         };
         match outcome {
@@ -118,8 +133,11 @@ impl App {
         }
         let consent = self.store.consent(path);
         let (source, info) = self.np_pair().await;
-        let session = VaultSession::open_in(source, info, path, consent, np_config_path(), self.data.clone())
-            .with_journal(self.journal.clone());
+        // The handshake child, if nobody has used it yet. `None` by the second vault, which spawns its own.
+        let warm = self.warm.lock().unwrap().take();
+        let session =
+            VaultSession::open_in_with(source, info, warm, path, consent, np_config_path(), self.data.clone())
+                .with_journal(self.journal.clone());
         bridge(handle, &session);
 
         let previous = self.session.lock().unwrap().replace(session.clone());
@@ -295,6 +313,12 @@ pub async fn flush_on_close(app: State<'_, App>) -> Result<(), IpcError> {
     let session = { app.session.lock().unwrap().clone() };
     if let Some(session) = session {
         session.close().await;
+    }
+    // A warm child nobody claimed — the window opened, and closed, without ever opening a folder. It deserves
+    // the same ask; an np still running after Jott quits holds its index open on Windows.
+    let warm = { app.warm.lock().unwrap().take() };
+    if let Some(client) = warm {
+        let _ = client.shutdown_within(std::time::Duration::from_millis(500)).await;
     }
     Ok(())
 }
