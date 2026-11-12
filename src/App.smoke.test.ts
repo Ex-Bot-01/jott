@@ -11,8 +11,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 /** Which backend this window believes it is talking to. */
-const scenario = vi.hoisted(() => ({ current: 'empty' as 'empty' | 'vault' }))
+type Scene = 'empty' | 'vault' | 'indexed'
+const scenario = vi.hoisted(() => ({ current: 'empty' as unknown as Scene }))
 const commands = vi.hoisted(() => [] as string[])
+/** The window's event listeners, so a test can be the backend: fire `ingest://event` and watch what the tree
+ *  does about it. */
+const handlers = vi.hoisted(() => new Map<string, (payload: unknown) => void>())
 
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: (cmd: string, args?: Record<string, unknown>) => {
@@ -47,6 +51,13 @@ vi.mock('@tauri-apps/api/core', () => ({
           diagnostics: 'Jott 0.0.5 · https://github.com/Ex-Bot-01/jott\nnp 0.3.1 from bundled (C:\\Program Files\\Jott\\np\\np.exe)',
         })
       case 'list_vault':
+        if (scenario.current === 'indexed') {
+          return Promise.resolve({
+            vault: 'C:\\notes',
+            nodes: [{ rel: 'inbox.md', kind: 'Note', size: 12, mtimeMs: 1_700_000_000_000, state: 'Embedded' }],
+            warnings: [],
+          })
+        }
         return Promise.resolve({ vault: '', nodes: [], warnings: [] })
       default:
         return Promise.reject(new Error(`the window asked for a command nobody stubbed: ${cmd}`))
@@ -54,7 +65,12 @@ vi.mock('@tauri-apps/api/core', () => ({
   },
 }))
 
-vi.mock('@tauri-apps/api/event', () => ({ listen: async () => () => {} }))
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: async (event: string, handler: (envelope: { payload: unknown }) => void) => {
+    handlers.set(event, (payload) => handler({ payload }))
+    return () => {}
+  },
+}))
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: async () => undefined }))
 
 /** Run the app's real entry point against a fresh document, and say what it printed. */
@@ -76,6 +92,7 @@ describe('the window mounts', () => {
   beforeEach(() => {
     commands.length = 0
     scenario.current = 'empty'
+    handlers.clear()
   })
 
   it('shows the empty state and takes the startup skeleton away', async () => {
@@ -89,6 +106,23 @@ describe('the window mounts', () => {
     expect(text).toContain('Open a folder')
     expect(document.querySelector('input[type="search"]')).not.toBeNull()
     expect(errors).toEqual([])
+  })
+
+  it('catches the tree up when a pass finishes', async () => {
+    // Reported from Windows: the status line said "completed" while every dot still said "waiting for the
+    // index". The tree is a snapshot of the stamps as they were when it was listed, so a finished pass has to
+    // ask for it again or the two halves of one window tell different stories.
+    scenario.current = 'vault'
+    await start()
+
+    expect(document.body.textContent ?? '').toContain('not indexed yet')
+
+    scenario.current = 'indexed'
+    handlers.get('ingest://event')!({ indexed: { elapsed_ms: 412 } })
+
+    await vi.waitFor(() => expect(document.body.textContent ?? '').not.toContain('not indexed yet'))
+    expect(document.querySelector('[title="embedded"]'), 'the marker should say embedded by now').not.toBeNull()
+    expect(commands).toContain('list_vault')
   })
 
   it('comes back to the folder it had, and shows what the walk reported', async () => {

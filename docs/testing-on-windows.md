@@ -38,6 +38,13 @@ at the result.
 
 ## 2. The five things to try
 
+Opening a folder does not index it by itself: indexing writes `INDEX.md` into your vault, so it stays something
+you ask for. The sidebar says *N notes are not indexed yet* with an **Index now** button — press it once, or save
+any note, and the markers start moving.
+
+When you open a folder for the first time, Jott does not index it by itself — indexing writes `INDEX.md` into
+your vault, so it stays a thing you ask for. Say it once: **Index now** in the sidebar, or save any note.
+
 Take your time with each and note anything that looks wrong, in words — exact wording is deliberate, so if a
 sentence reads oddly, say so.
 
@@ -127,6 +134,11 @@ Three things worth knowing before you file it:
 - **A window the colour of paper, with no text at all**, on a Windows set to dark mode was 0.0.3's bug — white
   ink on near-white background. Fixed in 0.0.4; if you are on 0.0.4 and see it, that is a new bug and I want
   the console output.
+- **A black console window titled `np.exe`.** Windows gives a console to any console program a GUI starts, and
+  np is one. Fixed in 0.0.7 (`CREATE_NO_WINDOW`). On 0.0.6 that window was the helper doing its job quietly — nothing
+  had gone wrong, but it looked like something had.
+- **Markers lagging behind the status line.** In 0.0.6 the tree kept the stamps from when it was listed, so
+  "completed" could sit above dots saying *waiting for the index*. 0.0.7 re-lists after a pass finishes.
 - **"np ended before answering"** was Jott's own bug, not yours: it started np without telling it to `serve`,
   so np printed its usage and left. Fixed in 0.0.6, where the message also carries whatever np said on stderr —
   if you see it again on 0.0.6, that quoted text is the thing I need.

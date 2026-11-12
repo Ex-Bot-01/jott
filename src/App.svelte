@@ -8,7 +8,7 @@
   import Tree from './lib/Tree.svelte'
   import Editor from './lib/Editor.svelte'
   import StatusLine from './lib/StatusLine.svelte'
-  import { flattenTree } from './lib/tree'
+  import { flattenTree, notesAwaitingIndex } from './lib/tree'
   import { statusFor, type Status } from './lib/statusLine'
   import type { SavePhase } from './lib/saveState'
   import * as ipc from './lib/ipc'
@@ -38,6 +38,10 @@
   /** The About panel: both versions and which np file this run picked. Fetched on first open, not at
       startup — it may ask np a question, and the window should not wait on that to paint (§13). */
   let about = $state<AboutInfo | null>(null)
+  /** Notes that have never been indexed. Opening a folder runs no pass — indexing writes into the vault
+      (`INDEX.md`), so it stays something you ask for once, not something that happens to a folder you were
+      only looking at (§11). This is what makes "I opened it and nothing happened" sayable. */
+  let awaitingIndex = $derived(listing ? notesAwaitingIndex(listing.nodes) : 0)
   let showAbout = $state(false)
   let aboutLoading = $state(false)
 
@@ -250,6 +254,10 @@
     void ipc.onIngestEvent((event) => {
       if ('needsConsent' in event) consent = event.needsConsent
       status = statusFor(event)
+      // A finished pass changes every marker in the tree, and the tree is a snapshot of the stamps as they
+      // were when it was listed. Without this re-list the status line says "completed" over dots that still
+      // say "waiting for the index" — which is exactly what a tester reported and reasonably called confusing.
+      if ('indexed' in event || 'embedded' in event || 'refused' in event || 'disabled' in event) void refresh()
     })
     void ipc.onVaultChanged((change) => void onVaultChanged(change.rel))
     void ipc.onNpMissing((payload) => (npMissing = payload))
@@ -320,6 +328,16 @@
       </ul>
     {:else}
       <Tree {rows} open={openFolders} selected={selected} ontoggle={toggleFolder} onselect={(rel) => void openNote(rel)} />
+    {/if}
+
+    {#if listing && awaitingIndex > 0 && !selected}
+      <div class="first-pass">
+        <span>
+          {awaitingIndex === 1 ? '1 note is' : `${awaitingIndex} notes are`} not indexed yet, so search will
+          find nothing.
+        </span>
+        <button type="button" onclick={() => void ipc.ingestAll()}>Index now</button>
+      </div>
     {/if}
 
     <div class="warnings">
@@ -516,6 +534,22 @@
   .results .mode {
     padding: 0.35rem 0.5rem;
     color: color-mix(in srgb, currentColor 60%, transparent);
+  }
+  .first-pass {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.35rem 0.6rem;
+    font-size: 0.8125rem;
+    border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+  }
+  .first-pass button {
+    border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+    background: none;
+    color: inherit;
+    font: inherit;
+    padding: 0.05rem 0.45rem;
+    cursor: default;
   }
   .warnings {
     margin-top: auto;

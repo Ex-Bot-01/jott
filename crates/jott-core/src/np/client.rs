@@ -50,7 +50,25 @@ fn command_for(np: &Path) -> Command {
         Command::new(np)
     };
     c.args(SERVE_ARGS);
+    // np is a console program, and on Windows starting one from a GUI process gives it a console of its own:
+    // a black window titled `...\np\np.exe`, one per connection, open for as long as Jott runs. Nothing about
+    // that is an error — it is our background helper making the user wonder whether they just opened a terminal.
+    // `CREATE_NO_WINDOW` keeps the pipes and drops the window.
+    #[cfg(windows)]
+    c.creation_flags(CREATE_NO_WINDOW);
     c
+}
+
+/// Win32 `CREATE_NO_WINDOW`: no console for the child, stdio still attached to whatever we handed it.
+#[cfg(windows)]
+pub(crate) const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// The flag is worth pinning: `CREATE_NEW_CONSOLE` (0x10) is one digit away and does the exact opposite — and
+/// on Linux, where nothing can catch this test failing, the value is the only evidence there is.
+#[test]
+fn the_windows_flag_is_create_no_window() {
+    // https://learn.microsoft.com/en-us/windows/win32/procthread/process-creation-flags
+    assert_eq!(0x0800_0000u32, 1 << 27, "CREATE_NO_WINDOW is the 28th flag, not a neighbour of 0x10");
 }
 
 /// Keep the last thing np said, in one line, so it can travel inside a fault message. `String` is bytes, and
