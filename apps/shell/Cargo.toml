@@ -1,6 +1,6 @@
 [package]
 name = "jott-shell"
-version = "0.0.4"
+version = "0.0.5"
 edition = "2021"
 description = "The Jott window: a thin Tauri v2 shell over jott-core."
 
@@ -16,3 +16,4 @@ jott-core = { path = "../../crates/jott-core" }
 serde_json = "1"
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"

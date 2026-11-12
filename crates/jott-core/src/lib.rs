@@ -4,6 +4,7 @@
 //! shell's commands; every decision about files, hashes and the protocol lives here
 //! so it can be tested without a display server.
 
+pub mod about;
 pub mod app_config;
 pub mod app_paths;
 pub mod diagnostics;

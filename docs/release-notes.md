@@ -1,4 +1,25 @@
-# Jott 0.0.4 — readable on a dark desktop, and np still inside
+# Jott 0.0.5 — an About panel that answers "which np is this?"
+
+Jott now has a small **About** panel in the sidebar header: the Jott version, the np version, **the full path of
+the np file this run is actually talking to**, where Jott keeps its files, the log file, and links to the
+repository, the releases and this guide. One button copies all of it as text.
+
+It exists because of one support round trip: a report said "np is too old", and Jott — which knew both the
+version it had found and the exact binary it had run — told nobody either. If that message reaches you, open
+About before anything else; the line it shows answers the question I would otherwise have to ask.
+
+**Assets**
+
+| File | For |
+| --- | --- |
+| `jott-windows-x64.msi` | Windows 10/11, x64. This is the one to test: Jott is built for Windows first. |
+| `jott-linux-x64.deb` | Debian/Ubuntu, x64 — a convenience for whoever maintains this. |
+| `jott-linux-x64.AppImage` | Same, on anything else Linux. |
+| `SHA256SUMS.txt` | Checksums of the three above. |
+
+np 0.3.1 is still bundled: fetched from its release and checked against a hash pinned in this repository
+(`packaging/np-pin.json`) before it goes near an installer. `NP_PATH` outranks the bundled copy on purpose, which
+is exactly the case About now makes visible — it says `bundled`, `$NP_PATH` or `$PATH` beside the path.
 
 0.0.3 was unreadable on a Windows machine set to dark mode: white writing on near-white paper, which looks
 exactly like an empty window. That is fixed here, along with the blank-window change that turned out to carry
@@ -24,6 +45,15 @@ installs beside an old one rather than replacing it. Windows will warn that the 
 this build is unsigned, and signing is separate work (§20). *More info → Run anyway* is the expected path. The
 model for semantic search is **not** bundled; the first time something needs it, Jott names the model and the
 folder and asks. Saying no leaves indexing and keyword search working.
+
+**What changed since 0.0.4**
+
+- **About panel** (`⚙`-equivalent, labelled *About* in the header): both versions, which of the three places the
+  np binary came from and where it sits, the data folder, the log file, and links out. The wording of the copied
+  block is built in Rust and has tests, so what you paste is what the tests pinned. A webview that refuses
+  clipboard writes shows the text selected in a box instead of failing silently.
+- Links open in your browser rather than navigating the app away, via Tauri's opener plugin — the one new
+  dependency, and the panel's three permissions are `opener:default` and nothing else.
 
 **What changed since 0.0.3**
 

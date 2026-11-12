@@ -4,6 +4,7 @@
   // (`tree.ts`, `saveState.ts`, `statusLine.ts`) and in `jott-core`.
 
   import { onMount } from 'svelte'
+  import About from './lib/About.svelte'
   import Tree from './lib/Tree.svelte'
   import Editor from './lib/Editor.svelte'
   import StatusLine from './lib/StatusLine.svelte'
@@ -11,7 +12,7 @@
   import { statusFor, type Status } from './lib/statusLine'
   import type { SavePhase } from './lib/saveState'
   import * as ipc from './lib/ipc'
-  import type { IngestEvent, NoteContent, RegistryInfo, SearchResults, VaultListing } from './lib/ipc'
+  import type { AboutInfo, IngestEvent, NoteContent, RegistryInfo, SearchResults, VaultListing } from './lib/ipc'
 
   let registry = $state<RegistryInfo | null>(null)
   let listing = $state<VaultListing | null>(null)
@@ -34,6 +35,11 @@
   let problem = $state<string | null>(null)
   /** And one line of what just happened, for actions with no other visible effect. */
   let notice = $state<string | null>(null)
+  /** The About panel: both versions and which np file this run picked. Fetched on first open, not at
+      startup — it may ask np a question, and the window should not wait on that to paint (§13). */
+  let about = $state<AboutInfo | null>(null)
+  let showAbout = $state(false)
+  let aboutLoading = $state(false)
 
   let searchQuery = $state('')
   let results = $state<SearchResults | null>(null)
@@ -103,6 +109,14 @@
     // The answer's hash is of the bytes that landed, so the buffer can stop calling itself unsaved.
     if (selected === rel && note) note = { ...note, diskHash: result.hash, diskMtimeMs: result.mtimeMs }
     return result
+  }
+
+  async function openAbout() {
+    showAbout = true
+    if (about) return
+    aboutLoading = true
+    about = await call(() => ipc.appInfo())
+    aboutLoading = false
   }
 
   async function pickFolder() {
@@ -252,6 +266,15 @@
       {:else}
         <button type="button" onclick={() => void pickFolder()}>Open a folder</button>
       {/if}
+      <button
+        type="button"
+        class="about"
+        aria-label="About Jott"
+        title="Versions, which np this is running, and where the files are"
+        onclick={() => void openAbout()}
+      >
+        About
+      </button>
     </header>
 
     <div class="tools">
@@ -379,6 +402,10 @@
   </section>
 
   <StatusLine {status} consent={consent} onembed={() => void ipc.ingestAll()} onconsent={(granted) => void answerConsent(granted)} />
+
+  {#if showAbout}
+    <About info={about} loading={aboutLoading} onClose={() => (showAbout = false)} />
+  {/if}
 </main>
 
 <style>
@@ -412,6 +439,16 @@
     justify-content: space-between;
     gap: 0.4rem;
     padding: 0.4rem 0.5rem;
+  }
+  /* The one thing in the header that is not about the vault, so it reads as a different kind of control. */
+  .about {
+    border: none;
+    background: none;
+    color: color-mix(in srgb, currentColor 62%, transparent);
+    font: inherit;
+    font-size: 0.8125rem;
+    padding: 0.1rem 0.3rem;
+    cursor: default;
   }
   .vault-name {
     font-weight: 600;

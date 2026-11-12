@@ -156,8 +156,33 @@ export interface RegistryInfo {
   consent: 'undecided' | 'granted' | 'declined'
 }
 
+/** What the About panel shows. Built in Rust (`jott_core::about`) so its wording has tests; the front end
+ * only draws it, which is also why `diagnostics` arrives as a finished block of text. */
+export interface NpReport {
+  found: boolean
+  version?: string
+  /** `bundled`, `$NP_PATH` or `$PATH` — the three places Jott looks, spelled as a person would set them. */
+  source?: string
+  path?: string
+  problem?: string
+  hint?: string
+}
+
+export interface AboutInfo {
+  jottVersion: string
+  np: NpReport
+  dataDir: string
+  logPath: string
+  repoUrl: string
+  releasesUrl: string
+  docsUrl: string
+  diagnostics: string
+}
+
 export const listVault = () => invoke<VaultListing>('list_vault')
 export const registryInfo = () => invoke<RegistryInfo>('registry_info')
+/** Both versions and the np file this run is talking to; asks np at most once per run. */
+export const appInfo = () => invoke<AboutInfo>('app_info')
 export const openVault = (path: string) => invoke<VaultListing>('open_vault', { path })
 /**
  * The native folder picker, asked from the webview. `null` is a cancelled dialog (§9's empty state then

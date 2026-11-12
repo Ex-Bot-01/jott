@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "The window may ask for vault work; it cannot touch disk or processes itself.",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:default"]
+  "permissions": ["core:default", "dialog:default", "opener:default"]
 }
