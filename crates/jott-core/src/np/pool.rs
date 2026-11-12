@@ -66,6 +66,15 @@ impl NpPool {
         }
     }
 
+    /// A pool whose writer is already running: the child the app started to read the handshake, handed over
+    /// instead of shut down and started again two milliseconds later. The reader stays lazy either way — a
+    /// second idle np for someone who never types in the search box is 8 MB they did not ask for.
+    pub fn with_writer(source: NpSource, info: NpInfo, writer: Arc<NpClient>) -> NpPool {
+        let mut pool = NpPool::new(source, info);
+        pool.writer = Slot(Mutex::new(Some(writer)));
+        pool
+    }
+
     /// What the handshake said this np can do — feature detection lives with the caller that has
     /// a use for it (no `models.list`, no `progress`, no vision).
     pub fn info(&self) -> &NpInfo {

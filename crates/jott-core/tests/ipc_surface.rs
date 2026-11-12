@@ -518,6 +518,49 @@ async fn a_startup_handshake_that_fails_is_a_value_the_window_can_show() {
     assert_eq!(fault.payload(Os::Linux).message, "np said: workspace is locked");
 }
 
+/// The startup handshake used to end with the child being killed and another one started when a vault opened.
+/// Now the same child answers, which means Jott starts np once per run instead of twice — and if the session
+/// had spawned its own, this stand-in would have answered the search on a *different* process than the one we
+/// handed over, and the scenario's reply would not arrive.
+#[tokio::test]
+async fn a_session_uses_the_child_the_app_already_started() {
+    let _turn = SERIAL.lock().await;
+    let harness = Harness::new();
+    harness.write("a.md", b"# A\n");
+
+    let scenario = serde_json::json!({
+        "replies": { "search": { "hits": [], "mode": "keyword", "offline": false, "vectors": false, "note": null } }
+    });
+    let (dir, client) = common::spawn(scenario).await;
+    let warm = Arc::new(client);
+    let (source, info) = ipc::np_absent();
+
+    let session = VaultSession::open_in_with(
+        source,
+        info,
+        Some(Arc::clone(&warm)),
+        harness.vault.path(),
+        Consent::Undecided,
+        None,
+        harness.data.path().to_path_buf(),
+    );
+
+    // The warmed child was a *reader* of this scenario, so the answer can only arrive if the session asked it.
+    let hits = session.search("anything", 5).await.expect("the warmed child answers the search");
+    assert!(hits.hits.is_empty());
+
+    session.close().await;
+    // The child's stdout ends when it exits, which is asynchronous after the shutdown ask.
+    for _ in 0..40 {
+        if warm.is_closed() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(warm.is_closed(), "closing the session should have shut the warmed child down too");
+    drop(dir);
+}
+
 #[tokio::test]
 async fn the_registry_answer_is_the_two_things_the_window_asks_for() {
     // `granted`, lower case: this is the registry's own spelling from Task 6, and one spelling for the

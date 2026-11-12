@@ -82,7 +82,14 @@ Two more, if you have the patience:
   earlier session", with *Use it* / *Discard it*. **This one is the test most worth reporting on**, in either
   direction — including "it offered me text I had deliberately deleted", which is a bug, not a nuisance.
 
-## 3. The question only Windows can answer: write-lock contention
+## 3. One thing worth watching: np processes
+
+Jott starts np when it opens and keeps one running; a second starts the first time you search and stays until you
+switch folders or quit. When you close a folder or leave the app, they should go away within a second or two. If
+Task Manager ever shows a `np.exe` still running after Jott has closed, that is a bug worth telling me about — on
+Windows it means your vault's index stays locked for the next np.
+
+## 4. The question only Windows can answer: write-lock contention
 
 np takes a lock on the workspace while it indexes, and on Windows that lock is a file others cannot open.
 Jott must treat "someone else is indexing" as a state, not an error.
@@ -103,7 +110,7 @@ Jott must treat "someone else is indexing" as a state, not an error.
 
 Then do it the other way round — `np scan .` running first, and a save in Jott while it works.
 
-## 4. What to send back
+## 5. What to send back
 
 One file, plus anything you noticed in words:
 

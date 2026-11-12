@@ -227,7 +227,24 @@ impl VaultSession {
         np_config: Option<PathBuf>,
         data: PathBuf,
     ) -> Arc<VaultSession> {
-        let pool = Arc::new(NpPool::new(np, info));
+        VaultSession::open_in_with(np, info, None, vault, consent, np_config, data)
+    }
+
+    /// `open_in`, with the child the app already started at startup handed to the pool as its writer.
+    /// Passing `None` is exactly `open_in`.
+    pub fn open_in_with(
+        np: NpSource,
+        info: NpInfo,
+        warm: Option<Arc<crate::np::client::NpClient>>,
+        vault: &Path,
+        consent: Consent,
+        np_config: Option<PathBuf>,
+        data: PathBuf,
+    ) -> Arc<VaultSession> {
+        let pool = Arc::new(match warm {
+            Some(client) => NpPool::with_writer(np, info, client),
+            None => NpPool::new(np, info),
+        });
         let stamps = Arc::new(Mutex::new(Stamps::with_root(data.clone(), vault)));
         let queue = Arc::new(
             IngestQueue::spawn(pool.clone(), stamps.clone(), vault.to_path_buf()).with_np_config(np_config),
@@ -481,6 +498,11 @@ impl VaultSession {
             queue.drain_now().await;
         })
         .await;
+        // The queue only shuts the pool when it had something to drain, so a vault that was opened, looked at,
+        // and closed — with one search, say — used to leave its np children alive holding the index open. On
+        // Windows that is a locked workspace for the next np, and switching folders did it again each time.
+        // Idempotent: if the drain already closed it, this asks nothing of anything.
+        let _ = self.pool.close_within(Duration::from_secs(2)).await;
     }
 
     /// One line in the hand-off log. Same shape as the queue's: never questioned, never fatal.
@@ -557,6 +579,21 @@ impl From<MirroredBuffer> for MirroredText {
 /// tree, editor, save, everything except search and embedding (§1) — with one line saying what is
 /// missing and how to install it (§2).
 pub async fn read_np_info(source: &NpSource) -> Result<NpInfo, NpGone> {
+    let (client, info) = read_np_info_warm(source).await?;
+    // This child was only ever a telephone; nothing is waiting for it to stay.
+    let _ = client.shutdown_within(Duration::from_secs(5)).await;
+    Ok(info)
+}
+
+/// The same question, keeping the child: the startup handshake and the first session's writer are the same
+/// conversation, and Jott used to have it twice — start np, ask `initialize`, kill it, then start it again when
+/// a vault opened. Measured against the real binary, a spawn and handshake is ~2 ms and an idle child is ~8 MB,
+/// so this is not a speed-up; it is one less process that exists for no reason, and — since Windows scans each
+/// new executable on first run — one less thing for antivirus to notice.
+///
+/// Whoever takes the client owns shutting it down. An np left running at quit holds its index open on Windows,
+/// which is precisely the lock friction §3 is about.
+pub async fn read_np_info_warm(source: &NpSource) -> Result<(Arc<crate::np::client::NpClient>, NpInfo), NpGone> {
     let client = crate::np::client::NpClient::spawn(source.path())
         .await
         .map_err(|e| NpGone::Fault(format!("could not start {}: {e}", source.path().display())))?;
@@ -568,9 +605,7 @@ pub async fn read_np_info(source: &NpSource) -> Result<NpInfo, NpGone> {
         .await
         .map_err(|fault| NpGone::Fault(fault.message))?;
     let info = crate::np::handshake::parse_initialize(&answer).map_err(NpGone::Missing)?;
-    // This child was only ever a telephone: the pool spawns its own when there is work.
-    let _ = client.shutdown_within(Duration::from_secs(5)).await;
-    Ok(info)
+    Ok((Arc::new(client), info))
 }
 
 /// Why the startup handshake failed, in a form the window can show.
