@@ -127,6 +127,9 @@ Three things worth knowing before you file it:
 - **A window the colour of paper, with no text at all**, on a Windows set to dark mode was 0.0.3's bug — white
   ink on near-white background. Fixed in 0.0.4; if you are on 0.0.4 and see it, that is a new bug and I want
   the console output.
+- **"np ended before answering"** was Jott's own bug, not yours: it started np without telling it to `serve`,
+  so np printed its usage and left. Fixed in 0.0.6, where the message also carries whatever np said on stderr —
+  if you see it again on 0.0.6, that quoted text is the thing I need.
 - **"Jott is starting…" that never goes away** means the bundle loaded but the app did not mount. That text is
   drawn by plain HTML precisely so this case has something to show.
 - **A status line naming no np version** means Jott could not find np. The installer carries it, so on a normal

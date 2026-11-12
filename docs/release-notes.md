@@ -1,12 +1,24 @@
-# Jott 0.0.5 — an About panel that answers "which np is this?"
+# Jott 0.0.6 — the bridge to np actually connects
 
-Jott now has a small **About** panel in the sidebar header: the Jott version, the np version, **the full path of
-the np file this run is actually talking to**, where Jott keeps its files, the log file, and links to the
-repository, the releases and this guide. One button copies all of it as text.
+**Search and indexing never worked on an installed Jott.** They do now. Jott started np with no subcommand,
+and `np` on its own prints its usage to stderr, exits 2, and never reads stdin — so every request died with
+"np ended before answering", while our own hint blamed an outdated version and sent people off to download a
+binary they already had. The About panel you installed last week is what caught it: it quoted the sentence
+rather than the guess.
 
-It exists because of one support round trip: a report said "np is too old", and Jott — which knew both the
-version it had found and the exact binary it had run — told nobody either. If that message reaches you, open
-About before anything else; the line it shows answers the question I would otherwise have to ask.
+Two tests could not see this because both were talking to a stand-in that speaks NDJSON with any arguments at
+all, and one test *relied* on the bug — it asserted "np is not here" on a box where np was installed and simply
+died at once for the same reason. Both are fixed: the stand-in can be told to have real np's manners, and there
+is now a check that runs against a real np binary when one is present (`JOTT_REAL_NP=/path/to/np cargo test -p
+jott-core --test np_serve_args`), which I ran here against 0.3.1 before tagging.
+
+Also in this build:
+
+- **What np said on stderr now travels with the failure**, last kilobyte, one line: `np ended before answering
+  — np said: error: could not open the index: …`. Discarding it is what turned a one-line diagnosis into three
+  days and two releases.
+- **A handshake that fails no longer claims the version is wrong.** The hint states the floor once, says where
+  to look (About names the exact file), and where to report it — it accuses nobody it did not measure.
 
 **Assets**
 
@@ -17,7 +29,7 @@ About before anything else; the line it shows answers the question I would other
 | `jott-linux-x64.AppImage` | Same, on anything else Linux. |
 | `SHA256SUMS.txt` | Checksums of the three above. |
 
-np 0.3.1 is still bundled: fetched from its release and checked against a hash pinned in this repository
+np 0.3.1 is bundled: fetched from its release and checked against a hash pinned in this repository
 (`packaging/np-pin.json`) before it goes near an installer. `NP_PATH` outranks the bundled copy on purpose, which
 is exactly the case About now makes visible — it says `bundled`, `$NP_PATH` or `$PATH` beside the path.
 
