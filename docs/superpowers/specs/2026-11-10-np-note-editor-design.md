@@ -122,7 +122,7 @@ Rules that hold it together:
 1. Window opens with one panel: where should notes live? Native folder picker, plus "create new folder".
 2. Creating or picking a non-empty folder is fine — it just gets indexed. Picking inside an existing vault's subfolder is allowed and warned about only if the parent already looks like a vault (contains `INDEX.md` with np's fingerprint header).
 3. The choice is stored in the app data dir; subsequent launches open straight into the vault.
-4. Then it checks np: bundled resource → `NP_PATH` env override → `PATH`. Found: `initialize` with `notifications: true`, record `np` version, `data_dir`, `features`, `methods`. Not found: a screen that says exactly what is missing, the platform's install command for the release asset, and where to put it — never a silent retry loop.
+4. Then it checks np: `NP_PATH` env override → bundled resource → `PATH`. *(Amended when installers began carrying np inside them: an override someone sets is a decision, the bundled binary is a file we shipped, and a variable that loses to a shipped file does nothing.)* Found: `initialize` with `notifications: true`, record `np` version, `data_dir`, `features`, `methods`. Not found: a screen that says exactly what is missing, the platform's install command for the release asset, and where to put it — never a silent retry loop.
 5. Embedding consent (§11) is asked on first *embed*, not at install time.
 
 ## 9. The window
@@ -210,7 +210,7 @@ moved  notes/q3-review.md → archive/2026/q2-review.md     (np: moved, vectors 
 
 ## 14. Constraints carried forward for the later installer
 
-Chosen now because they cost nothing today and are what packaging needs: np is resolved as *bundled resource → `NP_PATH` → PATH*; all app state sits in the OS data dir; no absolute path is written to any file that leaves this machine; every user-visible string is in one module; window size, theme and layout persist per vault. The Tauri bundler's MSI/NSIS and deb/AppImage targets are expected to be configuration, not surgery — the first packaging run is its own later task.
+Chosen now because they cost nothing today and are what packaging needs: np is resolved as *`NP_PATH` → bundled resource → PATH* *(amended with the bundled-ship decision; see §5)*; all app state sits in the OS data dir; no absolute path is written to any file that leaves this machine; every user-visible string is in one module; window size, theme and layout persist per vault. The Tauri bundler's MSI/NSIS and deb/AppImage targets are expected to be configuration, not surgery — the first packaging run is its own later task.
 
 ## 15. Verification stance
 

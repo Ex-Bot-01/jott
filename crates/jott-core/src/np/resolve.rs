@@ -1,9 +1,11 @@
 //! Where the `np` binary comes from, and what to say when there isn't one.
 //!
-//! Order (spec §14): a binary bundled beside the app → `$NP_PATH` → `$PATH`. A set-but-wrong
-//! `NP_PATH` is an error of its own rather than a shrug and a fallthrough: someone named a
-//! binary, and quietly using a different one would index their vault with something they did
-//! not choose.
+//! Order (amended when installers started carrying np inside them): `$NP_PATH` → the bundled
+//! binary → `$PATH`. An explicit override comes first because it is a decision someone made, while the
+//! bundled binary is a file we shipped — and a variable that loses to a shipped file is a variable that
+//! does nothing. A set-but-wrong `NP_PATH` is still an error of its own rather than a shrug and a
+//! fallthrough: someone named a binary, and quietly using a different one would index their vault with
+//! something they did not choose.
 
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -41,7 +43,7 @@ impl NpSource {
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum NpMissing {
-    #[error("np was not found (nothing bundled, NP_PATH unset, nothing on PATH)")]
+    #[error("np was not found (NP_PATH unset, nothing bundled, nothing on PATH)")]
     NotFound,
     #[error("NP_PATH points at {0}, which is not an executable file")]
     OverrideMissing(PathBuf),
@@ -88,11 +90,6 @@ fn is_runnable(metadata: &std::fs::Metadata) -> bool {
 }
 
 pub fn resolve_np(app_dir: &Path) -> Result<NpSource, NpMissing> {
-    let bundled = app_dir.join(exe_name("np"));
-    if is_executable(&bundled) {
-        return Ok(NpSource::Bundled(bundled));
-    }
-
     if let Some(override_) = std::env::var_os("NP_PATH") {
         let p = PathBuf::from(override_);
         // An override that is a directory is treated as the folder holding np, which is
@@ -103,6 +100,13 @@ pub fn resolve_np(app_dir: &Path) -> Result<NpSource, NpMissing> {
         } else {
             Err(NpMissing::OverrideMissing(candidate))
         };
+    }
+
+    // Then what the installer put beside the app: a version whose protocol pair is known to work with
+    // this build, which beats whatever else happens to be on PATH.
+    let bundled = app_dir.join(exe_name("np"));
+    if is_executable(&bundled) {
+        return Ok(NpSource::Bundled(bundled));
     }
 
     for dir in std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()) {

@@ -35,18 +35,22 @@ pub struct App {
     /// `<app_data>/logs/jott.jsonl` — the file §19's hand-off asks for. One per run, shared by every vault
     /// opened in it, because "what happened this afternoon" is the question it answers.
     journal: Arc<Journal>,
+    /// The folder holding the np we ship inside the installer (`$RESOURCES/np`). Empty when there is none —
+    /// a source build without `scripts/fetch-np` — and resolution then falls through to PATH as it always did.
+    np_bundle: PathBuf,
 }
 
 impl App {
     /// Open what the app knows about at startup. A registry that cannot be read is not a reason not to
     /// show a window — Task 6 quarantines the broken file and starts empty.
-    pub fn startup() -> App {
+    pub fn startup(np_bundle: PathBuf) -> App {
         let data = app_data_dir().unwrap_or_else(|_| std::env::temp_dir().join("jott"));
         let store = VaultStore::new(data.clone());
         let journal = Arc::new(Journal::open(&data));
         App {
             store,
             data,
+            np_bundle,
             journal,
             np: Mutex::new(None),
             problem: Mutex::new(None),
@@ -65,7 +69,11 @@ impl App {
             return pair;
         }
         let os = current_os();
-        let outcome = match resolve_np(&self.data) {
+        // The shipped copy first: `resolve_np` looks in this folder before it looks at PATH, so a Jott
+        // install speaks to the np whose protocol pair it was built and tested against. `NP_PATH` still
+        // outranks both — see §14 as amended.
+        let lookup = if self.np_bundle.as_os_str().is_empty() { &self.data } else { &self.np_bundle };
+        let outcome = match resolve_np(lookup) {
             Ok(source) => ipc::read_np_info(&source).await.map(|info| (source.clone(), info)).map_err(|gone| gone.payload(os)),
             Err(missing) => Err(ipc::np_missing_payload(&missing, os)),
         };
@@ -151,6 +159,18 @@ fn bridge(handle: &AppHandle, session: &Arc<VaultSession>) {
             let _ = sink.emit("vault://changed", json!({ "rel": rel }));
         }
     });
+}
+
+/// The window's own "I have painted" signal. The window starts hidden (§13's first-launch feel): showing a
+/// frame before the webview has anything in it is the blank rectangle people notice. If the front end never
+/// gets here — a JavaScript error, a failed import — the watchdog in `main.rs` shows the window anyway,
+/// because an invisible app is worse than an empty one.
+#[tauri::command]
+pub fn reveal_window(handle: AppHandle) {
+    if let Some(window) = handle.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
 }
 
 /// Say what is wrong with np, if anything is. Called at startup and asked about by the window as well.

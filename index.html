@@ -4,10 +4,66 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>jott-scaffold</title>
+    <title>Jott</title>
+    <style>
+      /* The window opens hidden and shows itself when this file's scripts have painted, so nobody sees a
+         blank rectangle. If those scripts never run, a watchdog shows the window after three seconds — and
+         this is what is worth screenshotting: the shape of the app, drawn in HTML, with no JavaScript. */
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #fafaf9;
+        color-scheme: light dark;
+      }
+      #boot {
+        position: fixed;
+        inset: 0;
+        display: grid;
+        grid-template-columns: minmax(14rem, 22rem) 1fr;
+        grid-template-rows: 1fr auto;
+        font: 14px/1.5 system-ui, "Segoe UI", sans-serif;
+      }
+      #boot .side {
+        border-right: 1px solid rgba(128, 128, 128, 0.3);
+        padding: 0.6rem;
+      }
+      #boot .bar {
+        height: 0.7rem;
+        margin: 0 0 0.55rem;
+        border-radius: 3px;
+        background: rgba(128, 128, 128, 0.18);
+      }
+      #boot .bar.short {
+        width: 45%;
+      }
+      #boot .status {
+        grid-column: 1 / -1;
+        border-top: 1px solid rgba(128, 128, 128, 0.3);
+        padding: 0.3rem 0.6rem;
+        font-size: 0.8rem;
+        color: rgba(128, 128, 128, 0.9);
+      }
+      #boot .wait {
+        grid-column: 2;
+        align-self: center;
+        justify-self: center;
+        color: rgba(128, 128, 128, 0.9);
+      }
+    </style>
   </head>
   <body>
     <div id="app"></div>
+    <div id="boot" aria-hidden="true">
+      <div class="side">
+        <div class="bar short"></div>
+        <div class="bar"></div>
+        <div class="bar"></div>
+        <div class="bar short"></div>
+      </div>
+      <div></div>
+      <div class="status">Jott is starting…</div>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

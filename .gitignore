@@ -9,6 +9,10 @@ target/
 # tauri generated
 apps/shell/gen/
 
+# the np binary fetched for bundling (`scripts/fetch-np`); the folder itself is committed
+apps/shell/np/*
+!apps/shell/np/.gitkeep
+
 # local scratch, tooling state
 .superpowers/
 .tmp/

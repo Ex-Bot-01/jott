@@ -66,6 +66,16 @@ jobs:
         run: |
           echo "== np on this runner =="
           np --version || echo "np not on the runner; artifacts ship without it by design"
+      # The installer carries np inside it (§5's lookup order), so a fresh install needs no second download
+      # and no PATH lesson. Pinned version, verified hash — an installer that shipped a tampered or
+      # half-fetched backend would index someone's notes with it.
+      - name: fetch np to bundle (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: ./scripts/fetch-np.ps1
+      - name: fetch np to bundle (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: ./scripts/fetch-np.sh
       # Run from the shell crate's own folder: it is its own workspace (its `target/` is where the bundles
       # land, which is what the upload paths below say), and from there the CLI finds `tauri.conf.json`
       # beside the manifest without being pointed at it.

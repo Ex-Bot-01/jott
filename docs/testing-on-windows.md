@@ -15,7 +15,11 @@ Everything below runs on a normal Windows machine. Nothing here needs this repos
    GitHub account with access to this repository and it disappears after 30 days. A release needs neither.)
    No download at all — because CI has not produced one yet, or you want a build newer than the last tag —
    then [`docs/building-on-windows.md`](building-on-windows.md) is four commands.
-2. **Check what you downloaded**, if you want the certainty rather than the assumption. In PowerShell, in the
+2. **np comes with it.** The installer carries the pinned np build inside it — that is why installing one
+   program is enough. Check `%APPDATA%\jott\logs\jott.jsonl` if you are curious which binary answered; it
+   names the version. If you would rather Jott used an np you built or installed yourself, set `NP_PATH` to
+   it: an override you set beats the copy we ship, deliberately (§14).
+3. **Check what you downloaded**, if you want the certainty rather than the assumption. In PowerShell, in the
    folder you downloaded to, next to `SHA256SUMS.txt` from the same release:
 
    ```powershell
@@ -25,14 +29,12 @@ Everything below runs on a normal Windows machine. Nothing here needs this repos
 
    The two strings should match. If they do not, the file did not arrive as CI built it — say so and download
    again.
-3. **np** — Jott needs the note-processor command, version 0.3.1 or newer. Follow
-   [`INSTALL.md` §2, "Windows (PowerShell)"](../INSTALL.md#windows-powershell--same-procedure): download
-   `np-0.3.1-x86_64-pc-windows-gnu-cross.zip`, check the hash against `SHA256SUMS.txt`, and put `np.exe`
-   somewhere on `PATH` (or set `NP_PATH` to it).
-
-Without np, Jott still opens and everything except search and embedding works; the bottom-left of the window
-says what is missing and how to install it. That state is worth a look too — it is what a colleague with no
-np installed will see.
+If something is wrong with the bundled copy — deleted by an antivirus, or you installed from before np started
+shipping inside the installer — Jott still opens, everything except search and embedding works, and the
+bottom-left of the window says what is missing and how to install it. That state is worth a look too: it is what
+a broken install looks like. To install np by hand instead, follow
+[`INSTALL.md` §2, "Windows (PowerShell)"](../INSTALL.md#windows-powershell--same-procedure) and point `NP_PATH`
+at the result.
 
 ## 2. The five things to try
 
@@ -108,7 +110,21 @@ a fault. It rotates at 2 MiB and keeps older copies behind it (`jott.jsonl.1`, `
 contains the contents of your notes**; if you would rather look first, open it in Notepad and read it — each
 line is one JSON object with seven possible keys and nothing else.
 
-Also useful if something lost data, and only if it did:
+## Uninstalling leaves your files alone
+
+Uninstalling Jott removes the program and keeps everything under `%APPDATA%\jott` — on purpose. That folder can
+hold a mirrored copy of text you had not saved, and notes Jott moved to its own trash folder because Windows
+offered none; an uninstaller that deleted either would be destroying writing. np keeps its own
+`%APPDATA%\note-processor` (its index and any model it downloaded) for the same reason.
+
+To clear them once you are sure you want nothing back:
+
+```powershell
+Remove-Item -Recurse -Force $env:APPDATA\jott
+Remove-Item -Recurse -Force $env:APPDATA\note-processor   # also removes np's index and models
+```
+
+## Also useful if something lost data, and only if it did:
 
 | What | Where |
 | --- | --- |

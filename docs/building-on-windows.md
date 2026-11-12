@@ -13,20 +13,39 @@ installer comes from `.github/workflows/build.yml`; this is the same recipe, run
 | Visual Studio Build Tools, *Desktop development with C++* | linking, and the Windows resource compiler | <https://visualstudio.microsoft.com/visual-cpp-build-tools/> |
 | WebView2 runtime | the webview itself | already on Windows 11; on 10 it comes via [Evergreen installer](https://developer.microsoft.com/microsoft-edge/webview2/) |
 
-np is not needed to build. Jott finds it at run time or says how to install it ([`INSTALL.md`](../INSTALL.md) §2).
+## Fetching np first
+
+The installer ships np inside it, so a person who installs Jott can index and search without downloading
+anything else. The binary is not in git — it is fetched from np's releases, checked against the hash pinned in
+[`packaging/np-pin.json`](../packaging/np-pin.json), and unpacked into `apps\shell\np\`, which the bundler
+copies into `$RESOURCES\np`:
+
+```powershell
+.\scripts\fetch-np.ps1        # downloads, verifies the sha256, unpacks np.exe
+npm ci
+cd apps\shell
+npx tauri build --bundles msi
+```
+
+Skipping the fetch does not break the build; the bundle simply has no `np` folder to copy, and Jott falls back
+to `$NP_PATH`, then `PATH`, and says plainly what it found. [Building on Linux](#checking-the-rust-side-without-building-a-bundle)
+uses `./scripts/fetch-np.sh`, which does the same thing with `sha256sum`.
 
 ## Build
 
 ```powershell
 git clone https://github.com/Ex-Bot-01/jott.git
 cd jott
+.\scripts\fetch-np.ps1
 npm ci
 cd apps\shell
 npx tauri build --bundles msi
 ```
 
 `tauri build` runs the front-end build itself (`beforeBuildCommand` in `apps/shell/tauri.conf.json`), so there
-is no separate `npm run build` step. The first run compiles about 400 crates and takes ten to twenty minutes;
+is no separate `npm run build` step. np itself is never built from source here: Jott's ground rules keep
+[note-processor](https://github.com/Ex-Bot-01/note-processor) a separate project, and this only ever copies a
+published release. The first run compiles about 400 crates and takes ten to twenty minutes;
 after that it is incremental.
 
 The installer lands at:
