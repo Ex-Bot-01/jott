@@ -586,11 +586,20 @@ impl NpGone {
     pub fn payload(&self, os: Os) -> NpMissingPayload {
         match self {
             NpGone::Missing(missing) => np_missing_payload(missing, os),
-            // Nothing to invent here either: the fault is what it said, and the hint points at the one
-            // thing that fixes most of them (a newer np).
+            // A fault from the handshake is not a version problem, and saying so cost a colleague an
+            // afternoon: every failure to reach np used to end in "np is too old … replace np.exe", including
+            // this one, which was Jott starting np without telling it to serve. So the hint says where to look
+            // (the About panel names the exact file) and where to report it, and accuses nobody.
             NpGone::Fault(message) => NpMissingPayload {
                 message: message.clone(),
-                install_hint: format!("Jott needs np 0.3.1 or newer. {}", install_hint(&NpMissing::TooOld { found: "unknown".into() }, os)),
+                install_hint: format!(
+                    "Jott could not get an answer from the np it runs; Jott needs np {} or newer. \
+                     About (in the sidebar) names that file — if it is not the copy inside the installer, \
+                     unset NP_PATH and restart Jott. If it is, please report it at {}/issues with a line \
+                     from the log.",
+                    version_text(),
+                    crate::about::REPO_URL
+                ),
             },
         }
     }
@@ -625,6 +634,12 @@ pub struct RegistryInfo {
 
 
 /// The payload for `np://missing`: what is wrong, and how to fix it on this platform (§2).
+/// The floor as a person reads it, spelled once: `0.3.1`.
+fn version_text() -> String {
+    let (major, minor, patch) = crate::np::resolve::MIN_NP_VERSION;
+    format!("{major}.{minor}.{patch}")
+}
+
 pub fn np_missing_payload(missing: &NpMissing, os: Os) -> NpMissingPayload {
     NpMissingPayload { message: missing.to_string(), install_hint: install_hint(missing, os) }
 }

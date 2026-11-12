@@ -536,7 +536,12 @@ async fn a_vault_still_opens_when_np_cannot_be_asked_anything() {
     harness.write("a.md", b"# A\n");
     // The shell's fallback for a machine with no usable np: same window, and every index question answers
     // honestly that there is nobody to ask.
-    let (source, info) = ipc::np_absent();
+    let (_fallback_source, info) = ipc::np_absent();
+    // `np_absent` names the program `np` and lets PATH answer, which is honest on a machine that has no np
+    // and a false premise in a test suite on a box that does — where it starts the real one and this test
+    // quietly stops testing anything. Name a binary that cannot exist instead. (Until 0.0.6 this passed by
+    // accident: Jott forgot to tell np to `serve`, so even a real np on PATH died at once.)
+    let source = NpSource::Env(harness.data.path().join("no-such-np"));
     let session = VaultSession::open_in(source, info, harness.vault.path(), Consent::Undecided, None, harness.data.path().to_path_buf());
 
     assert_eq!(session.listing().expect("the tree needs no np").nodes.len(), 1);

@@ -30,16 +30,38 @@ pub struct NpClient {
     closed: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
+/// What we ask np to do: answer JSON-RPC 2.0 on stdin and stdout.
+///
+/// This argument is the whole difference between a working install and a window that says "np ended before
+/// answering". Run with no subcommand, np prints its usage on stderr, exits 2, and never reads a byte — which
+/// is what reached the first machine that ran the shipped installer. Nothing noticed for eleven tasks because
+/// every test here talks to `tests/fake-np/np.py`, which speaks NDJSON with any arguments at all; the stand-in
+/// now has an option to have real np's manners (`require_args`), and `tests/np_serve_args.rs` uses it.
+const SERVE_ARGS: [&str; 1] = ["serve"];
+
 fn command_for(np: &Path) -> Command {
     // The test stand-in is a script; the real thing is a binary. Decided by name so the
     // tests never need an executable bit that Windows has no notion of.
-    if np.extension().map(|e| e == "py").unwrap_or(false) {
+    let mut c = if np.extension().map(|e| e == "py").unwrap_or(false) {
         let mut c = Command::new("python3");
         c.arg(np);
         c
     } else {
         Command::new(np)
+    };
+    c.args(SERVE_ARGS);
+    c
+}
+
+/// Keep the last thing np said, in one line, so it can travel inside a fault message. `String` is bytes, and
+/// slicing at an arbitrary index can cut a character in half — hence chars.
+fn last_words(raw: &str, budget: usize) -> String {
+    let folded = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    if folded.chars().count() <= budget {
+        return folded
     }
+    let kept: String = folded.chars().take(budget - 1).collect();
+    format!("{kept}…")
 }
 
 impl NpClient {
@@ -55,16 +77,28 @@ impl NpClient {
 
         let stdin = child.stdin.take().expect("stdin piped");
         let stdout = child.stdout.take().expect("stdout piped");
-        // Drain stderr and throw it away: np drops diagnostics rather than waiting on us,
-        // but on Windows an undrained pipe really does slow the loop down.
+        // Drain stderr — np drops diagnostics rather than waiting on us, and on Windows an undrained pipe
+        // really does slow the loop down — and keep the tail of it. When a child dies without answering, its
+        // own sentence is the most useful thing in the report, and discarding it is what made the first
+        // Windows report take three days and a release to understand.
+        let said: std::sync::Arc<std::sync::Mutex<String>> = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
         if let Some(mut stderr) = child.stderr.take() {
+            let said = std::sync::Arc::clone(&said);
             tokio::spawn(async move {
                 let mut buf = [0u8; 4096];
                 use tokio::io::AsyncReadExt;
                 loop {
                     match stderr.read(&mut buf).await {
                         Ok(0) | Err(_) => break,
-                        Ok(_) => {}
+                        Ok(n) => {
+                            let mut tail = said.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                            tail.push_str(&String::from_utf8_lossy(&buf[..n]));
+                            // The last kilobyte is what it was saying when it went.
+                            if tail.len() > 1024 {
+                                let cut = tail.len() - 1024;
+                                tail.drain(..cut);
+                            }
+                        }
                     }
                 }
             });
@@ -113,13 +147,16 @@ impl NpClient {
             // races this either gets drained here or sees the flag and faults at once. A caller
             // left holding an answer that will never come is a frozen window (spec §11).
             reader_closed.store(true, std::sync::atomic::Ordering::SeqCst);
+            let said = last_words(&said.lock().unwrap_or_else(|poisoned| poisoned.into_inner()), 400);
+            let message = if said.is_empty() {
+                "np ended before answering".to_string()
+            } else {
+                format!("np ended before answering — np said: {said}")
+            };
             let owed: Vec<(i64, oneshot::Sender<Result<Value, NpFault>>)> =
                 reader_pending.lock().await.drain().collect();
             for (_, tx) in owed {
-                let _ = tx.send(Err(NpFault {
-                    code: -32603,
-                    message: "np ended before answering".into(),
-                }));
+                let _ = tx.send(Err(NpFault { code: -32603, message: message.clone() }));
             }
         });
 

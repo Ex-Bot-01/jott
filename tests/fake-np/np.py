@@ -67,6 +67,20 @@ def note(req_id, command, phase, extra=None):
     write({"jsonrpc": "2.0", "method": "np/progress", "params": params})
 
 
+# Real np is `np serve`. With no subcommand it prints its usage on stderr and exits 2 without reading a
+# byte of stdin — which is exactly what happened on the first machine that ran the shipped installer, and
+# no test saw it because this stand-in happily speaks NDJSON with any arguments at all. A scenario can ask
+# for the same manners.
+if want := SCENARIO.get("require_args"):
+    if sys.argv[1:] != list(want):
+        sys.stderr.write("note-processor command line interface\nUsage: np <COMMAND>\n")
+        sys.exit(2)
+
+# A child that dies mid-flight, saying why on stderr: what Jott has to report when it never answers.
+if text := SCENARIO.get("die_with_stderr"):
+    sys.stderr.write(text)
+    sys.exit(int(SCENARIO.get("die_code", 1)))
+
 for line in sys.stdin:
     line = line.strip()
     if not line:
