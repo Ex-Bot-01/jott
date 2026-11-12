@@ -6,6 +6,7 @@
 //! all, so the most useful thing it can be is thin: what is untested here is argument passing and event
 //! emission, nothing else.
 
+use jott_core::about::AboutInfo;
 use jott_core::app_paths::app_data_dir;
 use jott_core::diagnostics::Journal;
 use jott_core::ingest::consent::np_config_path;
@@ -184,6 +185,28 @@ pub fn registry_info(app: State<'_, App>) -> RegistryInfo {
 #[tauri::command]
 pub fn np_status(app: State<'_, App>) -> Option<NpMissingPayload> {
     app.problem.lock().unwrap().clone()
+}
+
+/// What the About panel shows: both versions, which np file this run is actually talking to, and where Jott
+/// keeps its files. The payload — including the block of text behind "Copy details" — is built in the core
+/// (`jott_core::about`), where its wording has tests; there is nothing to decide here but which facts to hand
+/// over. `np_pair` asks once per run and remembers, so opening the panel does not start another child.
+///
+/// Tauri insists that an async command taking a reference answers with a `Result`, so an error type comes
+/// along for the ride even though nothing here can fail: every fact is already in memory once `np_pair` has
+/// asked, and a panel that could not open would be a worse lie than one showing "not asked yet".
+#[tauri::command]
+pub async fn app_info(app: State<'_, App>) -> Result<AboutInfo, IpcError> {
+    let (source, info) = app.np_pair().await;
+    let problem = app.problem.lock().unwrap().clone();
+    Ok(jott_core::about::about(
+        env!("CARGO_PKG_VERSION"),
+        Some(&source),
+        Some(&info),
+        problem.as_ref(),
+        &app.data,
+        &app.journal.path(),
+    ))
 }
 
 #[tauri::command]

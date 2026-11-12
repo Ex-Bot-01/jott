@@ -104,6 +104,8 @@ One file, plus anything you noticed in words:
 %APPDATA%\jott\logs\jott.jsonl
 ```
 
+Send the About panel's *Copy details* text with it too — it names the np binary, which is the first thing I ask.
+
 That is the whole log: one line per request Jott made to np — the method, which vault, how long it took, and
 the outcome (`applied`, `locked`, `offline`, `disabled`, `refused`, `fault`) — with np's own error sentence on
 a fault. It rotates at 2 MiB and keeps older copies behind it (`jott.jsonl.1`, `jott.jsonl.2`). **It never
@@ -115,6 +117,10 @@ line is one JSON object with seven possible keys and nothing else.
 Press **Ctrl+Shift+I**. Devtools are left on in these builds, and the Console tab is the difference between
 "everything is white" and "`invoke` rejected `list_vault` with `npGone`". Send what it says; a screenshot of a
 blank window tells me the window works and nothing else.
+
+**First, open *About* in the sidebar header.** It says which np this run is talking to — version, and the full
+path of the binary — plus where Jott's data and log live, and **Copy details** puts all of it on your clipboard
+as a block you can paste straight into a message. That block answers most of what I would otherwise ask for.
 
 Three things worth knowing before you file it:
 

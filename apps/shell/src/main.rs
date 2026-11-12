@@ -8,9 +8,11 @@ use tauri::Manager;
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             ipc::registry_info,
             ipc::np_status,
+            ipc::app_info,
             ipc::list_vault,
             ipc::open_vault,
             ipc::read_note,

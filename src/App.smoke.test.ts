@@ -35,6 +35,17 @@ vi.mock('@tauri-apps/api/core', () => ({
         )
       case 'open_vault':
         return Promise.resolve(vault)
+      case 'app_info':
+        return Promise.resolve({
+          jottVersion: '0.0.5',
+          np: { found: true, version: '0.3.1', source: 'bundled', path: 'C:\\Program Files\\Jott\\np\\np.exe' },
+          dataDir: 'C:\\Users\\you\\AppData\\Roaming\\jott',
+          logPath: 'C:\\Users\\you\\AppData\\Roaming\\jott\\logs\\jott.jsonl',
+          repoUrl: 'https://github.com/Ex-Bot-01/jott',
+          releasesUrl: 'https://github.com/Ex-Bot-01/jott/releases',
+          docsUrl: 'https://github.com/Ex-Bot-01/jott/blob/main/docs/testing-on-windows.md',
+          diagnostics: 'Jott 0.0.5 · https://github.com/Ex-Bot-01/jott\nnp 0.3.1 from bundled (C:\\Program Files\\Jott\\np\\np.exe)',
+        })
       case 'list_vault':
         return Promise.resolve({ vault: '', nodes: [], warnings: [] })
       default:
@@ -91,6 +102,22 @@ describe('the window mounts', () => {
     expect(text).toContain('One folder could not be read.')
     // np's own catalogue is in the tree and greyed, never editable — here, at least, it is a row.
     expect(text).toContain('INDEX.md')
+    expect(errors).toEqual([])
+  })
+
+  it('answers \"which np is this running\" without leaving the window', async () => {
+    // This panel exists because that question used to require a conversation with whoever reported a problem.
+    const { errors } = await start()
+
+    const button = document.querySelector('button[aria-label=\"About Jott\"]')
+    expect(button, 'the header has no way to open the About panel').not.toBeNull()
+    button!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+
+    await vi.waitFor(() => expect(document.body.textContent ?? '').toContain('0.3.1'))
+    const text = document.body.textContent ?? ''
+    expect(text).toContain('C:\\Program Files\\Jott\\np\\np.exe')
+    expect(text).toContain('bundled')
+    expect(text).toContain('jott.jsonl')
     expect(errors).toEqual([])
   })
 })
