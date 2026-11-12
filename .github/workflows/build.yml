@@ -66,10 +66,12 @@ jobs:
         run: |
           echo "== np on this runner =="
           np --version || echo "np not on the runner; artifacts ship without it by design"
-      # `--config` because the config lives beside the crate's Cargo.toml (where tauri-build looks), not in
-      # a `src-tauri/` next to the working directory the CLI would otherwise assume.
+      # Run from the shell crate's own folder: it is its own workspace (its `target/` is where the bundles
+      # land, which is what the upload paths below say), and from there the CLI finds `tauri.conf.json`
+      # beside the manifest without being pointed at it.
       - name: bundle
-        run: npx tauri build --config apps/shell/tauri.conf.json --bundles ${{ matrix.bundles }}
+        working-directory: apps/shell
+        run: npx tauri build --bundles ${{ matrix.bundles }}
       # Named exactly, kept for 30 days, and uploaded here rather than by `tauri-action`: a hand-off link
       # that reads `2_jott-windows-x64_…msi` is a file someone has to rename before they can tell a
       # colleague which build they are running (§19).
@@ -89,3 +91,36 @@ jobs:
           path: ${{ matrix.artifacts[1].path }}
           retention-days: 30
           if-no-files-found: error
+
+  # A tag is the hand-off itself. Artifacts attached to a workflow run need a signed-in account and expire;
+  # a release does neither, and §19's "send the tester a link" is worth one job that copies the same files
+  # somewhere a person with no GitHub access to this repository can click.
+  release:
+    if: github.ref_type == 'tag'
+    needs: app
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: "jott-*"
+          path: built
+      # One folder, one checksum list: a tester should be able to ask "is this the file CI built" without
+      # trusting the transport it came through.
+      - name: collect and checksum
+        run: |
+          mkdir -p out
+          find built -type f -exec mv {} out/ \;
+          test -s out/jott-windows-x64.msi || { echo "no Windows installer was produced"; exit 1; }
+          (cd out && sha256sum * > SHA256SUMS.txt)
+          cat out/SHA256SUMS.txt
+      - name: publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "Jott $GITHUB_REF_NAME" \
+            --notes-file docs/release-notes.md \
+            out/*

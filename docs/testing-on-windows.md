@@ -8,9 +8,22 @@ Everything below runs on a normal Windows machine. Nothing here needs this repos
 
 ## 1. Install
 
-1. **Jott** — download `jott-windows-x64.msi` from the release page's artifacts (kept 30 days) and run it.
-   Windows may warn about an unsigned build: that is expected until the signing story in spec §20 exists.
-2. **np** — Jott needs the note-processor command, version 0.3.1 or newer. Follow
+1. **Jott** — go to <https://github.com/Ex-Bot-01/jott/releases>, open the newest release, and download
+   `jott-windows-x64.msi`. Double-click it; Windows may warn that the publisher is unknown, because this
+   build is unsigned until the signing story in spec §20 exists — *More info → Run anyway* is the expected
+   path. (If you were sent a link to a workflow run instead of a release, that is an artifact: it needs a
+   GitHub account with access to this repository and it disappears after 30 days. A release needs neither.)
+2. **Check what you downloaded**, if you want the certainty rather than the assumption. In PowerShell, in the
+   folder you downloaded to, next to `SHA256SUMS.txt` from the same release:
+
+   ```powershell
+   (Get-FileHash .\jott-windows-x64.msi).Hash.ToLower()
+   Select-String jott-windows-x64.msi .\SHA256SUMS.txt
+   ```
+
+   The two strings should match. If they do not, the file did not arrive as CI built it — say so and download
+   again.
+3. **np** — Jott needs the note-processor command, version 0.3.1 or newer. Follow
    [`INSTALL.md` §2, "Windows (PowerShell)"](../INSTALL.md#windows-powershell--same-procedure): download
    `np-0.3.1-x86_64-pc-windows-gnu-cross.zip`, check the hash against `SHA256SUMS.txt`, and put `np.exe`
    somewhere on `PATH` (or set `NP_PATH` to it).
