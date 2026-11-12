@@ -56,10 +56,12 @@ export function flattenTree(nodes: NodeEntry[], open: Set<string>): Row[] {
 function markerFor(state: StampState | null): { marker: string; title: string } {
   if (state === null || state === undefined) return { marker: '', title: '' }
   if (state === 'Embedded') return { marker: '·', title: 'embedded' }
-  if (state === 'Indexed') return { marker: '●', title: 'waiting to embed' }
+  // Two dots that both said "waiting" — for the index, and to embed — described opposite states, which is how
+  // a tester ended up reporting that the app contradicted itself. The words now say what each state *is*.
+  if (state === 'Indexed') return { marker: '●', title: 'indexed · awaiting embedding' }
   // Not "never indexed": `Waiting` also means "changed since np last saw it" (`stamps.rs`). The plan's word
   // for both is *waiting*, and saying more than that would be a claim about history nobody has (§4).
-  if (state === 'Waiting') return { marker: '●', title: 'waiting for the index' }
+  if (state === 'Waiting') return { marker: '○', title: 'not indexed yet' }
   if (typeof state === 'object' && 'Refused' in state) {
     // §18.5: when np gave no reason, the marker says refused and stops there.
     return { marker: '!', title: state.Refused ? `refused · ${state.Refused}` : 'refused' }
