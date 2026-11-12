@@ -9,7 +9,6 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
-            ipc::reveal_window,
             ipc::registry_info,
             ipc::np_status,
             ipc::list_vault,
@@ -47,15 +46,6 @@ fn main() {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move { ipc::announce_np(&handle).await });
 
-            // The window is hidden until the front end says it has painted. Three seconds is generous for
-            // that and short enough that a broken front end still shows something a person can screenshot.
-            // A plain thread, not an async task: this crate has no tokio dependency of its own, and a
-            // watchdog that sleeps once does not need a runtime's patience.
-            let watchdog = app.handle().clone();
-            std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_secs(3));
-                ipc::reveal_window(watchdog);
-            });
             Ok(())
         })
         .build(tauri::generate_context!())

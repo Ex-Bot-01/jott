@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Jott",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "identifier": "dev.jott.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -17,8 +17,8 @@
         "height": 760,
         "minWidth": 720,
         "minHeight": 480,
-        "visible": false,
-        "backgroundColor": [250, 250, 249, 255]
+        "backgroundColor": [250, 250, 249, 255],
+        "devtools": true
       }
     ],
     "security": { "csp": null }

@@ -164,17 +164,6 @@ export const openVault = (path: string) => invoke<VaultListing>('open_vault', { 
  * stays as it was). Picking is the front end's job — one fewer command, and the plugin's own dialog runs
  * without anything of ours blocking a worker thread waiting for it.
  */
-/** The window opens hidden; this is the front end saying it has content to show (§13). Nothing else waits
- * on it, and the shell shows the window after three seconds whether we answer or not. */
-export async function reveal(): Promise<void> {
-  try {
-    await invoke('reveal_window')
-  } catch {
-    // A window that never appears would be worse than a late one, and the shell's watchdog covers exactly
-    // this — so there is nothing to report here, and nothing to retry.
-  }
-}
-
 export async function pickVault(): Promise<VaultListing | null> {
   const picked = await open({ directory: true, title: 'Open a notes folder' })
   if (typeof picked !== 'string') return null

@@ -5,13 +5,25 @@
    column and centre-aligned every line of prose in it, including the note being written. Everything else in
    that file (`#next-steps`, `.hero`, `.counter`) styled a landing page this app does not have. */
 
+/* Both colours, both schemes, always named — this is the bug that made 0.0.3 unreadable.
+   `color-scheme: light dark` tells the webview "this page handles dark", and WebView2 then paints its
+   default text in white. The skeleton in `index.html` sets a near-white background of its own, so on a dark
+   mode Windows desktop the two combined into white writing on near-white paper: an app that looked like an
+   empty window. Inheriting the browser's canvas colour is only safe when you also inherit its background. */
 :root {
-  /* The system's own light or dark, so the window, the webview and CodeMirror agree about what "background"
-     means before any of them has been told otherwise. */
   color-scheme: light dark;
+  --paper: #fafaf9;
+  --ink: #23211f;
   font: 14px/1.5 system-ui, "Segoe UI", Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #1b1a19;
+    --ink: #eae7e3;
+  }
 }
 
 html,
@@ -24,6 +36,8 @@ body,
 /* Writing is left-aligned. Nothing in a note editor should be centred — the scaffold's centring was visible
    in the text itself, which is the one place a person is looking. */
 body {
+  background: var(--paper);
+  color: var(--ink);
   text-align: start;
   overflow: hidden;
 }

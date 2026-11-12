@@ -110,6 +110,22 @@ a fault. It rotates at 2 MiB and keeps older copies behind it (`jott.jsonl.1`, `
 contains the contents of your notes**; if you would rather look first, open it in Notepad and read it — each
 line is one JSON object with seven possible keys and nothing else.
 
+## If the window shows nothing
+
+Press **Ctrl+Shift+I**. Devtools are left on in these builds, and the Console tab is the difference between
+"everything is white" and "`invoke` rejected `list_vault` with `npGone`". Send what it says; a screenshot of a
+blank window tells me the window works and nothing else.
+
+Three things worth knowing before you file it:
+
+- **A window the colour of paper, with no text at all**, on a Windows set to dark mode was 0.0.3's bug — white
+  ink on near-white background. Fixed in 0.0.4; if you are on 0.0.4 and see it, that is a new bug and I want
+  the console output.
+- **"Jott is starting…" that never goes away** means the bundle loaded but the app did not mount. That text is
+  drawn by plain HTML precisely so this case has something to show.
+- **A status line naming no np version** means Jott could not find np. The installer carries it, so on a normal
+  install that is a bug — unless `NP_PATH` points somewhere that no longer exists, which wins on purpose.
+
 ## Uninstalling leaves your files alone
 
 Uninstalling Jott removes the program and keeps everything under `%APPDATA%\jott` — on purpose. That folder can

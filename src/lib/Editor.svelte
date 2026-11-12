@@ -267,6 +267,20 @@
   }
   .cm :global(.cm-editor) {
     height: 100%;
+    /* CodeMirror's default surface is white with black text, which is a bright rectangle in a dark window
+       and fights the ink everything else mixes from `currentColor`. Take the palette; caret and selection
+       follow `color` from there. */
+    background: var(--paper);
+    color: var(--ink);
+  }
+  .cm :global(.cm-gutters) {
+    background: var(--paper);
+    color: color-mix(in srgb, currentColor 55%, transparent);
+  }
+  .cm :global(.cm-activeLine),
+  .cm :global(.cm-activeLineGutter) {
+    /* A tint of the ink, not a fixed grey, so the current line reads on both papers. */
+    background: color-mix(in srgb, currentColor 6%, transparent);
   }
   .cm :global(.cm-scroller) {
     font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;

@@ -6,15 +6,28 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Jott</title>
     <style>
-      /* The window opens hidden and shows itself when this file's scripts have painted, so nobody sees a
-         blank rectangle. If those scripts never run, a watchdog shows the window after three seconds — and
-         this is what is worth screenshotting: the shape of the app, drawn in HTML, with no JavaScript. */
+      /* Painted from HTML alone, before any script runs: the window appears with the shape of the app in it
+         rather than a blank page while the bundle loads. If the scripts never run at all — which is what a
+         white window means — this stays on screen and says so, instead of showing nothing to screenshot. */
+      /* The same two colours as `src/app.css`, repeated on purpose: this paints first, and a skeleton in the
+         wrong palette is a colour flip the moment the app appears. */
+      :root {
+        color-scheme: light dark;
+        --paper: #fafaf9;
+        --ink: #23211f;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --paper: #1b1a19;
+          --ink: #eae7e3;
+        }
+      }
       html,
       body {
         margin: 0;
         height: 100%;
-        background: #fafaf9;
-        color-scheme: light dark;
+        background: var(--paper);
+        color: var(--ink);
       }
       #boot {
         position: fixed;
@@ -25,30 +38,30 @@
         font: 14px/1.5 system-ui, "Segoe UI", sans-serif;
       }
       #boot .side {
-        border-right: 1px solid rgba(128, 128, 128, 0.3);
+        border-right: 1px solid color-mix(in srgb, currentColor 25%, transparent);
         padding: 0.6rem;
       }
       #boot .bar {
         height: 0.7rem;
         margin: 0 0 0.55rem;
         border-radius: 3px;
-        background: rgba(128, 128, 128, 0.18);
+        background: color-mix(in srgb, currentColor 14%, transparent);
       }
       #boot .bar.short {
         width: 45%;
       }
       #boot .status {
         grid-column: 1 / -1;
-        border-top: 1px solid rgba(128, 128, 128, 0.3);
+        border-top: 1px solid color-mix(in srgb, currentColor 25%, transparent);
         padding: 0.3rem 0.6rem;
         font-size: 0.8rem;
-        color: rgba(128, 128, 128, 0.9);
+        color: color-mix(in srgb, currentColor 65%, transparent);
       }
       #boot .wait {
         grid-column: 2;
         align-self: center;
         justify-self: center;
-        color: rgba(128, 128, 128, 0.9);
+        color: color-mix(in srgb, currentColor 65%, transparent);
       }
     </style>
   </head>
