@@ -10,16 +10,16 @@ use jott_core::app_paths::app_data_dir;
 use jott_core::diagnostics::Journal;
 use jott_core::ingest::consent::np_config_path;
 use jott_core::ipc::{
-    self, IpcError, NpMissingPayload, NoteContent, RegistryInfo, RenameOutcome, SearchResults, VaultListing, WriteResult,
+    self, IpcError, NpMissingPayload, NoteContent, RegistryInfo, RenameOutcome, SearchResults, VaultListing, VaultSession,
+    WriteResult,
 };
 use jott_core::np::resolve::{current_os, resolve_np, NpSource};
 use jott_core::np::NpInfo;
 use jott_core::vault::store::{to_abs, Consent, RegisterWarning, VaultStore};
-use jott_core::vault::VaultSession;
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 pub struct App {
     /// The registry: recents and the consent decision, in the app data dir (§12).
@@ -45,6 +45,7 @@ impl App {
         let store = VaultStore::new(data.clone());
         let journal = Arc::new(Journal::open(&data));
         App {
+            store,
             data,
             journal,
             np: Mutex::new(None),
@@ -118,7 +119,7 @@ impl App {
         }
 
         // §8.2: a vault inside a vault is legal, and worth one sentence about the second index it means.
-        with_nested_warning(session.listing()?, nested)
+        Ok(with_nested_warning(session.listing()?, nested))
     }
 }
 
@@ -156,85 +157,89 @@ fn bridge(handle: &AppHandle, session: &Arc<VaultSession>) {
 pub async fn announce_np(handle: &AppHandle) {
     let app = handle.state::<App>();
     let _ = app.np_pair().await;
-    if let Some(payload) = app.problem.lock().unwrap().clone() {
+    // Read it and put the guard down in one statement. Written as `if let Some(p) = self.lock().clone()`,
+    // the guard is a temporary that outlives the block, and its borrow of the managed state outlives `app` —
+    // which only shows up when something actually compiles this file.
+    let problem = { app.problem.lock().unwrap().clone() };
+    if let Some(payload) = problem {
         let _ = handle.emit("np://missing", payload);
     }
 }
 
 #[tauri::command]
-fn registry_info(app: State<'_, App>) -> RegistryInfo {
+pub fn registry_info(app: State<'_, App>) -> RegistryInfo {
     let recent = app.store.load().into_iter().map(|entry| entry.path.display().to_string()).collect();
     let consent = app.store.last_opened().map(|path| app.store.consent(&path)).unwrap_or(Consent::Undecided);
     RegistryInfo { recent, consent }
 }
 
 #[tauri::command]
-fn np_status(app: State<'_, App>) -> Option<NpMissingPayload> {
+pub fn np_status(app: State<'_, App>) -> Option<NpMissingPayload> {
     app.problem.lock().unwrap().clone()
 }
 
 #[tauri::command]
-fn list_vault(app: State<'_, App>) -> Result<VaultListing, IpcError> {
+pub fn list_vault(app: State<'_, App>) -> Result<VaultListing, IpcError> {
     app.current()?.listing()
 }
 
 #[tauri::command]
-async fn open_vault(path: String, handle: AppHandle, app: State<'_, App>) -> Result<VaultListing, IpcError> {
+pub async fn open_vault(path: String, handle: AppHandle, app: State<'_, App>) -> Result<VaultListing, IpcError> {
     app.open(&handle, Path::new(&path)).await
 }
 
 #[tauri::command]
-fn read_note(rel: String, app: State<'_, App>) -> Result<NoteContent, IpcError> {
+pub fn read_note(rel: String, app: State<'_, App>) -> Result<NoteContent, IpcError> {
     app.current()?.read_note(&rel)
 }
 
 #[tauri::command]
-fn save_note(rel: String, text: String, app: State<'_, App>) -> Result<WriteResult, IpcError> {
+pub fn save_note(rel: String, text: String, app: State<'_, App>) -> Result<WriteResult, IpcError> {
     app.current()?.save_note(&rel, &text)
 }
 
 #[tauri::command]
-fn create_note(rel: String, app: State<'_, App>) -> Result<WriteResult, IpcError> {
+pub fn create_note(rel: String, app: State<'_, App>) -> Result<WriteResult, IpcError> {
     app.current()?.create_note(&rel)
 }
 
 #[tauri::command]
-fn create_folder(rel: String, app: State<'_, App>) -> Result<(), IpcError> {
+pub fn create_folder(rel: String, app: State<'_, App>) -> Result<(), IpcError> {
     app.current()?.create_folder(&rel)
 }
 
 #[tauri::command]
-fn rename_entry(from: String, to: String, app: State<'_, App>) -> Result<RenameOutcome, IpcError> {
+pub fn rename_entry(from: String, to: String, app: State<'_, App>) -> Result<RenameOutcome, IpcError> {
     app.current()?.rename_entry(&from, &to)
 }
 
 #[tauri::command]
-fn move_entry(from: String, to: String, app: State<'_, App>) -> Result<(), IpcError> {
+pub fn move_entry(from: String, to: String, app: State<'_, App>) -> Result<(), IpcError> {
     app.current()?.move_entry(&from, &to)
 }
 
 #[tauri::command]
-fn delete_entry(rel: String, app: State<'_, App>) -> Result<String, IpcError> {
+pub fn delete_entry(rel: String, app: State<'_, App>) -> Result<String, IpcError> {
     app.current()?.delete_entry(&rel)
 }
 
 #[tauri::command]
-fn mirror_buffer(rel: String, text: String, app: State<'_, App>) -> Result<(), IpcError> {
+pub fn mirror_buffer(rel: String, text: String, app: State<'_, App>) -> Result<(), IpcError> {
     app.current()?.mirror_buffer(&rel, &text)
 }
 
 #[tauri::command]
-fn discard_mirror(rel: String, app: State<'_, App>) -> Result<(), IpcError> {
+pub fn discard_mirror(rel: String, app: State<'_, App>) -> Result<(), IpcError> {
     app.current()?.discard_mirror(&rel)
 }
 
 #[tauri::command]
-async fn search_vault(query: String, limit: u8, app: State<'_, App>) -> Result<SearchResults, IpcError> {
+pub async fn search_vault(query: String, limit: u8, app: State<'_, App>) -> Result<SearchResults, IpcError> {
     app.current()?.search(&query, limit).await
 }
 
 #[tauri::command]
-fn ingest_all(app: State<'_, App>) -> Result<(), IpcError> {
+pub fn ingest_all(app: State<'_, App>) -> Result<(), IpcError> {
     app.current()?.ingest_all();
     Ok(())
 }
@@ -242,7 +247,7 @@ fn ingest_all(app: State<'_, App>) -> Result<(), IpcError> {
 /// The consent prompt's two buttons. The queue writes np's config; the registry remembers the answer for
 /// the next launch (§8, §12).
 #[tauri::command]
-fn set_consent(granted: bool, app: State<'_, App>) -> Result<(), IpcError> {
+pub fn set_consent(granted: bool, app: State<'_, App>) -> Result<(), IpcError> {
     let session = app.current()?;
     session.set_consent(granted);
     app.store
@@ -253,7 +258,7 @@ fn set_consent(granted: bool, app: State<'_, App>) -> Result<(), IpcError> {
 /// Asked when the window closes, so a save that was in the queue gets its pass (§11). Bounded by the
 /// queue's own cap: closing never waits for a model.
 #[tauri::command]
-async fn flush_on_close(app: State<'_, App>) -> Result<(), IpcError> {
+pub async fn flush_on_close(app: State<'_, App>) -> Result<(), IpcError> {
     // Taken out of the mutex first: a guard held across an `await` would sit on the whole shell while np
     // finishes what it was asked to do.
     let session = { app.session.lock().unwrap().clone() };
