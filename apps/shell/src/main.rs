@@ -2,11 +2,14 @@
 
 mod ipc;
 
+use std::path::PathBuf;
+use tauri::Manager;
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .manage(ipc::App::startup())
         .invoke_handler(tauri::generate_handler![
+            ipc::reveal_window,
             ipc::registry_info,
             ipc::np_status,
             ipc::list_vault,
@@ -26,10 +29,33 @@ fn main() {
             ipc::flush_on_close
         ])
         .setup(|app| {
+            // Where the installer put np: `$RESOURCES/np`, beside the other files we ship. A source build
+            // that never ran `scripts/fetch-np` has no such folder, and Jott falls back to PATH and says so.
+            let candidate = app
+                .path()
+                .resource_dir()
+                .map(|dir| dir.join("np"))
+                .unwrap_or_default();
+            // An empty path means "no bundled np", and resolution falls back to PATH. Checking `is_dir`
+            // here rather than passing the hope along keeps `resolve_np`'s error message honest about where
+            // it looked.
+            let np_bundle = if candidate.is_dir() { candidate } else { PathBuf::new() };
+            app.manage(ipc::App::startup(np_bundle));
+
             // Ask np once, in the background, and tell the window if it is not there (§1, §2). The webview
             // may not have listeners yet — which is why `np_status` answers the same question on demand.
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move { ipc::announce_np(&handle).await });
+
+            // The window is hidden until the front end says it has painted. Three seconds is generous for
+            // that and short enough that a broken front end still shows something a person can screenshot.
+            // A plain thread, not an async task: this crate has no tokio dependency of its own, and a
+            // watchdog that sleeps once does not need a runtime's patience.
+            let watchdog = app.handle().clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                ipc::reveal_window(watchdog);
+            });
             Ok(())
         })
         .build(tauri::generate_context!())

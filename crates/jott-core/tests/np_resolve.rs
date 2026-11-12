@@ -70,6 +70,24 @@ fn bundled_np_is_used_before_path() {
 }
 
 #[test]
+fn a_named_binary_beats_the_one_we_shipped() {
+    let _turn = NP_PATH_TURN.lock().unwrap_or_else(|e| e.into_inner());
+    // The case that only exists now that installers carry np inside them: the app ships a binary, and a
+    // person points `NP_PATH` at one they built or installed themselves. Whichever we shipped is a file;
+    // their override is a decision, and a decision has to beat a file or the variable is a lie (§14).
+    let dir = tempfile::tempdir().unwrap();
+    let app_dir = dir.path().join("app");
+    fs::create_dir_all(&app_dir).unwrap();
+    let _bundled = fake_np(&app_dir);
+    let own = dir.path().join("own-build");
+    fs::create_dir_all(&own).unwrap();
+    let chosen = fake_np(&own);
+
+    let found = with_np_path(Some(chosen.clone()), || resolve_np(&app_dir));
+    assert!(matches!(&found, Ok(NpSource::Env(p)) if *p == chosen), "bundled np won over an explicit NP_PATH: {found:?}");
+}
+
+#[test]
 fn hints_name_the_asset_for_that_platform() {
     let win = install_hint(&NpMissing::NotFound, Os::Windows);
     assert!(win.contains("np-0.3.1-x86_64-pc-windows-gnu-cross.zip"), "{win}");

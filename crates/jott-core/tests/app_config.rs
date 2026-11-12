@@ -67,6 +67,18 @@ fn shell_config_declares_jott() {
         shell.join("icons/icon.ico").is_file(),
         "the Windows bundle needs apps/shell/icons/icon.ico"
     );
+
+    // And it carries np: the whole point of the pinned fetch script is that installing Jott is enough to
+    // search and index. A config that stopped declaring the resource would ship an app whose first screen
+    // tells people to go download something, which is the thing §5 exists to avoid.
+    let raw: serde_json::Value = serde_json::from_str(&conf).expect("the config parses");
+    let resources = raw["bundle"]["resources"]
+        .as_object()
+        .expect("`bundle.resources` maps the fetched np into the installer");
+    assert!(
+        resources.contains_key("np/np*"),
+        "the installer no longer bundles np: {resources:?}"
+    );
 }
 
 #[test]
