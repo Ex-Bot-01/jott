@@ -122,10 +122,25 @@ jobs:
       - name: collect and checksum
         run: |
           mkdir -p out
-          find built -type f -exec mv {} out/ \;
-          test -s out/jott-windows-x64.msi || { echo "no Windows installer was produced"; exit 1; }
+          #
+          # The rename is the point of this step. `upload-artifact`'s `name` labels the artifact, not the
+          # file inside it, so what came down was `Jott_0.0.3_x64_en-US.msi` inside a folder called
+          # `jott-windows-x64.msi`. The folder name is the name §19 asked for, so each artifact's single file
+          # is moved onto it — and an artifact holding anything other than one bundle fails here instead of
+          # losing one quietly.
+          for dir in built/*/; do
+            name=$(basename "$dir")
+            count=$(find "$dir" -type f | wc -l)
+            [ "$count" -eq 1 ] || { echo "$name holds $count files, expected one bundle"; exit 1; }
+            mv "$(find "$dir" -type f)" "out/$name"
+          done
+          # AppImage is the one asset a person runs in place, and a download does not keep the mode bit.
+          for file in out/*.AppImage; do [ -f "$file" ] && chmod +x "$file"; done
+          for wanted in jott-windows-x64.msi jott-linux-x64.deb jott-linux-x64.AppImage; do
+            test -s "out/$wanted" || { echo "no $wanted was produced"; exit 1; }
+          done
           (cd out && sha256sum * > SHA256SUMS.txt)
-          cat out/SHA256SUMS.txt
+          ls -l out; cat out/SHA256SUMS.txt
       - name: publish the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
