@@ -52,6 +52,32 @@ vi.mock('@tauri-apps/api/core', () => ({
           docsUrl: 'https://github.com/Ex-Bot-01/jott/blob/main/docs/testing-on-windows.md',
           diagnostics: 'Jott 0.0.5 · https://github.com/Ex-Bot-01/jott\nnp 0.3.1 from bundled (C:\\Program Files\\Jott\\np\\np.exe)',
         })
+      case 'search_vault':
+        return Promise.resolve({
+          hits: [
+            {
+              path: 'inbox.md',
+              snippet: '…a kumquat tree in the corner…',
+              kind: 'note',
+              score: 1.4,
+              bm25: 1.4,
+              cosine: null,
+            },
+          ],
+          mode: 'keyword',
+          vectors: false,
+          offline: false,
+          reason: null,
+        })
+      case 'read_note':
+        return Promise.resolve({
+          rel: 'inbox.md',
+          text: '# Inbox\n\nA kumquat tree in the corner.\n',
+          hash: 'a'.repeat(64),
+          diskHash: 'a'.repeat(64),
+          diskMtimeMs: 1_700_000_000_000,
+          mirrored: null,
+        })
       case 'embeddings_offer':
         // What core says about setting semantic search up. `null` means "nothing to offer", which is the arm
         // every other scenario takes: a vault with no notes waiting, or bytes already on disk.
@@ -145,6 +171,47 @@ describe('the window mounts', () => {
     await vi.waitFor(() => expect(document.body.textContent ?? '').not.toContain('not indexed yet'))
     expect(document.querySelector('[title="embedded"]'), 'the marker should say embedded by now').not.toBeNull()
     expect(commands).toContain('list_vault')
+  })
+
+  it('marks the words it searched for in each hit', async () => {
+    // np sends a snippet and no offsets, so the window finds the words itself (§18.11). What it marks here has
+    // to be what it marks when the note opens — one module answers both, and this is the visible half.
+    scenario.current = 'vault'
+    await start()
+
+    const box = document.querySelector('input[type="search"]') as HTMLInputElement
+    box.value = 'kumquat'
+    box.dispatchEvent(new Event('input', { bubbles: true }))
+
+    await vi.waitFor(() => expect(document.querySelector('.hit-snippet mark')).not.toBeNull(), { timeout: 2000 })
+    expect(document.querySelector('.hit-snippet mark')!.textContent).toBe('kumquat')
+    expect(document.body.textContent ?? '').toContain('tree in the corner')
+  })
+
+  it('lists the folder once for a pass, not once per event', async () => {
+    // Every finished half-pass asks for the tree again, and one pass fires several events. A re-list is a walk
+    // of the whole folder — hashing every note in it — so three events meant three walks inside a few hundred
+    // milliseconds of each other, on the machine where that is the difference between a snappy window and a
+    // stuttery one.
+    scenario.current = 'vault'
+    await start()
+    const before = commands.filter((c) => c === 'list_vault').length
+
+    handlers.get('ingest://event')!({ indexed: { elapsed_ms: 40 } })
+    handlers.get('ingest://event')!({ working: { phase: 'embedding', done: 1, total: 3 } })
+    handlers.get('ingest://event')!({ embedded: { elapsed_ms: 900 } })
+
+    await vi.waitFor(() => expect(commands.filter((c) => c === 'list_vault').length).toBeGreaterThan(before))
+    expect(commands.filter((c) => c === 'list_vault').length).toBe(before + 1)
+  })
+
+  it('does not ask np about embeddings when nothing is waiting for them', async () => {
+    // The offer needs a `models.list`, and asking means starting the second np connection. Nothing that is
+    // merely *loading a folder* should cost 8 MB of idle model-fetcher.
+    scenario.current = 'indexed'
+    await start()
+    await vi.waitFor(() => expect(commands).toContain('list_vault'))
+    expect(commands).not.toContain('embeddings_offer')
   })
 
   it('offers to set embeddings up when notes are indexed but have no vectors', async () => {

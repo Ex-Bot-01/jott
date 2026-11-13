@@ -9,6 +9,7 @@
   import Editor from './lib/Editor.svelte'
   import StatusLine from './lib/StatusLine.svelte'
   import { flattenTree, notesAwaitingEmbedding, notesAwaitingIndex } from './lib/tree'
+  import { markTerms } from './lib/highlight'
   import { consentSentence, statusFor, type Status } from './lib/statusLine'
   import type { SavePhase } from './lib/saveState'
   import * as ipc from './lib/ipc'
@@ -52,6 +53,9 @@
   let aboutLoading = $state(false)
 
   let searchQuery = $state('')
+  /** The query that produced the hit this note was opened from. Kept apart from `searchQuery` on purpose: the
+   * box keeps being typed in, and marks should follow the hit that was clicked, not every keystroke after it. */
+  let hitQuery = $state('')
   let results = $state<SearchResults | null>(null)
   let searching = $state(false)
   let searchTimer: ReturnType<typeof setTimeout> | undefined
@@ -80,6 +84,16 @@
     }
   }
 
+  /** One pass fires several of these events, and each wants the tree again. A re-list is a walk of the whole
+      folder — every note hashed that has not moved since it was last read — so three events in half a second
+      used to mean three walks of the same unchanged bytes. The last one is the one worth having. */
+  let relistTimer: ReturnType<typeof setTimeout> | undefined
+
+  function scheduleRelist() {
+    clearTimeout(relistTimer)
+    relistTimer = setTimeout(() => void refresh(), 150)
+  }
+
   async function refresh() {
     const next = await call(ipc.listVault)
     listing = next
@@ -91,7 +105,10 @@
       is merely owed work, or nobody has ever agreed to fetch them. Only np knows which (§18.6). */
   async function askOffer() {
     const vault = listing?.vault ?? null
-    if (!vault || offerAskedFor === vault) return
+    // Nothing awaiting vectors, nothing to offer. This is also what keeps a folder that merely *opened* from
+    // asking np a question — and asking means starting the second connection, which is ~8 MB parked for a
+    // dialog nobody is being shown (0.0.8's ruling on lazy connections, applied to my own new call site).
+    if (!vault || offerAskedFor === vault || awaitingEmbed === 0) return
     offerAskedFor = vault
     embeddingsOffer = await call(ipc.embeddingsOffer)
   }
@@ -106,13 +123,17 @@
     }
   }
 
-  async function openNote(rel: string) {
+  async function openNote(rel: string, fromQuery = '') {
     const content = await call(() => ipc.readNote(rel))
     if (!content) return
     note = content
     selected = rel
-    keptRel = null
+    // The marks follow the hit that was clicked. Clicking a row in the tree clears them, even though the
+    // search box still holds what was typed — those are different notes with different reasons to be open.
+    hitQuery = fromQuery
   }
+
+
 
   function toggleFolder(rel: string) {
     const next = new Set(openFolders)
@@ -293,7 +314,7 @@
       // A finished pass changes every marker in the tree, and the tree is a snapshot of the stamps as they
       // were when it was listed. Without this re-list the status line says "completed" over dots that still
       // say "waiting for the index" — which is exactly what a tester reported and reasonably called confusing.
-      if ('indexed' in event || 'embedded' in event || 'refused' in event || 'disabled' in event) void refresh()
+      if ('indexed' in event || 'embedded' in event || 'refused' in event || 'disabled' in event) scheduleRelist()
     })
     void ipc.onVaultChanged((change) => void onVaultChanged(change.rel))
     void ipc.onNpMissing((payload) => (npMissing = payload))
@@ -349,9 +370,13 @@
       <ul class="results">
         {#each results.hits as hit (hit.path)}
           <li>
-            <button type="button" onclick={() => void openNote(hit.path)}>
+            <button type="button" onclick={() => void openNote(hit.path, searchQuery.trim())}>
               <span class="hit-path">{hit.path}</span>
-              <span class="hit-snippet">{hit.snippet ?? ''}</span>
+              <span class="hit-snippet">
+                {#each markTerms(hit.snippet ?? '', searchQuery) as part, index}
+                  {#if part.matched}<mark>{part.text}</mark>{:else}{part.text}{/if}
+                {/each}
+              </span>
             </button>
           </li>
         {:else}
@@ -439,6 +464,7 @@
     {/if}
 
     <Editor
+      highlight={hitQuery}
       rel={selected}
       {note}
       {external}
@@ -573,6 +599,12 @@
   .hit-snippet {
     display: block;
     white-space: normal;
+  }
+  .hit-snippet mark {
+    /* Same ruler as the editor's marks: a tint of the ink, so it reads on light and dark paper alike. */
+    background: color-mix(in srgb, currentColor 24%, transparent);
+    color: inherit;
+    border-radius: 2px;
   }
   .results .none,
   .results .mode {

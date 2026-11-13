@@ -236,6 +236,14 @@ pub fn extended_length_prefix(path: &str) -> String {
 /// any call site having to thread a registry through (§14) — which is also the trap: a session that hands
 /// its watcher a *different* registry reports every save of its own as an outside change, so there is one
 /// registry here and everybody uses it.
+/// Bookkeeping for "we did this": the watcher must not report it back as an outside change, and the tree must
+/// not judge the file from the bytes that were there a moment ago. Always both, because they answer the same
+/// question about the same event.
+fn mark_ours(root: &Path, rel: &str) {
+    default_self_writes().record(rel);
+    crate::vault::walk::invalidate(&root.join(rel));
+}
+
 pub(crate) fn default_self_writes() -> &'static Arc<SelfWrites> {
     static REGISTRY: OnceLock<Arc<SelfWrites>> = OnceLock::new();
     REGISTRY.get_or_init(|| Arc::new(SelfWrites::new()))
@@ -288,8 +296,12 @@ pub fn write_note_with(
 ) -> Result<(), FileError> {
     let path = PathGuard::new(root).resolve(rel)?;
     stays_off_np_catalog(rel)?;
-    // Recorded first, so an event that arrives while the bytes are still going out is already ours.
+    // Recorded first, so an event that arrives while the bytes are still going out is already ours — into the
+    // registry the caller is watching, not whichever one happens to be the default. And the tree's digest cache
+    // forgets this file: the walk must not judge it from the bytes it just replaced, which would mean resting
+    // correctness on a timestamp's resolution.
     writes.record(rel);
+    crate::vault::walk::invalidate(&root.join(rel));
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|source| FileError::Io { rel: rel.to_string(), source })?;
@@ -346,7 +358,7 @@ pub fn create_folder(root: &Path, rel: &str) -> Result<(), FileError> {
     if std::fs::symlink_metadata(to_open_path(&path)).is_ok() {
         return Err(FileError::AlreadyExists { rel: rel.to_string() });
     }
-    default_self_writes().record(rel);
+    mark_ours(root, rel);
     std::fs::create_dir_all(to_open_path(&path)).map_err(|source| FileError::Io { rel: rel.to_string(), source })
 }
 
@@ -411,6 +423,9 @@ fn move_within(from: &str, to: &str, source: PathBuf, target: PathBuf) -> Result
     }
     default_self_writes().record(from);
     default_self_writes().record(to);
+    // A move renames everything underneath it, so the digest cache is dropped whole rather than re-keyed one
+    // child at a time: correctness first, and a re-walk of even a large vault measured 40 ms.
+    crate::vault::walk::invalidate_tree();
     std::fs::rename(to_open_path(&source), to_open_path(&target))
         .map_err(|source| FileError::Io { rel: from.to_string(), source })
 }
@@ -449,7 +464,7 @@ pub fn delete_to_trash(root: &Path, rel: &str) -> Result<Trashed, FileError> {
     if std::fs::symlink_metadata(to_open_path(&path)).is_err() {
         return Err(FileError::NotFound { rel: rel.to_string() });
     }
-    default_self_writes().record(rel);
+    mark_ours(root, rel);
     match trash::delete(to_open_path(&path)) {
         Ok(()) => Ok(Trashed::Os),
         Err(os_refusal) => {
