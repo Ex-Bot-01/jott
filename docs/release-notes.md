@@ -1,30 +1,31 @@
-# Jott 0.0.9 — Index now means the folder, and nothing downloads without asking
+# Jott 0.0.10 — faster, a caret you can find, and markdown that reads like markdown
 
-Two bugs a tester walked into, both found by running the real np binary instead of reasoning about it.
+Four asks in one sentence, so four things changed. The measurements are from this machine (Linux, release
+build); Windows with an antivirus in the way will differ in size, not in shape.
 
-**"Index now" did nothing on a folder you had only opened.** The button flushed whatever the save queue was
-holding, and on a freshly opened folder that is nothing — so the pass never ran, every dot stayed where it was,
-and yet nothing said so. np scans an entire workspace whenever *any* note triggers it, but Jott's per-file
-stamps only update for the notes in the batch, which is how "it says completed and my files say waiting" was
-true of the same window. The button now queues every note in the folder, and its own label is what it does.
+**Listing a folder is now ~10× cheaper.** A tree walk hashed every note in it — 34.9 ms for a 2,000-note vault —
+and each file was read *twice*: once whole to check it was text, once streamed to hash it. On top of that, every
+ingest event asked for the tree again, so one indexing pass paid for the same unchanged bytes three times in half
+a second. Now a note is read once, its digest is remembered for the run against its size and timestamp, and the
+events coalesce into one re-list per pass: **3.3 ms** for that same folder. What that cache trusts is written in
+the code — a file whose timestamp was preserved by whatever wrote it can hold one marker at yesterday's state
+until it genuinely changes again. That is acceptable for a dot; §18.13 refuses the same trust for unsaved text,
+and the editor still reads and hashes fresh.
 
-**Nothing ever embedded, and np downloaded anyway.** Jott's consent gate read np's config file for a model name.
-A fresh install has no config file, so Jott concluded there was nothing to ask about and skipped embedding
-forever — search stayed keyword-only, dots stuck at *awaiting embedding*. Meanwhile np 0.3.1 carries a built-in
-model and its `auto_fetch` defaults to **yes**: measured here, a bare `np serve` answered its first `search` by
-fetching **309,855,456 bytes** with nobody asked. So the app that promises to name the model and the folder first
-was quietly outrun by the thing it ships.
+**The caret is two pixels of ink.** The window set its own text colour and let CodeMirror pick the caret — one
+pixel of CodeMirror's grey, which on a scaled Windows display is not visible. Search box and dialogs get the
+same colour for theirs.
 
-Now: no model named in np's config means *ask about np's own default* — the prompt names `embeddinggemma-2`,
-about 295 MiB, and the exact folder; and until somebody answers, Jott sets np's `auto_fetch` to off so nothing
-arrives behind the dialog. A recorded answer is never overruled by reopening a vault or relaunching, and *Stay
-keyword-only* is not permanent: while notes sit indexed-but-not-embedded the sidebar offers **Set up embeddings**,
-which repeats the same sentence as a confirmation and then runs the pass.
+**Search marks what it matched.** np sends a snippet with no offsets, so Jott finds the words itself: every word
+of your query, in any case, inside longer words too (its keyword scoring hits `kumquat` inside `kumquats`). The
+result row shows the marks; clicking it opens the note scrolled to the first one. A hit that came only from the
+model's meaning has no matching words, and Jott does not pretend otherwise by jumping to the top of the file.
 
-The numbers in that sentence are measured, not remembered: np 0.3.1's built-in model id, size and digest were
-read off the binary on this machine (`np serve` → fetch report → `models.list`) and pinned so a prompt can name
-a download before it exists. Whenever np reports a model itself, np's answer is shown instead — Jott's copy is
-wording, never authority.
+**Markdown is styled, not rendered.** Headings take size, `**bold**` is bold with its asterisks faded to 42% ink,
+inline code gets a tint, links get an underline. Choosing this over a side-by-side preview was a deliberate call:
+a preview costs half your typing width and puts a third-party HTML renderer between your notes and your screen
+(spec §20 has things to say about that), while the buffer staying *the file's bytes* means nothing can drift out
+of sync with the file. Say the word if you want the preview anyway — it is an addition, not a rewrite.
 
 **Assets**
 

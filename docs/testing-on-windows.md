@@ -98,6 +98,22 @@ Two more, if you have the patience:
   earlier session", with *Use it* / *Discard it*. **This one is the test most worth reporting on**, in either
   direction — including "it offered me text I had deliberately deleted", which is a bug, not a nuisance.
 
+## 2b. Since 0.0.10: the editor looks different, on purpose
+
+Headings are bigger, `**this**` is bold, inline code has a grey tint, links are underlined, and the syntax
+markers — `#`, `**`, backticks, `>` — sit at roughly 40% ink instead of full strength. The text you type is
+still the file's own bytes: nothing is auto-closed, auto-converted or hidden, so what you see bold is exactly
+what a plain text editor would show between two asterisks.
+
+Two things worth checking while you are in there:
+
+- **The caret.** It should be unmistakable — two pixels of the same ink as the text, on both light and dark
+  paper. If it still reads faint at your display scaling, tell me the scaling percentage and the monitor.
+- **Search marks.** Search for a word that appears in a note, look at the result row: your word should be
+  marked inside the snippet. Click the row: the note should open scrolled to the first place that word appears,
+  with every occurrence marked. A hit that came from meaning rather than words has nothing marked and does not
+  jump — that is correct, not broken.
+
 ## 3. One thing worth watching: np processes
 
 Jott starts np when it opens and keeps one running; a second starts the first time you search and stays until you
