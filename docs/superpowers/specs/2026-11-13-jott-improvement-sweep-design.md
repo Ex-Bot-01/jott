@@ -156,6 +156,14 @@ click.
   indexed by np, a dotted one confuses the watcher, and cross-volume replace is not atomic anyway. The mirrored
   buffer (§18.13) remains the recovery path, and A6/B9 make it more visible rather than replacing it.
 - **Rewriting links on rename.** Detection only in M1 by design; rewriting needs np's resolver (§13, Plan 2).
+- **`cargo fmt --check` as a CI gate, in this branch.** The rule is right, and the workflow will want it, but running `cargo fmt` here would rewrite 376 places
+  across nearly every Rust file — a release diff that is mostly whitespace is how a real change hides, and this branch
+  already carries behaviour a tester has to verify one by one. Deferred to a formatting-only commit between
+  milestones, with `rustfmt.toml` (`max_width = 120`, the house width) landing in that same commit so the reformat is
+  decided once rather than negotiated per file. What landed instead is CI evidence: the test job says whether np is
+  on `PATH` (so the absence tests are verifiably honest) and prints the passing-test count with a floor, because a
+  scripted edit once deleted five tests while the suite stayed green and only the count noticed.
+
 - **Pruning stamps, mirrors and the digest cache.** All three grow slowly with files ever seen, none is unbounded
   in a way that hurts at any size we have measured, and every pruning rule risks forgetting something somebody
   will ask about. Recorded as known growth, not fixed blind.
