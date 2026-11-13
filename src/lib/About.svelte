@@ -8,7 +8,15 @@
   import { openUrl } from '@tauri-apps/plugin-opener'
   import type { AboutInfo } from './ipc'
 
-  let { info, loading = false, onClose }: { info: AboutInfo | null; loading?: boolean; onClose: () => void } = $props()
+  // `onDiagnostics` is optional so the panel still renders if a caller has nowhere to send the press. In the app
+  // it is always passed: someone reading an About panel because something went wrong is exactly the person who
+  // has not been told that Ctrl+Shift+D exists.
+  let { info, loading = false, onDiagnostics, onClose }: {
+    info: AboutInfo | null
+    loading?: boolean
+    onDiagnostics?: () => void
+    onClose: () => void
+  } = $props()
 
   let clip = $state<HTMLTextAreaElement | null>(null)
   /** The webview's clipboard can be unavailable (a plain-HTTP origin is not a secure context). Then the text
@@ -82,6 +90,9 @@
         <button type="button" onclick={() => void copy()}>Copy details</button>
         <a href={info.repoUrl} onclick={(event) => external(event, info.repoUrl)}>Repository</a>
         <a href={info.docsUrl} onclick={(event) => external(event, info.docsUrl)}>Testing guide</a>
+        {#if onDiagnostics}
+          <button type="button" onclick={onDiagnostics}>Diagnostics</button>
+        {/if}
       </footer>
 
       {#if manual}

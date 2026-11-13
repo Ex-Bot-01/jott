@@ -281,6 +281,16 @@ describe('the window mounts', () => {
     expect(text).toContain('C:\\Program Files\\Jott\\np\\np.exe')
     expect(text).toContain('bundled')
     expect(text).toContain('jott.jsonl')
+
+    // The panel is also the way into the drawer: whoever opens About opened it because something is wrong, and
+    // nobody reads a keyboard shortcut in a README at the moment they need one.
+    const diag = [...document.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Diagnostics')
+    expect(diag, 'the About panel has no way into the diagnostics drawer').not.toBeUndefined()
+    diag!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await vi.waitFor(() => expect(document.body.textContent ?? '').toContain('What Jott is doing'))
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await vi.waitFor(() => expect(document.body.textContent ?? '').not.toContain('What Jott is doing'))
     expect(errors).toEqual([])
   })
 

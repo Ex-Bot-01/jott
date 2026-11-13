@@ -175,11 +175,7 @@
     await loadAbout()
   }
 
-  async function toggleDiagnostics() {
-    if (showDiagnostics) {
-      showDiagnostics = false
-      return
-    }
+  async function openDiagnostics() {
     showDiagnostics = true
     void loadAbout()
     // Asked again every time it opens. The queue and the counts are facts about right now, and a drawer stuck on
@@ -187,12 +183,13 @@
     snapshot = await call(ipc.diagnostics)
   }
 
-  function onKey(event: KeyboardEvent) {
+  async function toggleFromShortcut(event: KeyboardEvent) {
     // Ctrl+Shift+D, because "show me what the backend did" should not need a menu tour — and because the
     // alternative somebody reaches for otherwise is the log file, in a text editor, at 11pm.
     if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'd') {
       event.preventDefault()
-      void toggleDiagnostics()
+      if (showDiagnostics) showDiagnostics = false
+      else await openDiagnostics()
     }
   }
 
@@ -363,7 +360,7 @@
 
 </script>
 
-<svelte:window onkeydown={onKey} />
+<svelte:window onkeydown={(event) => void toggleFromShortcut(event)} />
 
 <main class="window">
   <aside class="side">
@@ -544,7 +541,12 @@
   {/if}
 
   {#if showAbout}
-    <About info={about} loading={aboutLoading} onClose={() => (showAbout = false)} />
+    <About
+      info={about}
+      loading={aboutLoading}
+      onDiagnostics={() => void openDiagnostics()}
+      onClose={() => (showAbout = false)}
+    />
   {/if}
 </main>
 
