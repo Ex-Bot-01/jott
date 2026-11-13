@@ -15,7 +15,6 @@
 //! so the same vault lists the same way on Windows and Linux and matches the paths np reports.
 
 use super::stamps::{StampState, Stamps};
-use crate::hashes::sha256_file;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use thiserror::Error;
@@ -67,7 +66,17 @@ pub enum WalkError {
 /// Walk `root` and return every row the tree shows, sorted by `rel` bytes. The root itself is not
 /// a row — it is the tree's header — and its own name is never held against it: a vault at
 /// `~/.notes` is a vault.
+/// The tree for a vault, using this run's digest cache. See [`walk_with`].
 pub fn walk(root: &Path, stamps: &Stamps) -> Result<Vec<TreeEntry>, WalkError> {
+    walk_with(root, stamps, default_hash_cache())
+}
+
+/// The tree for a vault.
+///
+/// `cache` is what keeps re-listing cheap: digests already taken this run are reused for any note whose size
+/// and mtime still match what was read. Pass a fresh [`HashCache`] to measure a cold folder, or to keep two
+/// tests out of each other's numbers.
+pub fn walk_with(root: &Path, stamps: &Stamps, cache: &HashCache) -> Result<Vec<TreeEntry>, WalkError> {
     if !root.is_dir() {
         return Err(WalkError::NotAFolder { path: root.to_path_buf() });
     }
@@ -86,7 +95,7 @@ pub fn walk(root: &Path, stamps: &Stamps) -> Result<Vec<TreeEntry>, WalkError> {
                     // index talking about the same corpus.
                     continue;
                 }
-                entries.push(entry_for(&dir_entry, &rel, stamps));
+                entries.push(entry_for(&dir_entry, &rel, stamps, cache));
             }
             Err(source) => {
                 // A walk error always names the path it tripped over except in cases walkdir
@@ -154,7 +163,7 @@ pub fn note_rels(root: &Path) -> Result<Vec<String>, WalkError> {
     Ok(notes)
 }
 
-fn entry_for(dir_entry: &walkdir::DirEntry, rel: &str, stamps: &Stamps) -> TreeEntry {
+fn entry_for(dir_entry: &walkdir::DirEntry, rel: &str, stamps: &Stamps, cache: &HashCache) -> TreeEntry {
     let path = dir_entry.path();
     let metadata = dir_entry.metadata().ok();
     let size = metadata.as_ref().map(|m| if m.is_dir() { 0 } else { m.len() }).unwrap_or(0);
@@ -187,31 +196,38 @@ fn entry_for(dir_entry: &walkdir::DirEntry, rel: &str, stamps: &Stamps) -> TreeE
     };
     // Only notes have a state to show: np's index rows are notes, and an image row would need the
     // vision feature the released binaries do not carry (§18.7).
-    let state = (kind == EntryKind::Note && !is_under_processed(rel)).then(|| note_state(path, rel, stamps));
+    let state = (kind == EntryKind::Note && !is_under_processed(rel)).then(|| note_state(path, rel, stamps, cache));
     TreeEntry { rel: rel.to_string(), kind, size, mtime, state }
 }
 
 /// What the walk itself can prove about a note's bytes, and what it has to ask the stamps about.
-fn note_state(path: &Path, rel: &str, stamps: &Stamps) -> StampState {
+///
+/// Read once, hashed in memory: this used to read the file whole for the UTF-8 check and stream it a second
+/// time through the hasher — the same bytes twice for no decision made in between. `sha256_hex` over a buffer
+/// is the same number as `sha256_file` over a path, which is what np's index keys on (§18.8), and the digest
+/// cache in front of it means most notes are not read at all.
+fn note_state(path: &Path, rel: &str, stamps: &Stamps, cache: &HashCache) -> StampState {
     let Ok(metadata) = path.metadata() else {
         return StampState::Refused("unreadable".into());
     };
     if metadata.len() > MAX_NOTE_BYTES {
         return StampState::Refused("too-large".into());
     }
-    let Ok(bytes) = std::fs::read(path) else {
-        return StampState::Refused("unreadable".into());
+    let mtime_ms = metadata
+        .modified()
+        .ok()
+        .and_then(|when| when.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map(|since| since.as_millis() as i64);
+    let seen = match cache.inspect(rel, path, metadata.len(), mtime_ms) {
+        Ok(seen) => seen,
+        Err(_) => return StampState::Refused("unreadable".into()),
     };
-    if std::str::from_utf8(&bytes).is_err() {
-        // Jott's refusal, not np's: np indexes such bytes lossily. The editor holds text, so this
-        // file cannot be opened here — and the tree says that instead of claiming a state nobody
-        // measured.
+    if !seen.text_ok {
+        // Jott's refusal, not np's: np indexes such bytes lossily. The editor holds text, so this file cannot
+        // be opened here — and the tree says that instead of claiming a state nobody measured.
         return StampState::Refused("not-utf8".into());
     }
-    match sha256_file(path) {
-        Ok(hash) => stamps.state_of(rel, &hash),
-        Err(_) => StampState::Refused("unreadable".into()),
-    }
+    stamps.state_of(rel, &seen.hash)
 }
 
 /// The path under the root, in np's spelling: `/` separated, and text (a name that is not valid
@@ -255,4 +271,126 @@ fn io_error(source: &walkdir::Error) -> std::io::Error {
         Some(code) => std::io::Error::from_raw_os_error(code),
         None => std::io::Error::other(source.to_string()),
     }
+}
+
+// ---------------------------------------------------------------- digests, once per run
+
+/// What the walk learned about one note's bytes, and whether they were worth reading again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Seen {
+    /// The digest of the bytes as they sit on disk — np's key for a file, byte for byte (§18.8).
+    pub hash: String,
+    /// Whether those bytes are UTF-8. Part of the cache entry because deciding it needs the same read, and a
+    /// second walk should not have to take one to repeat an answer it already has.
+    pub text_ok: bool,
+}
+
+/// The digests this run of Jott has already taken, kept so that listing a folder again costs nothing it has
+/// not seen move.
+///
+/// **What it trusts:** `(size, mtime)` of the file beside the digest it was taken from. That is a cache's
+/// business — the worst a wrong answer can do is hold one tree marker at the wrong state until the file
+/// genuinely changes again, and any real edit changes one of those two numbers. It is *not* a stamp's
+/// business: §18.13 refused the same trust for an unsaved buffer, where being wrong costs someone their words,
+/// and that rule still holds — the editor's reload policy reads bytes and hashes fresh.
+///
+/// **What it never does:** outlive the run. Nothing is written to disk, so a vault touched by another program
+/// while Jott was closed is read from scratch on the next launch rather than trusted from a file of ours.
+#[derive(Default)]
+pub struct HashCache {
+    entries: std::sync::Mutex<std::collections::HashMap<String, Entry>>,
+    hits: std::sync::atomic::AtomicUsize,
+    misses: std::sync::atomic::AtomicUsize,
+}
+
+#[derive(Debug, Clone)]
+struct Entry {
+    size: u64,
+    mtime_ms: Option<i64>,
+    seen: Seen,
+}
+
+impl HashCache {
+    pub fn new() -> HashCache {
+        HashCache::default()
+    }
+
+    /// The digest of `path`, from memory when the file has not moved since it was last read.
+    pub(crate) fn inspect(&self, rel: &str, path: &Path, size: u64, mtime_ms: Option<i64>) -> Result<Seen, std::io::Error> {
+        // Keyed by the path, never by `rel`: two vaults in one run both have an `a.md`, and a copied note can
+        // match on size *and* timestamp while holding different bytes. The tree row is a name; this is a file.
+        let key = path.display().to_string();
+        if let Some(seen) = self.reuse(&key, size, mtime_ms) {
+            return Ok(seen);
+        }
+        let _ = rel;
+        let bytes = std::fs::read(path)?;
+        let seen = Seen { hash: crate::hashes::sha256_hex(&bytes), text_ok: std::str::from_utf8(&bytes).is_ok() };
+        self.remember(key, size, mtime_ms, &seen);
+        Ok(seen)
+    }
+
+    /// How many digests came from memory and how many needed a read. A test's way of asking "did this walk do
+    /// work it did not have to do?" without timing anything, because timings on a shared runner are a rumour.
+    pub fn stats(&self) -> (usize, usize) {
+        use std::sync::atomic::Ordering::Relaxed;
+        (self.hits.load(Relaxed), self.misses.load(Relaxed))
+    }
+
+    /// Forget every digest. See [`invalidate_tree`].
+    pub fn clear(&self) {
+        if let Ok(mut entries) = self.entries.lock() {
+            entries.clear();
+        }
+    }
+
+    /// Drop what is known about one file — after a write of ours, or a change the watcher reported. Keyed the
+    /// same way as `inspect`: by the file, not by the row it draws in the tree.
+    pub fn forget(&self, path: &Path) {
+        if let Ok(mut entries) = self.entries.lock() {
+            entries.remove(path.display().to_string().as_str());
+        }
+    }
+
+    fn reuse(&self, key: &str, size: u64, mtime_ms: Option<i64>) -> Option<Seen> {
+        // A filesystem that will not answer for an mtime gets no cache at all: without it there is nothing to
+        // say "unchanged", and a plausible guess about someone's bytes is exactly what this file forbids.
+        let mtime_ms = mtime_ms?;
+        let entries = self.entries.lock().ok()?;
+        let entry = entries.get(key)?;
+        if entry.size == size && entry.mtime_ms == Some(mtime_ms) {
+            self.hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return Some(entry.seen.clone());
+        }
+        None
+    }
+
+    fn remember(&self, key: String, size: u64, mtime_ms: Option<i64>, seen: &Seen) {
+        self.misses.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if let Ok(mut entries) = self.entries.lock() {
+            entries.insert(key, Entry { size, mtime_ms, seen: seen.clone() });
+        }
+    }
+}
+
+/// Forget everything this run remembered. A moved folder is the case: every note inside it changed name and
+/// possibly timestamp at once, and getting each child's new key right matters more than the 40 ms a re-hash of
+/// a large vault costs. Rare action, blunt answer.
+pub fn invalidate_tree() {
+    default_hash_cache().clear();
+}
+
+/// Drop what this run remembers about one file, from a path. Jott's own write paths call this so a note they
+/// just changed is never judged from the bytes they replaced — waiting on `mtime` to differ would work, but it
+/// makes correctness rest on a timestamp's resolution, and §18.13 already showed how that reads.
+pub fn invalidate(path: &Path) {
+    default_hash_cache().forget(path);
+}
+
+/// The cache every listing shares for the life of the process. Same shape as the self-write registry in
+/// `files.rs`: a plain `walk(root, stamps)` keeps its signature, and anything that needs isolation asks for
+/// its own.
+pub(crate) fn default_hash_cache() -> &'static HashCache {
+    static CACHE: std::sync::OnceLock<HashCache> = std::sync::OnceLock::new();
+    CACHE.get_or_init(HashCache::default)
 }

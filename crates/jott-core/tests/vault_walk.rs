@@ -3,7 +3,7 @@
 //! and a state we did not measure is never invented.
 
 use jott_core::vault::stamps::{StampState, Stamps};
-use jott_core::vault::walk::{walk, EntryKind, TreeEntry};
+use jott_core::vault::walk::{walk, walk_with, EntryKind, HashCache, TreeEntry};
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
@@ -293,3 +293,128 @@ fn restore_readable(dir: &Path) {
 }
 
 
+
+// ---- the digest cache, which is why re-listing a folder costs nothing it already looked at ----
+
+/// A listing walks the folder and hashes every note in it. On a 2,000-note vault that measured ~40 ms in a
+/// release build — and the window lists again after every save, rename and ingest event, so the same unchanged
+/// bytes were hashed over and over within one second of each other. The cache is per run of the app: it trusts
+/// `(size, mtime)` to say "these are the bytes I already read", which is a cache's business, not a stamp's —
+/// §18.13 refused the same trust for *unsaved text*, where being wrong costs someone their words. Here the
+/// worst a lie can do is hold one dot at the wrong state until the file genuinely moves again.
+#[test]
+fn a_note_that_has_not_moved_is_not_read_again() {
+    let dir = TempDir::new().unwrap();
+    put(dir.path(), "a.md", b"# A\n");
+    put(dir.path(), "b.md", b"# B\n");
+    let stamps = stamps_for(dir.path());
+
+    let cache = HashCache::new();
+    walk_with(dir.path(), &stamps, &cache).unwrap();
+    assert_eq!(cache.stats(), (0, 2), "the first listing has to read both notes");
+
+    walk_with(dir.path(), &stamps, &cache).unwrap();
+    assert_eq!(cache.stats(), (2, 2), "the second one reads neither");
+}
+
+/// The other half of the bargain: bytes that changed are hashed again. Same length on purpose — a cache keyed
+/// on size alone would pass the test above and fail this one.
+#[test]
+fn a_note_that_moved_is_hashed_again() {
+    let dir = TempDir::new().unwrap();
+    put(dir.path(), "a.md", b"# A\n");
+    put(dir.path(), "b.md", b"# B\n");
+    let stamps = stamps_for(dir.path());
+
+    let cache = HashCache::new();
+    walk_with(dir.path(), &stamps, &cache).unwrap();
+
+    // Same byte count, different content. `set_modified` rather than trusting the clock: two writes inside one
+    // timestamp tick are exactly how §18.13's mirror got fooled once already.
+    put(dir.path(), "a.md", b"# Z\n");
+    let moved = std::fs::metadata(dir.path().join("a.md"))
+        .unwrap()
+        .modified()
+        .unwrap()
+        + std::time::Duration::from_secs(1);
+    std::fs::File::options()
+        .write(true)
+        .open(dir.path().join("a.md"))
+        .unwrap()
+        .set_modified(moved)
+        .unwrap();
+
+    let entries = walk_with(dir.path(), &stamps, &cache).unwrap();
+    assert_eq!(cache.stats(), (1, 3), "one note reused, the moved one read again");
+    let a = entries.iter().find(|e| e.rel == "a.md").unwrap();
+    assert_eq!(a.state, Some(StampState::Waiting), "and its state is judged on the new bytes");
+}
+
+/// A digest is a digest: whatever path the bytes took to get here — read into memory or streamed through the
+/// hasher — it names the same file. This is the fixture np's own index keys on (§18.8).
+#[test]
+fn the_cached_digest_is_the_same_number_as_streaming_the_file() {
+    let dir = TempDir::new().unwrap();
+    // 300 KB, so a streamed read and a buffered one are not accidentally the same code path at 64 KiB.
+    let body = "x".repeat(300 * 1024);
+    put(dir.path(), "big.md", format!("# Big\n\n{body}\n").as_bytes());
+    let stamps = stamps_for(dir.path());
+
+    let cache = HashCache::new();
+    let entries = walk_with(dir.path(), &stamps, &cache).unwrap();
+    assert_eq!(entries.len(), 1);
+    let expected = jott_core::hashes::sha256_file(&dir.path().join("big.md")).unwrap();
+    // Nothing was indexed, so the state is `Waiting` either way; what this pins is that the walk's own digest
+    // — the one a stamp is compared against — matches the streamed hash exactly.
+    let stamps = {
+        let mut fresh = stamps_for(dir.path());
+        fresh.mark_indexed("big.md", &expected);
+        fresh
+    };
+    let entries = walk_with(dir.path(), &stamps, &cache).unwrap();
+    assert_eq!(
+        entries[0].state,
+        Some(StampState::Indexed),
+        "the digest the walk produced is the one a stamp matches: {expected}"
+    );
+}
+
+fn put(root: &Path, rel: &str, bytes: &[u8]) {
+    std::fs::create_dir_all(root.join(rel).parent().unwrap()).ok();
+    std::fs::write(root.join(rel), bytes).expect("the test wrote this");
+}
+
+/// The shared cache is keyed by the file, not by the tree row. Two vaults in one run both have an `a.md`, and
+/// a note copied between them can share a byte count *and* an mtime — a key of `rel` alone would answer one
+/// vault's digest for the other, which is a wrong marker on someone's real notes.
+#[test]
+fn two_vaults_with_a_note_of_the_same_name_are_not_the_same_note() {
+    let one = TempDir::new().unwrap();
+    let two = TempDir::new().unwrap();
+    put(one.path(), "a.md", b"# A\n");
+    put(two.path(), "a.md", b"# B\n");
+    // Identical size, and the timestamp forced to match: the only difference left is the bytes.
+    let stamp = std::fs::metadata(one.path().join("a.md")).unwrap().modified().unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(two.path().join("a.md"))
+        .unwrap()
+        .set_modified(stamp)
+        .unwrap();
+
+    let cache = HashCache::new();
+    let mut stamps = stamps_for(one.path());
+    stamps.mark_indexed("a.md", &jott_core::hashes::sha256_file(&one.path().join("a.md")).unwrap());
+    let other = stamps_for(two.path());
+
+    let entries = walk_with(one.path(), &stamps, &cache).unwrap();
+    assert_eq!(state_of(&entries, "a.md"), Some(StampState::Indexed));
+
+    let entries = walk_with(two.path(), &other, &cache).unwrap();
+    assert_eq!(
+        state_of(&entries, "a.md"),
+        Some(StampState::Waiting),
+        "the second vault's a.md was judged on its own bytes"
+    );
+    assert_eq!(cache.stats().1, 2, "both were read; neither borrowed the other's digest");
+}
