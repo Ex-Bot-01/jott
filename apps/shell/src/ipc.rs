@@ -12,8 +12,8 @@ use jott_core::diagnostics::Journal;
 use jott_core::ingest::consent::np_config_path;
 use jott_core::ingest::queue::ConsentOffer;
 use jott_core::ipc::{
-    self, IpcError, NpMissingPayload, NoteContent, RegistryInfo, RenameOutcome, SearchResults, VaultListing, VaultSession,
-    WriteResult,
+    self, Diagnostics, IpcError, NpMissingPayload, NoteContent, RegistryInfo, RenameOutcome, SearchResults, VaultListing,
+    VaultSession, WriteResult,
 };
 use jott_core::np::client::NpClient;
 use jott_core::np::resolve::{current_os, resolve_np, NpSource};
@@ -23,6 +23,7 @@ use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
+use tokio::sync::broadcast::error::RecvError;
 
 pub struct App {
     /// The registry: recents and the consent decision, in the app data dir (§12).
@@ -179,6 +180,24 @@ fn bridge(handle: &AppHandle, session: &Arc<VaultSession>) {
             let _ = sink.emit("vault://changed", json!({ "rel": rel }));
         }
     });
+
+    // Live backend activity for the diagnostics drawer. Lagging is survivable and said so: a ring that overflowed
+    // while the drawer was closed still shows its own history on open, so dropping rows here loses nothing but
+    // duplicates. Killing the pump on lag would silently stop the screen mid-run, which is the failure this whole
+    // feature exists to prevent.
+    let mut rows = session.trace_events();
+    let sink = handle.clone();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            match rows.recv().await {
+                Ok(row) => {
+                    let _ = sink.emit("trace://row", &row);
+                }
+                Err(RecvError::Lagged(_)) => continue,
+                Err(RecvError::Closed) => break,
+            }
+        }
+    });
 }
 
 /// Say what is wrong with np, if anything is. Called at startup and asked about by the window as well.
@@ -226,6 +245,14 @@ pub async fn app_info(app: State<'_, App>) -> Result<AboutInfo, IpcError> {
         &app.data,
         &app.journal.path(),
     ))
+}
+
+/// What the diagnostics drawer opens with. Built from memory and a warm digest cache, so opening it never waits
+/// on np — and never starts it (§4: the screen people reach for when the backend is unwell must not itself need
+/// the backend).
+#[tauri::command]
+pub async fn diagnostics(app: State<'_, App>) -> Result<Diagnostics, IpcError> {
+    Ok(app.current()?.diagnostics().await)
 }
 
 #[tauri::command]

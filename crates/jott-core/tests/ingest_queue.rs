@@ -147,7 +147,7 @@ fn scan_and_embed() -> Value {
 
 fn behind(events: &[IngestEvent]) -> Option<(StateReason, u64)> {
     events.iter().find_map(|e| match e {
-        IngestEvent::Behind { reason, retry_in_ms } => Some((reason.clone(), *retry_in_ms)),
+        IngestEvent::Behind { reason, retry_in_ms } => Some((*reason, *retry_in_ms)),
         _ => None,
     })
 }

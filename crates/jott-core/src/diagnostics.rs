@@ -88,7 +88,10 @@ impl Journal {
         let dir = app_data.join("logs");
         let path = dir.join("jott.jsonl");
         let written = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-        let state = match std::fs::create_dir_all(&dir) {
+        // The file is created at open, so the path About and the drawer name exists the moment it is named.
+        let state = match std::fs::create_dir_all(&dir)
+            .and_then(|()| std::fs::OpenOptions::new().create(true).append(true).open(&path).map(drop))
+        {
             Ok(()) => Some(Writer { path, written }),
             Err(_) => None,
         };
@@ -97,6 +100,18 @@ impl Journal {
 
     pub fn path(&self) -> PathBuf {
         self.dir.join("jott.jsonl")
+    }
+
+    /// The file to name in a window, or `None` when writing gave up. A drawer that shows a path nobody opened
+    /// sends someone looking for a file that will never appear (§4).
+    pub fn file(&self) -> Option<PathBuf> {
+        (!self.broken()).then(|| self.path())
+    }
+
+    /// Bytes in the log right now, read from the filesystem rather than a running counter: a rotated or partly
+    /// copied file should still report its real size. `None` when there is no readable file.
+    pub fn size(&self) -> Option<u64> {
+        self.file().and_then(|p| std::fs::metadata(p).ok().map(|m| m.len()))
     }
 
     /// Whether writing has given up. The window does not show this (§4: nobody can act on "the log folder

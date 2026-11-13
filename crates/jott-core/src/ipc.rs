@@ -183,12 +183,108 @@ pub struct NpMissingPayload {
     pub install_hint: String,
 }
 
+// ---- the diagnostics snapshot (specs/2026-11-13-diagnostics-drawer-design.md) ----
+//
+// Four small DTOs with closed key sets, because the drawer is TypeScript written against shapes Rust does not
+// check. Same rule as `VaultListing`: the keys are the contract, and a test compares them to the TS types.
+
+/// Whether a slot holds a live np child. Three answers, because "not needed yet" is normal at startup while
+/// "was there, now gone" usually means np died — a drawer that blurs the two teaches people to ignore it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConnectionState {
+    Up,
+    Idle,
+    Down,
+}
+
+/// What this run is talking to, and where its own files are. `np_version` is what the handshake answered; in a
+/// running app that is always at or above the floor, because the version check happened before this session
+/// existed.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeInfo {
+    pub np_version: Option<String>,
+    /// Which np binary this run resolved. On a machine with two installs, this is the fastest sentence on screen.
+    pub np_path: Option<String>,
+    pub protocol: Option<u32>,
+    pub writer: ConnectionState,
+    pub reader: ConnectionState,
+    pub data_dir: String,
+    pub log_path: Option<String>,
+    /// Bytes in that file, so "send the log" arrives with a sense of how much. `None` when there is no log —
+    /// never zero standing in for unknown (§4).
+    pub log_bytes: Option<u64>,
+    pub consent: Consent,
+    /// What np's config says right now about fetching models on its own. `None` when Jott does not know which
+    /// config file it is reading.
+    pub auto_fetch: Option<bool>,
+}
+
+impl RuntimeInfo {
+    pub const KEYS: [&'static str; 10] = [
+        "npVersion", "npPath", "protocol", "writer", "reader", "dataDir", "logPath", "logBytes", "consent",
+        "autoFetch",
+    ];
+}
+
+/// What the ingest queue is holding, in words: `backoff` carries `locked` / `offline`, the same two the status
+/// line uses. One vocabulary across three surfaces is the point of §11.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueState {
+    pub waiting: usize,
+    pub held_for_consent: usize,
+    pub backoff: Option<String>,
+    #[serde(rename = "retryInMs")]
+    pub retry_in_ms: Option<u64>,
+}
+
+impl QueueState {
+    pub const KEYS: [&'static str; 4] = ["waiting", "heldForConsent", "backoff", "retryInMs"];
+}
+
+/// Notes by state, walked from disk rather than remembered — a remembered count is exactly what nobody trusts.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultCounts {
+    pub notes: usize,
+    pub embedded: usize,
+    pub indexed: usize,
+    pub waiting: usize,
+    pub refused: usize,
+    /// Folders Jott could not read, counted apart from refused notes because the sentence differs: one is about a
+    /// folder's permissions, the other about a note np would not take.
+    pub warnings: usize,
+}
+
+impl VaultCounts {
+    pub const KEYS: [&'static str; 6] = ["notes", "embedded", "indexed", "waiting", "refused", "warnings"];
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Diagnostics {
+    pub runtime: RuntimeInfo,
+    /// Oldest first, like the log file and every other record here; the window renders newest-first itself.
+    pub recent: Vec<TraceEvent>,
+    pub queue: QueueState,
+    pub vault: VaultCounts,
+}
+
+impl Diagnostics {
+    pub const KEYS: [&'static str; 4] = ["runtime", "recent", "queue", "vault"];
+}
+
 /// The session for one open vault: its np pool, its ingest queue, its external-change watcher.
 pub struct VaultSession {
     vault: PathBuf,
     /// One line per np request, for the hand-off (§19). `void()` until the shell says where the log lives;
     /// a diagnostic never fails a command, so this is an attachment and not a dependency.
     journal: Arc<Mutex<Arc<Journal>>>,
+    /// Which np config file governs fetching, so the drawer can report what it says. `None` when Jott could not
+    /// work out where np keeps its config — reported as unknown rather than guessed (§4).
+    np_config: Option<PathBuf>,
     /// This run's backend activity, in memory, for the diagnostics drawer. Owned by the session so a second
     /// vault opened in the same run gets its own honest history rather than a shared one it cannot interpret.
     trace: Arc<Trace>,
@@ -283,6 +379,7 @@ impl VaultSession {
         let session = Arc::new(VaultSession {
             vault: vault.to_path_buf(),
             journal: Arc::new(Mutex::new(Arc::new(Journal::void()))),
+            np_config: np_config.clone(),
             trace,
             data: data.clone(),
             pool,
@@ -332,6 +429,83 @@ impl VaultSession {
 
     /// `ingest://event`: everything the status line has to say (§11). The queue turns np's progress into
     /// these, so the webview never sees a raw np frame and never has to interpret one.
+    /// Everything the diagnostics drawer shows, in one call. Read-only and cheap: it never spawns an np child,
+    /// never re-hashes a note that has not moved, and answers whether np is well or not — which is precisely when
+    /// the drawer gets opened (§4).
+    pub async fn diagnostics(&self) -> Diagnostics {
+        use crate::np::pool::SlotState;
+        let (writer, reader) = self.pool.slot_states();
+        let state = |slot| match slot {
+            SlotState::Open => ConnectionState::Up,
+            SlotState::Unopened => ConnectionState::Idle,
+            SlotState::Gone => ConnectionState::Down,
+        };
+
+        let journal = self.journal.lock().unwrap().clone();
+        let report = self.queue.report().await;
+
+        // Walked rather than remembered. The digest cache makes this cheap — a vault whose notes have not moved
+        // costs a folder read and no hashing.
+        let mut counts = VaultCounts::default();
+        // A vault that cannot be walked at all reports zeros. That is what is true; inventing a number, or
+        // failing the whole snapshot over it, would both be worse than an honest empty panel (§4).
+        if let Ok(tree) = crate::vault::walk::walk_with(
+            &self.vault,
+            &self.stamps.lock().unwrap(),
+            crate::vault::walk::default_hash_cache(),
+        ) {
+        for entry in &tree {
+            match &entry.state {
+                Some(StampState::Embedded) => {
+                    counts.notes += 1;
+                    counts.embedded += 1;
+                }
+                Some(StampState::Indexed) => {
+                    counts.notes += 1;
+                    counts.indexed += 1;
+                }
+                Some(StampState::Waiting) => {
+                    counts.notes += 1;
+                    counts.waiting += 1;
+                }
+                Some(StampState::Refused(reason)) => {
+                    counts.notes += 1;
+                    // A folder Jott could not read is a warning about a folder, not a note np refused.
+                    if reason == "unreadable-dir" {
+                        counts.warnings += 1;
+                    } else {
+                        counts.refused += 1;
+                    }
+                }
+                None => {}
+            }
+        }
+        }
+
+        Diagnostics {
+            runtime: RuntimeInfo {
+                np_version: Some(self.pool.info().version.clone()),
+                np_path: Some(self.pool.binary().to_string_lossy().into_owned()),
+                protocol: Some(u32::from(self.pool.info().protocol)),
+                writer: state(writer),
+                reader: state(reader),
+                data_dir: self.pool.info().data_dir.clone(),
+                log_path: journal.file().map(|p| p.to_string_lossy().into_owned()),
+                log_bytes: journal.size(),
+                consent: self.queue.consent(),
+                auto_fetch: self.np_config.as_deref().map(crate::ingest::consent::auto_fetch_allowed),
+            },
+            recent: self.trace.recent(),
+            queue: QueueState {
+                waiting: report.waiting,
+                held_for_consent: report.held_for_consent,
+                backoff: report.backoff,
+                retry_in_ms: report.retry_in_ms,
+            },
+            vault: counts,
+        }
+    }
+
     /// The drawer's history: this session's backend activity so far. Kept per session on purpose — two vaults
     /// open in one run have different np children and different reasons to be slow.
     pub fn trace(&self) -> Arc<Trace> {

@@ -39,6 +39,15 @@ pub struct PoolNote {
 /// waiting at the door.
 struct Slot(Mutex<Option<Arc<NpClient>>>);
 
+/// Whether a slot holds a live child. Three answers, because "never needed one" and "had one, it is gone" are
+/// different things for a window to say — the first is normal at startup, the second usually means np died.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlotState {
+    Unopened,
+    Open,
+    Gone,
+}
+
 /// What happened to one connection. Named events rather than a `Result`, because "shut down politely" and
 /// "failed to start" are both `Ok`-shaped facts and the drawer has to tell them apart.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,6 +102,12 @@ impl NpPool {
 
     /// What the handshake said this np can do — feature detection lives with the caller that has
     /// a use for it (no `models.list`, no `progress`, no vision).
+    /// Which np binary this pool would spawn. The drawer shows it because a machine with two installs makes the
+    /// path the fastest sentence on screen.
+    pub fn binary(&self) -> &Path {
+        &self.np
+    }
+
     pub fn info(&self) -> &NpInfo {
         &self.info
     }
@@ -238,6 +253,17 @@ impl NpPool {
         if let Ok(mut slot) = self.observer.lock() {
             *slot = Some(observer);
         }
+    }
+
+    /// The state of each slot right now. Never spawns anything: a drawer that asks a question must not be the
+    /// thing that starts an 8 MB child.
+    pub fn slot_states(&self) -> (SlotState, SlotState) {
+        let state = |slot: &Slot| match slot.0.try_lock().ok().and_then(|guard| guard.clone()) {
+            None => SlotState::Unopened,
+            Some(client) if client.is_closed() => SlotState::Gone,
+            Some(_) => SlotState::Open,
+        };
+        (state(&self.writer), state(&self.reader))
     }
 
     fn note_connection(&self, which: Connection, event: ConnectionEvent) {

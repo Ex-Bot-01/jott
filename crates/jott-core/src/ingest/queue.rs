@@ -53,7 +53,7 @@ pub fn backoff_ms(attempt: u32) -> u64 {
 ///
 /// `camelCase` on the way out: this enum exists to be read by the window, and a payload that arrives as
 /// `waited_ms` in one place and `retryInMs` in another is how a status line gets a `undefined`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum StateReason {
     // The field is renamed by hand because serde's container-level `rename_all` on an enum covers the
@@ -116,6 +116,21 @@ enum Msg {
     /// "Is there still a download to talk about?" — asked by the window when it wants to offer embeddings
     /// again after an earlier no. Answers `None` when there is nothing to offer.
     Offer(oneshot::Sender<Option<ConsentOffer>>),
+    /// "What are you holding?" Asked by the diagnostics snapshot, answered from the worker's own state rather
+    /// than a copy maintained elsewhere — a duplicate of this bookkeeping is a future disagreement.
+    Report(oneshot::Sender<QueueReport>),
+}
+
+/// What the queue is holding, in the words the drawer shows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueReport {
+    pub waiting: usize,
+    pub held_for_consent: usize,
+    /// The state that made work go back — `locked` or `offline` — and nothing when the queue is running free.
+    pub backoff: Option<String>,
+    #[serde(rename = "retryInMs")]
+    pub retry_in_ms: Option<u64>,
 }
 
 struct Options {
@@ -314,6 +329,17 @@ impl IngestQueue {
     ///
     /// This asks np — `models.list`, on the reader connection — because guessing from the config file alone
     /// would offer a download of an artifact that is already installed.
+    /// What the queue is holding right now, for the diagnostics snapshot. Zeros when the queue has shut down: a
+    /// drawer showing a session on its way out should read "nothing waiting", which is the truth it can act on.
+    pub async fn report(&self) -> QueueReport {
+        let empty = || QueueReport { waiting: 0, held_for_consent: 0, backoff: None, retry_in_ms: None };
+        let (tx, rx) = oneshot::channel();
+        if self.tx.send(Msg::Report(tx)).is_err() {
+            return empty();
+        }
+        rx.await.unwrap_or_else(|_| empty())
+    }
+
     pub async fn offer(&self) -> Option<ConsentOffer> {
         let (tx, rx) = oneshot::channel();
         if self.tx.send(Msg::Offer(tx)).is_err() {
@@ -371,6 +397,8 @@ struct State {
     last_save: Option<Instant>,
     flush: bool,
     consent_asked: bool,
+    /// Why work last went back, while it is still waiting. Cleared when the retry fires.
+    last_reason: Option<StateReason>,
     /// The last progress line the diagnostics drawer was told about, so a fetch's thousand notifications become
     /// a handful of rows. `(command, phase, when shown)`.
     last_progress: Option<(String, String, Instant)>,
@@ -453,6 +481,19 @@ impl Worker {
                         if !self.state.pending.is_empty() {
                             self.state.flush = true;
                         }
+                    }
+                    Some(Msg::Report(tx)) => {
+                        let retry_in_ms = self.state.retry_at.map(|at| {
+                            at.saturating_duration_since(Instant::now()).as_millis() as u64
+                        });
+                        let _ = tx.send(QueueReport {
+                            waiting: self.state.pending.len(),
+                            held_for_consent: self.state.held_for_consent.len(),
+                            // The reason is only worth showing while a retry is actually pending; once the wait
+                            // has passed, an old reason on screen reads as a current one.
+                            backoff: if retry_in_ms.is_some() { self.state.last_reason.map(|r| r.word().to_string()) } else { None },
+                            retry_in_ms,
+                        });
                     }
                     Some(Msg::Offer(tx)) => {
                         let np_config = self.shared.options.lock().unwrap().np_config.clone();
@@ -748,6 +789,7 @@ impl Worker {
         let floor = self.shared.options.lock().unwrap().backoff_floor;
         self.put_back(owed);
         self.state.retry_at = Some(Instant::now() + floor.unwrap_or_else(|| Duration::from_millis(wait)));
+        self.state.last_reason = Some(reason);
         self.trace(TraceEvent {
             at_ms: now_ms(),
             kind: TraceKind::Queue,
