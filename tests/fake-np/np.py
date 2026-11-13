@@ -145,6 +145,18 @@ for line in sys.stdin:
         extra = dict(extra)
         phase = extra.pop("phase", "working")
         note(req_id, method, phase, extra)
+    if seq := SCENARIO.get("sequence", {}).get(method):
+        # Answers in order, repeating the last entry once they run out: a queue that has to notice a state
+        # *change* — locked, then committed, then locked again — cannot be tested against one fixed reply.
+        step = seq[min(CALLS[method] - 1, len(seq) - 1)]
+        if fault := step.get("fault"):
+            write({"error": {"code": fault["code"], "message": fault["message"]}, "id": req_id, "jsonrpc": "2.0"})
+            note(req_id, method, "refused", {"code": fault["code"]})
+            continue
+        if reply := step.get("reply"):
+            write({"id": req_id, "jsonrpc": "2.0", "result": reply})
+            note(req_id, method, "completed")
+            continue
     if fault := SCENARIO.get("faults", {}).get(method):
         write({"error": {"code": fault["code"], "message": fault["message"]},
                "id": req_id, "jsonrpc": "2.0"})

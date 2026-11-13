@@ -136,8 +136,9 @@ export interface VaultChanged {
 
 /** The error every command returns in place of a result. `kind` is for branching; `message` is shown. */
 export interface IpcError {
-  // camelCase because that is how `ErrorKind` serialises (`ipc_surface.rs` pins each spelling). A kind the
-  // front end does not list is a branch that silently falls through, so this union is the whole list.
+  // camelCase because that is how `ErrorKind` serialises. `ipc_surface.rs` pins every spelling on the Rust side and
+  // `ipc.test.ts` reads that same source and compares it to the union below, so a new kind cannot arrive here as
+  // an unlisted string — which is what a silent fall-through looks like from the inside.
   kind:
     | 'escapesRoot'
     | 'notFound'
@@ -148,6 +149,8 @@ export interface IpcError {
     | 'npGenerated'
     | 'noVault'
     | 'npGone'
+    | 'npRefused'
+    | 'npTooOld'
     | 'io'
   message: string
 }

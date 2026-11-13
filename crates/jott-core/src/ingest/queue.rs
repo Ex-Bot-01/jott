@@ -660,7 +660,14 @@ impl Worker {
                 self.requeue(&owed, StateReason::Locked { waited_ms });
                 return;
             }
-            Ok(ScanOutcome::Applied(report)) => report,
+            Ok(ScanOutcome::Applied(report)) => {
+                // The index is not behind any more, so the wait for asking again starts over. Reset here rather
+                // than only after a finished embed: a vault whose embeddings are switched off — np answers
+                // `configuration-disabled`, or consent was "not now" — climbed the ladder to 60 s on a
+                // two-second lock and never came back down, because an embed that never runs cannot reset it.
+                self.state.attempt = 0;
+                report
+            }
             Err(fault) => {
                 // A fault is not a state. The work goes back and the note stays *waiting*; np's sentence
                 // is shown as it arrived (§11). No timer retries it: a refusal that will answer the same

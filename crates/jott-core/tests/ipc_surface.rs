@@ -1107,3 +1107,149 @@ fn the_snapshot_keys_are_the_ones_the_window_reads() {
     // ConnectionState is read as a lowercase word by the window, not as a Rust variant name.
     assert_eq!(serde_json::to_value(ConnectionState::Idle).unwrap(), json!("idle"));
 }
+
+// ---- what the window is told when np answers and refuses ----
+
+/// Measured against real np 0.3.1: an unknown folder answers `-32000` with "workspace … is not a directory that
+/// exists". That is np talking, from a running process — reporting it as `npGone` tells the person to go install
+/// something that is already installed. The v0.0.6 release was spent on exactly this class of mislabelling.
+#[tokio::test]
+async fn a_refusal_from_np_is_not_reported_as_np_being_gone() {
+    let _turn = SERIAL.lock().await;
+    let harness = Harness::new();
+    harness.write("a.md", b"# A\n");
+    let sentence = "workspace /tmp/notes is not a directory that exists (No such file or directory (os error 2)); \
+                    refusing before anything is read or written";
+    let (dir, client) = common::spawn(json!({
+        "faults": { "search": { "code": -32000, "message": sentence } }
+    }))
+    .await;
+
+    let (_sentinel, info) = ipc::np_absent();
+    let session = VaultSession::open_in_with(
+        NpSource::Env(common::repo_root().join("tests/fake-np/np.py")),
+        info,
+        Some(Arc::new(client)),
+        harness.vault.path(),
+        Consent::Undecided,
+        None,
+        harness.data.path().to_path_buf(),
+    );
+
+    let err = session.search("anything", 8).await.expect_err("np refused");
+    assert_eq!(err.kind, ErrorKind::NpRefused, "np answered; nothing is missing");
+    assert_eq!(err.message, sentence, "and np's own sentence is the message (§4)");
+
+    session.close().await;
+    drop(dir);
+}
+
+/// `-32601` is the one refusal that really does mean "this build is too old for what Jott asks", and np says so by
+/// listing what it does answer. The floor belongs next to that list.
+#[tokio::test]
+async fn a_method_this_np_does_not_answer_says_which_floor_jott_needs() {
+    let _turn = SERIAL.lock().await;
+    let harness = Harness::new();
+    harness.write("a.md", b"# A\n");
+    let (dir, client) = common::spawn(json!({
+        "faults": { "search": { "code": -32601, "message": "unknown method `search`: this build answers initialize, shutdown" } }
+    }))
+    .await;
+
+    let (_sentinel, info) = ipc::np_absent();
+    let session = VaultSession::open_in_with(
+        NpSource::Env(common::repo_root().join("tests/fake-np/np.py")),
+        info,
+        Some(Arc::new(client)),
+        harness.vault.path(),
+        Consent::Undecided,
+        None,
+        harness.data.path().to_path_buf(),
+    );
+
+    let err = session.search("anything", 8).await.expect_err("too old");
+    assert_eq!(err.kind, ErrorKind::NpTooOld);
+    assert!(err.message.contains("0.3.1"), "the floor is named: {}", err.message);
+
+    session.close().await;
+    drop(dir);
+}
+
+/// The kinds are a wire contract with `src/lib/ipc.ts`, which branches on them. A kind the front end does not list
+/// falls through silently, so the whole list is pinned here rather than the two new ones.
+#[test]
+fn every_error_kind_the_window_can_receive() {
+    let kinds = [
+        ErrorKind::EscapesRoot,
+        ErrorKind::NotFound,
+        ErrorKind::AlreadyExists,
+        ErrorKind::IntoItself,
+        ErrorKind::TooLarge,
+        ErrorKind::NotUtf8,
+        ErrorKind::NpGenerated,
+        ErrorKind::NoVault,
+        ErrorKind::NpGone,
+        ErrorKind::NpRefused,
+        ErrorKind::NpTooOld,
+        ErrorKind::Io,
+    ];
+    let spellings: Vec<String> = kinds
+        .iter()
+        .map(|kind| serde_json::to_value(kind).unwrap().as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        spellings,
+        vec![
+            "escapesRoot", "notFound", "alreadyExists", "intoItself", "tooLarge", "notUtf8", "npGenerated",
+            "noVault", "npGone", "npRefused", "npTooOld", "io"
+        ]
+    );
+}
+
+// ---- one folder, one spelling, even when the picker disagrees with the registry ----
+
+/// Filed against np as note-processor#4 and measured here: `scan` keys a workspace by the string it is handed, so
+/// `/vault` and `/vault/` re-add a whole vault once when a client alternates between them. The folder picker on
+/// Windows can hand back `D:\Notes\`; the registry stores `D:\Notes`. Jott normalises for its own keys, so it was
+/// the one sending both spellings — and waiting for np to fix a thing we can simply stop doing.
+#[tokio::test]
+async fn np_is_asked_about_the_folder_and_not_one_spelling_of_it() {
+    let _turn = SERIAL.lock().await;
+    let harness = Harness::new();
+    harness.write("a.md", b"# A\n");
+    let recorded = harness.data.path().join("requests.jsonl");
+    let (dir, client) = common::spawn(json!({
+        "record": recorded.display().to_string(),
+        "replies": {"search": search_fixture()}
+    }))
+    .await;
+
+    // The spelling a picker produces: the same folder with a separator stuck on the end.
+    let spelled = format!("{}/", harness.vault.path().display());
+    let (_sentinel, info) = ipc::np_absent();
+    let session = VaultSession::open_in_with(
+        NpSource::Env(common::repo_root().join("tests/fake-np/np.py")),
+        info,
+        Some(Arc::new(client)),
+        std::path::Path::new(&spelled),
+        Consent::Undecided,
+        None,
+        harness.data.path().to_path_buf(),
+    );
+
+    session.search("kumquat", 8).await.expect("the stand-in answers");
+    session.close().await;
+
+    let lines = std::fs::read_to_string(&recorded).expect("the stand-in recorded what it was asked");
+    let asked = lines
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find(|line| line["method"] == "search")
+        .expect("a search was recorded");
+    assert_eq!(
+        asked["params"]["workspace"].as_str(),
+        Some(harness.vault.path().to_str().unwrap()),
+        "np gets the folder, not the spelling"
+    );
+    drop(dir);
+}

@@ -17,7 +17,7 @@ use crate::np::handshake::NpInfo;
 use crate::np::pool::NpPool;
 use crate::np::resolve::{install_hint, NpMissing, NpSource, Os};
 use crate::vault::buffers::{self, MirroredBuffer};
-use crate::vault::files::{self, FileError, Trashed};
+use crate::vault::files::{self, FileError};
 use crate::vault::stamps::{StampState, Stamps};
 use crate::vault::store::Consent;
 use crate::vault::walk::{self, EntryKind, TreeEntry};
@@ -49,7 +49,14 @@ pub enum ErrorKind {
     NotUtf8,
     NpGenerated,
     NoVault,
+    /// np could not be reached, or never answered: not installed, not runnable, killed mid-request, or silent past
+    /// its deadline. Nothing about the *content* of a request.
     NpGone,
+    /// np is running and refused this request — `-32000` "workspace … is not a directory that exists", `-32602`
+    /// bad params, anything else it chose to answer with. Its sentence is the message (§4).
+    NpRefused,
+    /// np answered `-32601`: this build does not implement what Jott asks for, which in practice means too old.
+    NpTooOld,
     Io,
 }
 
@@ -77,6 +84,27 @@ impl IpcError {
     /// The one refusal with no more specific kind: the filesystem said no, in its own words.
     pub fn io(rel: &str, source: impl std::fmt::Display) -> IpcError {
         IpcError { kind: ErrorKind::Io, message: format!("could not use {rel}: {source}") }
+    }
+
+    /// A JSON-RPC fault, sorted into the kind that says what actually happened.
+    ///
+    /// The distinction is worth two new kinds because every fault used to arrive as `npGone`, which told a person
+    /// to go install something that was running fine and had just refused them — the same class of mislabelling
+    /// that cost the v0.0.6 release ("np ended before answering", which was Jott forgetting to say `serve`).
+    ///
+    /// `-32603` stays `npGone` on purpose: our own transport failures flatten to that code, so it means "no answer
+    /// came", whether np's doing or ours.
+    pub fn np_fault(fault: &crate::np::NpFault) -> IpcError {
+        let message = fault.message.clone();
+        let kind = match fault.code {
+            -32601 => return IpcError {
+                kind: ErrorKind::NpTooOld,
+                message: format!("{message} — Jott needs np {} or newer", version_text()),
+            },
+            -32603 => ErrorKind::NpGone,
+            _ => ErrorKind::NpRefused,
+        };
+        IpcError { kind, message }
     }
 }
 
@@ -378,7 +406,13 @@ impl VaultSession {
             ));
         }
         let session = Arc::new(VaultSession {
-            vault: vault.to_path_buf(),
+            // One folder, one spelling. The picker can hand back `D:\Notes\` where the registry holds
+            // `D:\Notes`, and np keys a workspace by the exact string it is sent — measured, then filed as
+            // note-processor#4: alternating spellings cost a full re-add of the vault once. Normalising here
+            // covers every downstream user at once: what np is asked about, what the tree header shows, and the
+            // keys for stamps and mirrored buffers (which already normalised, so they were disagreeing with np).
+            // Lexical, like `to_abs` always is: a symlinked vault stays the folder somebody chose.
+            vault: crate::vault::store::to_abs(vault),
             journal: Arc::new(Mutex::new(Arc::new(Journal::void()))),
             np_config: np_config.clone(),
             trace,
@@ -660,10 +694,8 @@ impl VaultSession {
     /// Out of the vault and into a trash somebody can open. The sentence names which one, because "I
     /// deleted it" and "Jott put it where you can get it back" are different promises.
     pub fn delete_entry(&self, rel: &str) -> Result<String, IpcError> {
-        match files::delete_to_trash(&self.vault, rel).map_err(IpcError::from)? {
-            Trashed::Os => Ok("moved to the system trash".into()),
-            Trashed::AppDir(path) => Ok(format!("moved to Jott's own folder: {}", path.display())),
-        }
+        // The sentence names where the note went — and when the operating system refused to take it, why.
+        Ok(files::delete_to_trash(&self.vault, rel).map_err(IpcError::from)?.sentence())
     }
 
     /// Content search. Reader connection, so it answers while an embed is running — §18.1 measured
@@ -673,7 +705,7 @@ impl VaultSession {
         let started = std::time::Instant::now();
         let answer = self.pool.search(&self.vault, query, limit).await.map_err(|fault| {
             self.record_fault("search", started.elapsed(), fault.code, &fault.message);
-            IpcError { kind: ErrorKind::NpGone, message: fault.message }
+            IpcError::np_fault(&fault)
         })?;
         // `offline` is its own outcome here: §4 wants a degraded answer visible, and a log that calls a
         // keyword-only search "applied" hides the one thing worth knowing about it.
