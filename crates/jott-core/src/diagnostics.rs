@@ -9,6 +9,8 @@ use serde::Serialize;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+
+use crate::sync::guarded;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Rotate once the file passes this, and keep one older copy beside it. Two megabytes is roughly ten
@@ -117,13 +119,13 @@ impl Journal {
     /// Whether writing has given up. The window does not show this (§4: nobody can act on "the log folder
     /// is unwritable"); it exists so a test and a future support screen can say it truthfully.
     pub fn broken(&self) -> bool {
-        self.state.lock().unwrap().is_none()
+        guarded(&self.state).is_none()
     }
 
     /// Append one line. Rotates first if the file has passed [`ROTATE_AT_BYTES`].
     pub fn record(&self, record: &RequestRecord) -> std::io::Result<()> {
         let line = serde_json::to_string(record).map_err(std::io::Error::other)? + "\n";
-        let mut guard = self.state.lock().unwrap();
+        let mut guard = guarded(&self.state);
         let Some(writer) = guard.as_mut() else {
             return Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "the log is not writable"));
         };
@@ -303,18 +305,20 @@ impl Trace {
     /// Record one event and tell whoever is watching. Losing a send because nobody is listening is the normal
     /// case, not an error worth returning.
     pub fn push(&self, event: TraceEvent) {
-        if let Ok(mut events) = self.events.lock() {
-            events.push_back(event.clone());
-            while events.len() > self.capacity {
-                events.pop_front();
-            }
+        // Never drop a row because somebody else's panic poisoned the ring: this is the screen a person looks at
+        // precisely when something has gone wrong.
+        let mut events = guarded(&self.events);
+        events.push_back(event.clone());
+        while events.len() > self.capacity {
+            events.pop_front();
         }
+        drop(events);
         let _ = self.tx.send(event);
     }
 
     /// Everything kept, oldest first — the window puts the newest at the top of its own list.
     pub fn recent(&self) -> Vec<TraceEvent> {
-        self.events.lock().map(|events| events.iter().cloned().collect()).unwrap_or_default()
+        guarded(&self.events).iter().cloned().collect()
     }
 
     pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<TraceEvent> {

@@ -10,6 +10,7 @@
 //! * **Answers carry facts, not adjectives.** A save returns the hash that landed; a delete says where
 //!   the file went; a search says which halves answered. The window never has to guess what happened.
 
+use crate::sync::guarded;
 use crate::diagnostics::{now_ms, Journal, RequestRecord, Trace, TraceEvent, TraceKind};
 use crate::ingest::queue::{IngestEvent, IngestQueue};
 use crate::np::handshake::NpInfo;
@@ -400,14 +401,14 @@ impl VaultSession {
     /// Attach the hand-off log. Also reaches the ingest queue, so a scan or an embed is recorded where it
     /// happened rather than being reconstructed later from what the window was told.
     pub fn with_journal(self: &Arc<Self>, journal: Arc<Journal>) -> Arc<VaultSession> {
-        *self.journal.lock().unwrap() = journal.clone();
+        *guarded(&self.journal) = journal.clone();
         self.queue.set_journal(journal);
         Arc::clone(self)
     }
 
     /// Where the log goes, for whoever opens a second window on the same vault.
     pub fn journal(&self) -> Arc<Journal> {
-        self.journal.lock().unwrap().clone()
+        guarded(&self.journal).clone()
     }
 
     pub fn vault(&self) -> &Path {
@@ -441,7 +442,7 @@ impl VaultSession {
             SlotState::Gone => ConnectionState::Down,
         };
 
-        let journal = self.journal.lock().unwrap().clone();
+        let journal = guarded(&self.journal).clone();
         let report = self.queue.report().await;
 
         // Walked rather than remembered. The digest cache makes this cheap — a vault whose notes have not moved
@@ -451,7 +452,7 @@ impl VaultSession {
         // failing the whole snapshot over it, would both be worse than an honest empty panel (§4).
         if let Ok(tree) = crate::vault::walk::walk_with(
             &self.vault,
-            &self.stamps.lock().unwrap(),
+            &guarded(&self.stamps),
             crate::vault::walk::default_hash_cache(),
         ) {
         for entry in &tree {
@@ -548,13 +549,13 @@ impl VaultSession {
                 }
             }
         });
-        *self.watch_task.lock().unwrap() = Some(handle);
+        *guarded(&self.watch_task) = Some(handle);
     }
 
     /// The tree, from our own walk (Task 7) with the stamps that make §9's markers answerable.
     pub fn listing(&self) -> Result<VaultListing, IpcError> {
         // A read-only copy: the walk asks questions of the stamps and must not hold the shared store.
-        let stamps = (*self.stamps.lock().unwrap()).clone();
+        let stamps = (*guarded(&self.stamps)).clone();
         let entries: Vec<TreeEntry> = walk::walk(&self.vault, &stamps).map_err(|e| IpcError { kind: ErrorKind::Io, message: e.to_string() })?;
         // Sentences, not codes: `warnings` holds more than walk trouble (the shell adds the nested-vault
         // notice from §8.2 here too), and a list of bare paths would force the window to guess which kind
@@ -719,7 +720,7 @@ impl VaultSession {
     /// model (§11).
     pub async fn close(&self) {
         self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
-        if let Some(task) = self.watch_task.lock().unwrap().take() {
+        if let Some(task) = guarded(&self.watch_task).take() {
             task.abort();
         }
         // The queue drains its own in-flight pass and closes the pool, at its cap (§11). Bounded here too,
@@ -738,7 +739,7 @@ impl VaultSession {
 
     /// One line in the hand-off log. Same shape as the queue's: never questioned, never fatal.
     fn record(&self, method: &str, elapsed: std::time::Duration, outcome: &'static str) {
-        let _ = self.journal.lock().unwrap().clone().record(&RequestRecord::new(method, &self.vault, elapsed, outcome));
+        let _ = guarded(&self.journal).clone().record(&RequestRecord::new(method, &self.vault, elapsed, outcome));
         // The same facts, for the window that is open now rather than the file a person sends later. One place
         // fills both, so they cannot drift into disagreeing about the same request (§11).
         self.trace.push(TraceEvent {
@@ -783,7 +784,7 @@ impl Drop for VaultSession {
         // session that kept a thread alive would make every test — and every quit — hang in exactly the
         // way this one did the first time.
         self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
-        if let Some(task) = self.watch_task.lock().unwrap().take() {
+        if let Some(task) = guarded(&self.watch_task).take() {
             task.abort();
         }
     }

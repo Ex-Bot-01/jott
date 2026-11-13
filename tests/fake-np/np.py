@@ -130,6 +130,11 @@ for line in sys.stdin:
                    "id": req_id, "jsonrpc": "2.0"})
             note(req_id, method, "refused", {"code": -32602})
             continue
+    if method in SCENARIO.get("silent", []):
+        # Takes the request and says nothing, for a client that has to stop waiting at some point. The child
+        # stays alive on purpose: a wedged request and a dead child are different failures, and only one of them
+        # should cost the caller its connection.
+        continue
     if sleep := SCENARIO.get("sleep_ms", {}).get(method):
         time.sleep(sleep / 1000.0)
     note(req_id, method, "locking")

@@ -12,4 +12,5 @@ pub mod hashes;
 pub mod ipc;
 pub mod ingest;
 pub mod np;
+pub mod sync;
 pub mod vault;
