@@ -880,3 +880,106 @@ async fn nothing_is_offered_when_the_bytes_are_already_there() {
     queue.set_consent(Consent::Granted);
     assert_eq!(queue.offer().await, None);
 }
+
+// ---- the trace: what the drawer shows about this queue's work ----
+
+use jott_core::diagnostics::{Trace, TraceKind};
+
+/// The window's answer to "what did np just do" has to be the same facts the journal wrote, or the two surfaces
+/// disagree in front of someone reporting a bug — which is the one thing §11 forbids.
+#[tokio::test]
+async fn every_request_and_np_sentence_reaches_the_trace() {
+    let _turn = SERIAL.lock().await;
+    let sentence = "workspace `/fake/vault` is mid-migration: run `np migrate` first";
+    let h = Harness::new(json!({
+        "replies": {"scan": fixture_result(2)},
+        "faults": {"embed": {"code": -32000, "message": sentence}}
+    }))
+    .await;
+    let queue = h.queue();
+    let trace = Arc::new(Trace::new(50));
+    queue.set_trace(trace.clone());
+
+    queue.note_saved("notes/a.md");
+    tokio::time::sleep(Duration::from_millis(700)).await;
+
+    let rows = trace.recent();
+    let scan = rows
+        .iter()
+        .find(|row| row.method.as_deref() == Some("scan") && row.kind == TraceKind::Request)
+        .unwrap_or_else(|| panic!("the scan belongs here too: {rows:?}"));
+    assert_eq!(scan.outcome, Some("applied"));
+    assert!(scan.elapsed_ms.is_some(), "and it says how long it took");
+
+    let embed = rows
+        .iter()
+        .find(|row| row.method.as_deref() == Some("embed") && row.kind == TraceKind::Request)
+        .unwrap_or_else(|| panic!("a faulted embed belongs here: {rows:?}"));
+    assert_eq!(embed.outcome, Some("fault"));
+    assert_eq!(embed.detail.as_deref(), Some(sentence), "np's words, byte for byte (§4)");
+}
+
+/// A fetch sends one progress line per chunk of bytes. Forwarded as they arrive, that is a thousand rows a
+/// second into a debugging screen and a webview choking on its own log — so the trace gets one row per phase
+/// change, and at most one per second otherwise.
+#[tokio::test]
+async fn progress_lines_are_coalesced_not_forwarded_one_by_one() {
+    let _turn = SERIAL.lock().await;
+    let h = Harness::new(json!({
+        "replies": {"scan": fixture_result(2), "embed": embed_current()},
+        "progress_counters": {
+            "embed": [
+                {"phase": "locking"},
+                {"phase": "embedding", "chunks_done": 1, "chunks_total": 3},
+                {"phase": "embedding", "chunks_done": 2, "chunks_total": 3},
+                {"phase": "completed"}
+            ]
+        }
+    }))
+    .await;
+    let queue = h.queue();
+    let trace = Arc::new(Trace::new(50));
+    queue.set_trace(trace.clone());
+
+    queue.note_saved("notes/a.md");
+    tokio::time::sleep(Duration::from_millis(900)).await;
+
+    let embed_rows: Vec<_> = trace
+        .recent()
+        .into_iter()
+        .filter(|row| row.kind == TraceKind::Progress && row.method.as_deref() == Some("embed"))
+        .collect();
+    assert_eq!(
+        embed_rows.iter().map(|r| r.detail.as_deref()).collect::<Vec<_>>(),
+        // Four notifications from np, three rows: two `embedding` lines inside one second are one row, and the
+        // counters shown are the first of them.
+        vec![Some("locking"), Some("embedding chunks 1/3"), Some("completed")],
+        "{embed_rows:?}"
+    );
+}
+
+/// The two things a person watching the drawer will ask about that are not requests: did my answer count, and
+/// why is it waiting again.
+#[tokio::test]
+async fn answers_and_retries_are_rows_too() {
+    let _turn = SERIAL.lock().await;
+    let h = Harness::new(json!({"replies": {"scan": {"command": "scan", "locked": true, "waited_ms": 5000}}})).await;
+    let queue = h.queue();
+    let trace = Arc::new(Trace::new(50));
+    queue.set_trace(trace.clone());
+
+    queue.note_saved("notes/a.md");
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    queue.set_consent(Consent::Granted);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let rows = trace.recent();
+    assert!(
+        rows.iter().any(|row| row.kind == TraceKind::Queue && row.detail.as_deref() == Some("locked")),
+        "a retry has to be visible in the drawer, not only in the status line: {rows:?}"
+    );
+    assert!(
+        rows.iter().any(|row| row.kind == TraceKind::Consent && row.detail.as_deref() == Some("granted")),
+        "and so does the answer someone gave: {rows:?}"
+    );
+}

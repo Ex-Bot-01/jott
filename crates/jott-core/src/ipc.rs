@@ -10,7 +10,7 @@
 //! * **Answers carry facts, not adjectives.** A save returns the hash that landed; a delete says where
 //!   the file went; a search says which halves answered. The window never has to guess what happened.
 
-use crate::diagnostics::{Journal, RequestRecord};
+use crate::diagnostics::{now_ms, Journal, RequestRecord, Trace, TraceEvent, TraceKind};
 use crate::ingest::queue::{IngestEvent, IngestQueue};
 use crate::np::handshake::NpInfo;
 use crate::np::pool::NpPool;
@@ -189,6 +189,9 @@ pub struct VaultSession {
     /// One line per np request, for the hand-off (§19). `void()` until the shell says where the log lives;
     /// a diagnostic never fails a command, so this is an attachment and not a dependency.
     journal: Arc<Mutex<Arc<Journal>>>,
+    /// This run's backend activity, in memory, for the diagnostics drawer. Owned by the session so a second
+    /// vault opened in the same run gets its own honest history rather than a shared one it cannot interpret.
+    trace: Arc<Trace>,
     /// Where this vault's state lives: stamps, and the mirrored unsaved buffers (§12, §18.13). Named at
     /// open rather than read from the environment, so a test — or a portable build with its data beside
     /// the vault — decides, and nothing in one process depends on another's `$XDG_DATA_HOME`.
@@ -241,21 +244,46 @@ impl VaultSession {
         np_config: Option<PathBuf>,
         data: PathBuf,
     ) -> Arc<VaultSession> {
+        let adopted = warm.is_some();
         let pool = Arc::new(match warm {
             Some(client) => NpPool::with_writer(np, info, client),
             None => NpPool::new(np, info),
         });
         let stamps = Arc::new(Mutex::new(Stamps::with_root(data.clone(), vault)));
+        let trace = Arc::new(Trace::default());
         let queue = Arc::new(
             IngestQueue::spawn(pool.clone(), stamps.clone(), vault.to_path_buf()).with_np_config(np_config.clone()),
         );
         // The registry's remembered answer, applied without touching np's config file (§12): opening a
         // vault is not the same event as deciding about a download.
         queue.seed_consent(consent);
+        queue.set_trace(trace.clone());
         hold_np_fetching_until_asked(consent, np_config.as_deref());
+        // Connection facts belong to the pool, which knows nothing about windows; the session is where that
+        // sentence gets translated into a row. A warm child counts as started — it did, at launch.
+        let observer_trace = trace.clone();
+        pool.set_connection_observer(Box::new(move |which, event| {
+            use crate::np::pool::{Connection, ConnectionEvent};
+            let name = match which {
+                Connection::Writer => "writer",
+                Connection::Reader => "reader",
+            };
+            let detail = match event {
+                ConnectionEvent::Started => format!("{name} started"),
+                ConnectionEvent::StartFailed(sentence) => format!("{name} could not start: {sentence}"),
+                ConnectionEvent::Closed => format!("{name} closed"),
+            };
+            observer_trace.push(TraceEvent::connection(detail));
+        }));
+        if adopted {
+            trace.push(TraceEvent::connection(
+                "writer adopted from the child Jott started at launch".to_string(),
+            ));
+        }
         let session = Arc::new(VaultSession {
             vault: vault.to_path_buf(),
             journal: Arc::new(Mutex::new(Arc::new(Journal::void()))),
+            trace,
             data: data.clone(),
             pool,
             stamps,
@@ -304,6 +332,17 @@ impl VaultSession {
 
     /// `ingest://event`: everything the status line has to say (§11). The queue turns np's progress into
     /// these, so the webview never sees a raw np frame and never has to interpret one.
+    /// The drawer's history: this session's backend activity so far. Kept per session on purpose — two vaults
+    /// open in one run have different np children and different reasons to be slow.
+    pub fn trace(&self) -> Arc<Trace> {
+        self.trace.clone()
+    }
+
+    /// ...and its live feed, so a drawer opened mid-run shows what already happened *and* keeps up.
+    pub fn trace_events(&self) -> tokio::sync::broadcast::Receiver<TraceEvent> {
+        self.trace.subscribe()
+    }
+
     pub fn subscribe_events(&self) -> tokio::sync::broadcast::Receiver<IngestEvent> {
         self.queue.events()
     }
@@ -526,6 +565,16 @@ impl VaultSession {
     /// One line in the hand-off log. Same shape as the queue's: never questioned, never fatal.
     fn record(&self, method: &str, elapsed: std::time::Duration, outcome: &'static str) {
         let _ = self.journal.lock().unwrap().clone().record(&RequestRecord::new(method, &self.vault, elapsed, outcome));
+        // The same facts, for the window that is open now rather than the file a person sends later. One place
+        // fills both, so they cannot drift into disagreeing about the same request (§11).
+        self.trace.push(TraceEvent {
+            at_ms: crate::diagnostics::now_ms(),
+            kind: TraceKind::Request,
+            method: Some(method.to_string()),
+            outcome: Some(outcome),
+            elapsed_ms: Some(elapsed.as_millis() as u64),
+            detail: None,
+        });
     }
 
     fn record_fault(&self, method: &str, elapsed: std::time::Duration, code: i32, message: &str) {
@@ -535,6 +584,15 @@ impl VaultSession {
             .unwrap()
             .clone()
             .record(&RequestRecord::fault(method, &self.vault, elapsed, code as i64, message));
+        self.trace.push(TraceEvent {
+            at_ms: now_ms(),
+            kind: TraceKind::Request,
+            method: Some(method.to_string()),
+            outcome: Some("fault"),
+            elapsed_ms: Some(elapsed.as_millis() as u64),
+            // np's sentence, unchanged. The row may be shortened for display; the value never is (§4).
+            detail: Some(message.to_string()),
+        });
     }
 
     fn write_result(&self, rel: &str) -> Result<WriteResult, IpcError> {

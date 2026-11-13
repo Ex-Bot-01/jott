@@ -343,6 +343,6 @@ fn kinds_arrive_lowercase() {
         (TraceKind::Consent, "consent"),
         (TraceKind::Queue, "queue"),
     ] {
-        assert_eq!(serde_json::to_value(&kind).unwrap(), json!(word));
+        assert_eq!(serde_json::to_value(kind).unwrap(), json!(word));
     }
 }

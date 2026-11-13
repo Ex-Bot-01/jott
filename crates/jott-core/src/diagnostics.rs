@@ -177,7 +177,8 @@ impl Journal {
     }
 }
 
-fn now_ms() -> u64 {
+/// Milliseconds since the epoch, for anything that wants to say *when* without a clock of its own.
+pub fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
@@ -225,6 +226,20 @@ pub struct TraceEvent {
 }
 
 impl TraceEvent {
+    /// A row about a child process: started, refused to start, or shut down. Factories exist because most rows
+    /// are one of the five shapes, and building them by hand at every call site is how a field silently stops
+    /// being filled in.
+    pub fn connection(detail: impl Into<String>) -> TraceEvent {
+        TraceEvent {
+            at_ms: now_ms(),
+            kind: TraceKind::Connection,
+            method: None,
+            outcome: None,
+            elapsed_ms: None,
+            detail: Some(detail.into()),
+        }
+    }
+
     /// The closed contract with `src/lib/diagnostics.ts`. A field added here without a decision added there is
     /// what this list is for: the test that compares them fails first.
     pub const KEYS: &'static [&'static str] = &["atMs", "kind", "method", "outcome", "elapsedMs", "detail"];

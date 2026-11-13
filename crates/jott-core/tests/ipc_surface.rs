@@ -6,6 +6,7 @@
 mod common;
 
 use common::repo_root;
+use jott_core::diagnostics::{TraceEvent, TraceKind};
 use jott_core::ingest::consent::auto_fetch_allowed;
 use jott_core::ingest::queue::{IngestEvent, StateReason};
 use jott_core::ipc::{self, ErrorKind, HitDto, NoteContent, RenameOutcome, SearchResults, VaultListing, WriteResult};
@@ -842,5 +843,98 @@ fn models_present() -> Value {
         "models": [{"id": "embeddinggemma-2", "dim": 768, "sha256": null, "prefix_doc": null,
                     "prefix_query": null, "installed_at": 1, "state": "present", "members": []}],
         "fetching": [], "unclaimed": [], "models_dir_error": null
+    })
+}
+
+// ---- what the drawer is shown about this session ----
+
+/// The drawer's promise is that it shows the same facts the log holds. A search through the session is a
+/// request like any other, and a row with no elapsed time would leave "why is search slow?" unanswered.
+#[tokio::test]
+async fn the_trace_shows_what_the_session_asked_np() {
+    let _turn = SERIAL.lock().await;
+    let harness = Harness::new();
+    harness.write("a.md", b"# A\n");
+    let (dir, client) = common::spawn(json!({
+        "replies": {"search": search_fixture()}
+    }))
+    .await;
+
+    let (_sentinel, info) = ipc::np_absent();
+    let session = VaultSession::open_in_with(
+        NpSource::Env(common::repo_root().join("tests/fake-np/np.py")),
+        info,
+        Some(Arc::new(client)),
+        harness.vault.path(),
+        Consent::Granted,
+        None,
+        harness.data.path().to_path_buf(),
+    );
+
+    session.search("kumquat", 8).await.expect("the stand-in answers");
+
+    let rows = session.trace().recent();
+    let search = rows
+        .iter()
+        .find(|row| row.method.as_deref() == Some("search") && row.kind == TraceKind::Request)
+        .unwrap_or_else(|| panic!("a search the window made should be on the screen: {rows:?}"));
+    assert_eq!(search.outcome, Some("applied"));
+    assert!(search.elapsed_ms.is_some(), "and how long it took");
+
+    // A subscriber that attached afterwards still gets what comes next — that is how a drawer opened mid-run
+    // keeps up without polling.
+    let mut rx = session.trace_events();
+    session.trace().push(TraceEvent::connection("test row"));
+    let got = tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv())
+        .await
+        .expect("delivered")
+        .expect("open");
+    assert_eq!(got.detail.as_deref(), Some("test row"));
+
+    session.close().await;
+    drop(dir);
+}
+
+/// A machine with no usable np is the state most worth showing, because it is the one where everything else on
+/// screen still works. The drawer has to say the child could not be started — not stay silent and let the
+/// runtime row claim a connection that never existed.
+#[tokio::test]
+async fn a_child_that_could_not_be_started_is_a_row_of_its_own() {
+    let _turn = SERIAL.lock().await;
+    let harness = Harness::new();
+    harness.write("a.md", b"# A\n");
+
+    let (_sentinel, info) = ipc::np_absent();
+    let session = VaultSession::open_in_with(
+        common::unreachable_np(),
+        info,
+        None,
+        harness.vault.path(),
+        Consent::Granted,
+        None,
+        harness.data.path().to_path_buf(),
+    );
+
+    let err = session.search("anything", 8).await.expect_err("np is not here");
+    assert_eq!(err.kind, ErrorKind::NpGone);
+
+    let rows = session.trace().recent();
+    let connection = rows
+        .iter()
+        .find(|row| row.kind == TraceKind::Connection)
+        .unwrap_or_else(|| panic!("the drawer has to show why nothing works: {rows:?}"));
+    assert!(
+        connection.detail.as_deref().is_some_and(|d| d.contains("np")),
+        "and name what it could not start: {connection:?}"
+    );
+
+    session.close().await;
+}
+
+/// np's search answer as the real one is shaped: hits with snippets, and the four provenance keys §10 asks for.
+fn search_fixture() -> Value {
+    json!({
+        "hits": [{"path": "a.md", "snippet": "…a [kumquat] tree…", "kind": "note", "score": 1.2, "bm25": 1.2, "cosine": null}],
+        "mode": "keyword", "vectors": false, "offline": false, "reason": null
     })
 }
