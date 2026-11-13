@@ -18,7 +18,9 @@
 
 use crate::diagnostics::{Journal, RequestRecord};
 use crate::hashes::sha256_file;
-use crate::ingest::consent::{consent_file_is_unreadable, embedding_model_named, set_auto_fetch};
+use crate::ingest::consent::{
+    consent_file_is_unreadable, default_bytes_for, embedding_model_named, set_auto_fetch,
+};
 use crate::np::outcomes::{EmbedOutcome, EmbedReport, ScanOutcome, ScanReport};
 use crate::np::pool::{Connection, NpPool, PoolNote};
 use crate::np::ProgressNote;
@@ -100,6 +102,9 @@ enum Msg {
     /// The user answered the consent prompt while work was held at the gate.
     ConsentChanged,
     Drain(oneshot::Sender<()>),
+    /// "Is there still a download to talk about?" — asked by the window when it wants to offer embeddings
+    /// again after an earlier no. Answers `None` when there is nothing to offer.
+    Offer(oneshot::Sender<Option<ConsentOffer>>),
 }
 
 struct Options {
@@ -265,6 +270,20 @@ impl IngestQueue {
         *self.shared.consent.lock().unwrap()
     }
 
+    /// Whether there is still a download to talk about, for a window that wants to ask again after an
+    /// earlier no. `None` means nothing to offer: the decision is yes (np will fetch when it embeds), or
+    /// the bytes are already on disk and embedding is merely owed work, not a question.
+    ///
+    /// This asks np — `models.list`, on the reader connection — because guessing from the config file alone
+    /// would offer a download of an artifact that is already installed.
+    pub async fn offer(&self) -> Option<ConsentOffer> {
+        let (tx, rx) = oneshot::channel();
+        if self.tx.send(Msg::Offer(tx)).is_err() {
+            return None;
+        }
+        rx.await.ok().flatten()
+    }
+
     /// Finish what is in flight, save the stamps, shut the children down — and give up once
     /// [`Self::DRAIN_CAP`] has passed, because closing must not wait for a model (§11). A note whose
     /// pass did not finish stays *waiting*, which is what "owed at next launch" means.
@@ -354,6 +373,22 @@ impl Worker {
                         if !self.state.pending.is_empty() {
                             self.state.flush = true;
                         }
+                    }
+                    Some(Msg::Offer(tx)) => {
+                        let np_config = self.shared.options.lock().unwrap().np_config.clone();
+                        let offer = match self.consent() {
+                            // Yes was answered: np fetches when it embeds, so there is nothing left to offer.
+                            Consent::Granted => None,
+                            Consent::Undecided | Consent::Declined => match self.gate(&np_config).await {
+                                Gate::Proceed | Gate::NothingToAsk => None,
+                                Gate::Blocked { model_id, bytes } => Some(ConsentOffer {
+                                    model_id,
+                                    bytes,
+                                    data_dir: PathBuf::from(self.pool.info().data_dir.as_str()),
+                                }),
+                            },
+                        };
+                        let _ = tx.send(offer);
                     }
                     Some(Msg::ConsentChanged) => {
                         let consent = self.consent();
@@ -533,7 +568,7 @@ impl Worker {
         // ---- embed, if it may.
         match self.consent() {
             Consent::Undecided => match self.gate(&np_config).await {
-                Gate::Blocked(model_id) => {
+                Gate::Blocked { model_id, bytes } => {
                     // Added, not assigned: two saves that both stop at the gate are two batches of work,
                     // and replacing the first would leave those notes `Indexed` with nothing left to
                     // requeue them — the queue would consider them done (§11: owed work waits, it does not
@@ -552,7 +587,7 @@ impl Worker {
                         self.state.consent_asked = true;
                         self.emit(IngestEvent::NeedsConsent {
                             model_id,
-                            bytes: None,
+                            bytes,
                             data_dir: PathBuf::from(self.pool.info().data_dir.as_str()),
                         });
                     }
@@ -654,37 +689,65 @@ impl Worker {
     /// Whether embedding would need bytes nobody has downloaded — decided from np's config and
     /// `models.list`, never by starting a fetch (§11).
     async fn gate(&mut self, np_config: &Option<PathBuf>) -> Gate {
+        // No path at all means no file to write the answer into either, so there is nothing Jott could do
+        // with a reply. Every real environment gives us one (np's own rule), which is why this arm is a
+        // comment rather than a feature.
         let Some(path) = np_config.clone() else { return Gate::NothingToAsk };
         if consent_file_is_unreadable(&path) {
             // A file we cannot parse is not a file that names no model. np reads its own config and may
             // well fetch on its default; asking without knowing which model is at stake is the honest
             // answer, and embedding blind is how §4's surprise download happens.
-            return Gate::Blocked(None);
+            return Gate::Blocked { model_id: None, bytes: None };
         }
-        let Some(model_id) = embedding_model_named(&path) else {
-            // No model named means nothing to fetch: np answers the embed itself with its configuration
-            // state, and a prompt about an unnamed download is a dialog about nothing.
-            return Gate::NothingToAsk;
-        };
+        // A fresh np names no model in its config and still embeds: 0.3.1 carries a built-in pin and will
+        // fetch it — measured here, on the first *search*, 309,855,456 bytes, with nobody asked. So "nothing
+        // named" is not "nothing to ask"; it is a question about np's own default, which Jott can name from
+        // `builtin_default_model` until np reports one itself.
+        let model_id = embedding_model_named(&path).unwrap_or_else(default_id);
         let started = std::time::Instant::now();
         let listing_result = self.pool.models_list(&self.vault).await;
         match &listing_result {
             Ok(_) => self.record("models.list", started.elapsed(), "applied"),
             Err(fault) => self.record_fault("models.list", started.elapsed(), fault.code, &fault.message),
-        }
+        };
         match listing_result {
             Ok(listing) if listing.artifact_present(&model_id) => Gate::Proceed,
             // An unreadable models directory (`models_dir_error`) is not "no artifact", but it is "we
             // cannot promise a download we may already have" — so the gate holds and asks rather than
             // embedding blind (§18.6). A failed `models.list` holds for the same reason.
-            Ok(_) | Err(_) => Gate::Blocked(Some(model_id)),
+            Ok(_) => Gate::Blocked { bytes: default_bytes_for(&model_id), model_id: Some(model_id) },
+            Err(_) => Gate::Blocked { bytes: default_bytes_for(&model_id), model_id: Some(model_id) },
         }
     }
 }
 
+/// The model np embeds with when its config names none.
+fn default_id() -> String {
+    crate::ingest::consent::builtin_default_model().id.to_string()
+}
+
+// No `listed_bytes` here, though it would be the nicer source for the size in a prompt: np 0.3.1's
+// `models.list` rows carry no member sizes at all (measured — `"members": []` for an installed model), and
+// the weight of a fetch only appears in a report from the fetch that already happened.
+
+/// What the window shows when it offers to set embeddings up: np's model id when known, the size when
+/// anybody named one, and the folder the bytes would land in. Built here rather than in the frontend so the
+/// sentence a tester reads is built from measured facts (§4) and not from strings the webview invented.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConsentOffer {
+    #[serde(rename = "modelId")]
+    pub model_id: Option<String>,
+    pub bytes: Option<u64>,
+    #[serde(rename = "dataDir")]
+    pub data_dir: PathBuf,
+}
+
 enum Gate {
     Proceed,
-    Blocked(Option<String>),
+    /// What to show in the prompt: np's model id when we know it, and the size when anybody — np or the pin —
+    /// said one. Both are optional because a config that cannot be read names neither.
+    Blocked { model_id: Option<String>, bytes: Option<u64> },
     NothingToAsk,
 }
 

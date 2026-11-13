@@ -4,7 +4,8 @@
 //! Everything else in that file is somebody's own configuration, so it has to come back unchanged.
 
 use jott_core::ingest::consent::{
-    auto_fetch_allowed, consent_file_is_unreadable, embedding_model_named, np_config_path, set_auto_fetch,
+    auto_fetch_allowed, builtin_default_model, consent_file_is_unreadable, embedding_model_named, np_config_path,
+    set_auto_fetch,
 };
 
 /// `NP_PATH`-style env games again: one variable, several threads.
@@ -184,4 +185,33 @@ fn a_config_that_will_not_parse_is_not_a_config_that_names_nothing() {
     assert!(!consent_file_is_unreadable(&good));
     assert!(consent_file_is_unreadable(&broken));
     assert_eq!(embedding_model_named(&broken), None, "and it does name no model, which is the trap");
+}
+
+// ---- np's built-in default model, which its config file never mentions ----
+
+/// Measured on this machine on 2026-11-12 by running the shipped binary rather than reading a README:
+/// `np serve` with no config at all answered a `search` by fetching `embeddinggemma-2` — 309,855,456 bytes —
+/// and the `models.list` that followed reported this id, this digest, and dim 768. The point of keeping the
+/// numbers is wording: §12's prompt has to name a model and a size *before* anything is downloaded, and a
+/// fresh np can name neither until it has fetched one.
+#[test]
+fn jott_can_name_the_model_np_carries_before_np_is_asked() {
+    let model = builtin_default_model();
+    assert_eq!(model.id, "embeddinggemma-2");
+    assert_eq!(model.bytes, Some(309_855_456));
+    assert_eq!(model.sha256, Some("2188ac1deca4b77dffefd603c2776a9d76d9d74ec01841392982ebb840b09135"));
+}
+
+/// The pin is wording, not a decision: when np itself reports a model, that answer wins, and Jott's copy is
+/// only what the prompt falls back to. If np ever changes its built-in default, a stale string here must be
+/// able to change a sentence and nothing else.
+#[test]
+fn the_built_in_model_is_a_fallback_and_never_the_authority() {
+    let model = builtin_default_model();
+    assert!(model.bytes.unwrap() > 0, "a prompt that says \"about nothing MB\" is worse than one that says nothing");
+    // Nothing in this module treats it as configured: an empty config still names no model.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("config.toml");
+    std::fs::write(&path, "[log]\nlevel = \"info\"\n").expect("write config");
+    assert_eq!(embedding_model_named(&path), None);
 }

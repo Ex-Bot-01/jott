@@ -7,7 +7,7 @@
 
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
-import { open } from '@tauri-apps/plugin-dialog'
+import { confirm, open } from '@tauri-apps/plugin-dialog'
 
 export type StampState = 'Waiting' | 'Indexed' | 'Embedded' | { Refused: string }
 
@@ -208,6 +208,14 @@ export const discardMirror = (rel: string) => invoke<void>('discard_mirror', { r
 export const searchVault = (query: string, limit: number) => invoke<SearchResults>('search_vault', { query, limit })
 export const ingestAll = () => invoke<void>('ingest_all')
 export const setConsent = (granted: boolean) => invoke<void>('set_consent', { granted })
+
+/** Whether setting embeddings up is still on the table: np's model id and folder when it can name them, and
+    `null` when there is nothing to offer (`ConsentOffer` mirrors `jott_core::ingest::queue::ConsentOffer`). */
+export type ConsentOffer = { modelId: string | null; bytes: number | null; dataDir: string }
+export const embeddingsOffer = () => invoke<ConsentOffer | null>('embeddings_offer')
+
+/** A question with two answers, asked outside the status line. False when nobody answered. */
+export const askConfirm = (message: string, title: string) => confirm(message, { title })
 // §14's two answers are not one command: *reload* re-reads the file (`readNote`), and *keep* is a
 // decision the window makes locally — it changes nothing on disk until the next save.
 

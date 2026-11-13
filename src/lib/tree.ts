@@ -81,3 +81,10 @@ export function notesAwaitingIndex(nodes: NodeEntry[]): number {
     (node) => node.kind === 'Note' && (node.state === null || node.state === undefined || node.state === 'Waiting'),
   ).length
 }
+
+/** How many notes np has indexed but never embedded. Search finds their words; it does not find their
+    meanings, and a person who wonders why "kumquat" misses a note about kumquats is owed that difference in
+    words rather than a dot they have to decode. */
+export function notesAwaitingEmbedding(nodes: NodeEntry[]): number {
+  return nodes.filter((node) => node.kind === 'Note' && node.state === 'Indexed').length
+}

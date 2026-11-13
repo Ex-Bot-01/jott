@@ -2,7 +2,7 @@
 // of Tree.svelte so the marker legend — the part most likely to be quietly wrong — has tests.
 
 import { describe, expect, it } from 'vitest'
-import { GENERATED_TITLE, flattenTree, notesAwaitingIndex } from './tree'
+import { GENERATED_TITLE, flattenTree, notesAwaitingEmbedding, notesAwaitingIndex } from './tree'
 import type { NodeEntry } from './ipc'
 
 function entry(rel: string, over: Partial<NodeEntry> = {}): NodeEntry {
@@ -146,5 +146,25 @@ describe('the greyed catalogue row', () => {
     expect(row?.greyed).toBe(true)
     expect(row?.title).toBe(GENERATED_TITLE)
     expect(row?.title).toContain('never edits it')
+  })
+})
+
+describe('notesAwaitingEmbedding', () => {
+  it('counts the notes whose vectors nobody wrote', () => {
+    const nodes = [
+      entry('indexed.md', { state: 'Indexed' }),
+      entry('embedded.md', { state: 'Embedded' }),
+      entry('waiting.md', { state: 'Waiting' }),
+      entry('refused.md', { state: { Refused: 'too large' } }),
+      entry('INDEX.md', { kind: 'Generated' }),
+      entry('pic.png', { kind: 'Image' }),
+    ]
+    // Only `Indexed` counts. A note that was never indexed has its own prompt above this one, and a refused
+    // note already says so on its row — three lines about the same note would be noise, not information.
+    expect(notesAwaitingEmbedding(nodes)).toBe(1)
+  })
+
+  it('says nothing when every note is embedded', () => {
+    expect(notesAwaitingEmbedding([entry('a.md', { state: 'Embedded' })])).toBe(0)
   })
 })

@@ -27,6 +27,7 @@ fn main() {
             ipc::search_vault,
             ipc::ingest_all,
             ipc::set_consent,
+            ipc::embeddings_offer,
             ipc::flush_on_close
         ])
         .setup(|app| {

@@ -1,19 +1,30 @@
-# Jott 0.0.8 — one np per run, and folders let go when you close them
+# Jott 0.0.9 — Index now means the folder, and nothing downloads without asking
 
-Asked whether np starts when Jott starts. It did — for about two milliseconds: the app started np, asked it what
-version it was, **killed it**, and started a second one when you opened a folder. That child is now kept and
-becomes the connection that does the work, so np runs from startup to shutdown instead of dying between the
-question and the answer.
+Two bugs a tester walked into, both found by running the real np binary instead of reasoning about it.
 
-Measured against the real np 0.3.1 rather than guessed: a spawn plus `initialize` is **~2 ms**, and an idle child
-is **~8 MB**. So this is not a speed-up, and starting a *second* np for search before anyone has typed in the
-search box would be 8 MB for a maybe. The search connection still starts on first use — and then stays.
+**"Index now" did nothing on a folder you had only opened.** The button flushed whatever the save queue was
+holding, and on a freshly opened folder that is nothing — so the pass never ran, every dot stayed where it was,
+and yet nothing said so. np scans an entire workspace whenever *any* note triggers it, but Jott's per-file
+stamps only update for the notes in the batch, which is how "it says completed and my files say waiting" was
+true of the same window. The button now queues every note in the folder, and its own label is what it does.
 
-**The more important fix, found while measuring:** closing a vault only shut its np children down if an indexing
-pass happened to run. Open a folder, search once, open another folder — and the first one's np processes stayed
-alive holding that index open, every time. On Windows that is exactly the write-lock friction this project has
-been careful about, and after quitting it would have been orphaned processes. Closing a session now always shuts
-its pool, and quitting shuts a startup child that never got claimed by a folder.
+**Nothing ever embedded, and np downloaded anyway.** Jott's consent gate read np's config file for a model name.
+A fresh install has no config file, so Jott concluded there was nothing to ask about and skipped embedding
+forever — search stayed keyword-only, dots stuck at *awaiting embedding*. Meanwhile np 0.3.1 carries a built-in
+model and its `auto_fetch` defaults to **yes**: measured here, a bare `np serve` answered its first `search` by
+fetching **309,855,456 bytes** with nobody asked. So the app that promises to name the model and the folder first
+was quietly outrun by the thing it ships.
+
+Now: no model named in np's config means *ask about np's own default* — the prompt names `embeddinggemma-2`,
+about 295 MiB, and the exact folder; and until somebody answers, Jott sets np's `auto_fetch` to off so nothing
+arrives behind the dialog. A recorded answer is never overruled by reopening a vault or relaunching, and *Stay
+keyword-only* is not permanent: while notes sit indexed-but-not-embedded the sidebar offers **Set up embeddings**,
+which repeats the same sentence as a confirmation and then runs the pass.
+
+The numbers in that sentence are measured, not remembered: np 0.3.1's built-in model id, size and digest were
+read off the binary on this machine (`np serve` → fetch report → `models.list`) and pinned so a prompt can name
+a download before it exists. Whenever np reports a model itself, np's answer is shown instead — Jott's copy is
+wording, never authority.
 
 **Assets**
 

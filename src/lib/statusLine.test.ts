@@ -3,7 +3,7 @@
 // A component that formats these inline cannot be tested for inventing something.
 
 import { describe, expect, it } from 'vitest'
-import { statusFor } from './statusLine'
+import { consentSentence, statusFor } from './statusLine'
 import type { IngestEvent } from './ipc'
 
 describe('statusFor', () => {
@@ -50,13 +50,29 @@ describe('statusFor', () => {
   it('asks for consent with the model and folder it named, and no size it was not given', () => {
     const event: IngestEvent = { needsConsent: { modelId: 'bge-m3', bytes: null, dataDir: '/home/ana/.local/share/note-processor' } }
     const status = statusFor(event)
-    expect(status?.text).toBe('semantic search needs the local model (bge-m3), downloaded to /home/ana/.local/share/note-processor')
+    expect(status?.text).toBe(
+      'semantic search needs a model (bge-m3) downloaded into /home/ana/.local/share/note-processor. Allow?',
+    )
     expect(status?.action).toBe('consent')
   })
 
   it('includes a size when np gave one', () => {
     const event: IngestEvent = { needsConsent: { modelId: 'bge-m3', bytes: 309_366_528, dataDir: '/x' } }
-    expect(statusFor(event)?.text).toContain('295 MiB')
+    expect(statusFor(event)?.text).toContain('about 295 MiB')
+  })
+
+  it('names np\u2019s built-in model when nothing is configured yet', () => {
+    // A fresh np names no model in its config and still carries a pin, so the prompt has to say something
+    // truer than "a model". The id and bytes come from core; this only words them.
+    const event: IngestEvent = { needsConsent: { modelId: null, bytes: 309_855_456, dataDir: 'C:\\Users\\chris\\AppData\\Roaming\\note-processor\\models' } }
+    expect(statusFor(event)?.text).toBe(
+      'semantic search needs a model (np\u2019s built-in model, about 296 MiB) downloaded into C:\\Users\\chris\\AppData\\Roaming\\note-processor\\models. Allow?',
+    )
+  })
+
+  it('says the same sentence in the status line and in the dialog that asks again later', () => {
+    const offer = { modelId: 'embeddinggemma-2', bytes: 309_855_456, dataDir: '/models' }
+    expect(consentSentence(offer)).toBe(statusFor({ needsConsent: { ...offer } })?.text)
   })
 
   it('shows a refusal as np wrote it', () => {
