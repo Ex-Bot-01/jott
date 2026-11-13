@@ -39,25 +39,35 @@ at the result.
 ## 2. The five things to try
 
 Opening a folder does not index it by itself: indexing writes `INDEX.md` into your vault, so it stays something
-you ask for. The sidebar says *N notes are not indexed yet* with an **Index now** button — press it once, or save
-any note, and the markers start moving.
-
-When you open a folder for the first time, Jott does not index it by itself — indexing writes `INDEX.md` into
-your vault, so it stays a thing you ask for. Say it once: **Index now** in the sidebar, or save any note.
+you ask for. The sidebar says *N notes are not indexed yet* with an **Index now** button. It means the whole
+folder — every note in it, including the ones you did not touch this session — and since 0.0.9 it really does
+that; before then the button only ran whatever a save had queued, so on a folder you had merely opened it did
+nothing at all while looking like it had finished.
 
 Take your time with each and note anything that looks wrong, in words — exact wording is deliberate, so if a
 sentence reads oddly, say so.
 
 1. **First run.** *Open a folder*, pick a notes folder with a few markdown files in it. The tree should list
-   them, each with a `●` beside it (something is owed to the index). An `INDEX.md` written by np appears
-   greyed and italic — clicking it does nothing, which is correct. A folder that already carries np's
-   `INDEX.md` gets one sentence about being inside another vault.
-2. **Save, then watch the embedding.** Type a sentence into a note and stop typing: about two seconds later
-   it saves on its own (the small line under the editor says `saved`). The status line should then say
-   something like `indexing…`, then `embedding 3/7 chunks` if np is fetching or embedding a model, then
-   `embedded`. Note how long the whole thing takes from your last keystroke to the marker turning `·`. If
-   np's config has no embedding model, you should be *asked* once — with the model's name and the folder it
-   would download into — rather than have a download start. Saying no keeps keyword search working.
+   them, each with a `○` beside it — *not indexed yet*. An `INDEX.md` written by np appears greyed and italic;
+   hovering says whose file it is, and clicking it does nothing, which is correct. A folder that already carries
+   np's `INDEX.md` gets one sentence about being inside another vault.
+2. **Index, then decide about embeddings.** Press **Index now**. The markers should move from `○` (not indexed)
+   to `●` (*indexed · awaiting embedding*) and the sidebar line should disappear — that is the index half, and
+   it needs no model and no download. Then the question comes:
+
+   > semantic search needs a model (embeddinggemma-2, about 295 MiB) downloaded into
+   > `C:\Users\you\AppData\Roaming\note-processor\models`. Allow?
+
+   **Allow the download** fetches it and writes the vectors; markers end at `·` (*embedded*) and search starts
+   answering with meanings, not just words. It is a few hundred megabytes, so the first pass takes a while —
+   watch `fetching … / … MiB` in the status line. **Stay keyword-only** changes nothing about indexing: search
+   keeps working on words, and the dots rest at `●`.
+
+   Before 0.0.9 that question was never asked on a fresh install, because np's config file names no model and
+   Jott read that as "nothing to ask about" — while np itself carries a built-in model and will download it
+   unprompted on the first *search*. That hole is closed from both sides now: the question is always asked, and
+   until you answer, Jott sets np's `auto_fetch` to off so nothing arrives behind the dialog. Check the folder
+   named in the sentence before you answer — if a model is already in there, something fetched it earlier.
 3. **Rename.** Select a note, press `rename`, give it a new name in the same folder. It must refuse to
    overwrite an existing name (and say so), and if another note links to it with `[[like this]]`, the notice
    should count how many notes refer to it. Nothing rewrites those links yet — that is a later plan — so a
@@ -72,6 +82,12 @@ sentence reads oddly, say so.
    while it says `embedding …`. Reopen: Jott should come back promptly — it waits a few seconds at most, and
    never for a model download. Whatever was saved before closing should be indexed on the next pass rather
    than lost.
+
+3. **Change your mind about embeddings.** After *Stay keyword-only*, the sidebar should say
+   *N notes are indexed but not embedded, so search finds their words and not their meanings* with a
+   **Set up embeddings** button. Press it: the same sentence appears as a confirmation, and accepting writes
+   the decision and starts the pass straight away — no save needed first. This is the way back for someone who
+   said no months ago; the alternative used to be editing np's `config.toml` by hand.
 
 Two more, if you have the patience:
 

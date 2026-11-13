@@ -79,6 +79,36 @@ pub fn embedding_model_named(path: &Path) -> Option<String> {
     embeddings.get("model")?.as_str().map(str::to_string)
 }
 
+/// A model np ships a pin for and will fetch without being told to: `np serve` with no config at all answered
+/// a plain `search` by downloading this one, unprompted, which is how Jott learned the numbers.
+///
+/// This is **wording, not authority**. §12's prompt has to name a model and a size before anything is fetched,
+/// and a fresh np can name neither until it has fetched something — `models.list` answers empty when nothing is
+/// configured and nothing is on disk. Whenever np itself reports a model, np's answer is used instead. If a
+/// future np changes its built-in default, the worst this stale copy can do is put an old sentence in a dialog
+/// that also says which folder the bytes would land in.
+pub struct DefaultModel {
+    pub id: &'static str,
+    pub bytes: Option<u64>,
+    pub sha256: Option<&'static str>,
+}
+
+/// Measured on 2026-11-12 against the shipped np 0.3.1 binary: the fetch reported 309,855,456 bytes for its
+/// `main` member, and the `models.list` after it reported this id, this digest, and dim 768.
+pub const fn builtin_default_model() -> DefaultModel {
+    DefaultModel {
+        id: "embeddinggemma-2",
+        bytes: Some(309_855_456),
+        sha256: Some("2188ac1deca4b77dffefd603c2776a9d76d9d74ec01841392982ebb840b09135"),
+    }
+}
+
+/// The size to show for a model, preferring anything np actually reported.
+pub fn default_bytes_for(model_id: &str) -> Option<u64> {
+    let default = builtin_default_model();
+    (model_id == default.id).then_some(default.bytes).flatten()
+}
+
 /// Write `[models] auto_fetch`, leaving the rest of the file as it was — comments, other sections,
 /// unknown keys, blank lines and the spacing around this very key.
 pub fn set_auto_fetch(path: &Path, allow: bool) -> Result<(), ConsentError> {

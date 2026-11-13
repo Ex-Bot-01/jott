@@ -57,12 +57,7 @@ export function statusFor(event: IngestEvent): Status | null {
   }
 
   if ('needsConsent' in event) {
-    const { modelId, bytes, dataDir } = event.needsConsent
-    // The size appears only when something named it. np 0.3.1 reports no artifact size anywhere, and §4
-    // is explicit that a number in the app's own strings has to be a number somebody measured.
-    const size = bytes === null || bytes === undefined ? '' : `, ${mebibytes(bytes)} MiB download`
-    const model = modelId ? ` (${modelId})` : ''
-    return { text: `semantic search needs the local model${model}${size}, downloaded to ${dataDir}`, tone: 'warn', action: 'consent' }
+    return { text: consentSentence(event.needsConsent), tone: 'warn', action: 'consent' }
   }
 
   if ('refused' in event) {
@@ -83,4 +78,16 @@ export function statusFor(event: IngestEvent): Status | null {
 
 function mebibytes(bytes: number): string {
   return Math.round(bytes / MIB).toString()
+}
+
+/** §12's sentence: which model, roughly how big, into which folder — and a question, because that is what
+    the buttons answer. Written once here so the status line and "Set up embeddings" later cannot drift into
+    describing two different downloads.
+    @param offer what np named, or would name; every field can be absent, and an absent one says nothing. */
+export function consentSentence(offer: { modelId?: string | null; bytes?: number | null; dataDir: string }): string {
+  const model = offer.modelId ?? 'np\u2019s built-in model'
+  // The size appears only when something named it. np 0.3.1 reports no artifact size in `models.list`, and §4
+  // is explicit that a number in the app's own strings has to be a number somebody measured.
+  const size = offer.bytes === null || offer.bytes === undefined ? '' : `, about ${mebibytes(offer.bytes)} MiB`
+  return `semantic search needs a model (${model}${size}) downloaded into ${offer.dataDir}. Allow?`
 }

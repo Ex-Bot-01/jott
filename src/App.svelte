@@ -8,8 +8,8 @@
   import Tree from './lib/Tree.svelte'
   import Editor from './lib/Editor.svelte'
   import StatusLine from './lib/StatusLine.svelte'
-  import { flattenTree, notesAwaitingIndex } from './lib/tree'
-  import { statusFor, type Status } from './lib/statusLine'
+  import { flattenTree, notesAwaitingEmbedding, notesAwaitingIndex } from './lib/tree'
+  import { consentSentence, statusFor, type Status } from './lib/statusLine'
   import type { SavePhase } from './lib/saveState'
   import * as ipc from './lib/ipc'
   import type { AboutInfo, IngestEvent, NoteContent, RegistryInfo, SearchResults, VaultListing } from './lib/ipc'
@@ -42,6 +42,12 @@
       (`INDEX.md`), so it stays something you ask for once, not something that happens to a folder you were
       only looking at (§11). This is what makes "I opened it and nothing happened" sayable. */
   let awaitingIndex = $derived(listing ? notesAwaitingIndex(listing.nodes) : 0)
+  /** Indexed but never embedded: search finds these notes' words and not their meanings. */
+  let awaitingEmbed = $derived(listing ? notesAwaitingEmbedding(listing.nodes) : 0)
+  /** What np would need to set embeddings up — its model, its folder, the size when anybody measured one.
+      `null` means either "nothing to offer" or "not asked yet for this vault", and `offerAskedFor` says which. */
+  let embeddingsOffer = $state<ipc.ConsentOffer | null>(null)
+  let offerAskedFor: string | null = null
   let showAbout = $state(false)
   let aboutLoading = $state(false)
 
@@ -77,6 +83,17 @@
   async function refresh() {
     const next = await call(ipc.listVault)
     listing = next
+    void askOffer()
+  }
+
+  /** Once per opened vault: is there still a download to talk about? Asked here rather than assumed from the
+      tree, because "not embedded" has two causes with opposite answers — the bytes are on disk and embedding
+      is merely owed work, or nobody has ever agreed to fetch them. Only np knows which (§18.6). */
+  async function askOffer() {
+    const vault = listing?.vault ?? null
+    if (!vault || offerAskedFor === vault) return
+    offerAskedFor = vault
+    embeddingsOffer = await call(ipc.embeddingsOffer)
   }
 
   async function openVault(path: string) {
@@ -235,7 +252,26 @@
 
   async function answerConsent(granted: boolean) {
     consent = null
+    embeddingsOffer = null
+    offerAskedFor = null
     await call(() => ipc.setConsent(granted))
+  }
+
+  /** The same question, asked again later. "Stay keyword-only" answers the moment, not the year, and the way
+      back should not be editing a TOML file — so the offer sits under the tree until it is taken up, and
+      pressing it says exactly what it will do before it does it. */
+  async function setUpEmbeddings() {
+    const offer = embeddingsOffer
+    if (!offer) return
+    const sentence = consentSentence(offer)
+    if (!(await ipc.askConfirm(sentence, 'Set up semantic search'))) return
+    embeddingsOffer = null
+    offerAskedFor = null
+    await call(() => ipc.setConsent(true))
+    // "Yes" means go, not "yes, whenever the next save happens": the vault goes through the pass now.
+    await call(ipc.ingestAll)
+    notice = 'Downloading the model and embedding your notes. The line at the bottom keeps count.'
+    await refresh()
   }
 
   onMount(async () => {
@@ -337,6 +373,14 @@
           find nothing.
         </span>
         <button type="button" onclick={() => void ipc.ingestAll()}>Index now</button>
+      </div>
+    {:else if listing && awaitingEmbed > 0 && !consent && embeddingsOffer}
+      <div class="first-pass" data-testid="embeddings-offer">
+        <span>
+          {awaitingEmbed === 1 ? '1 note is' : `${awaitingEmbed} notes are`} indexed but not embedded, so
+          search finds their words and not their meanings.
+        </span>
+        <button type="button" onclick={() => void setUpEmbeddings()}>Set up embeddings</button>
       </div>
     {/if}
 

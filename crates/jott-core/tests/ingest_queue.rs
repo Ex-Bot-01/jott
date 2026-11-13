@@ -60,6 +60,16 @@ impl Harness {
 
         let mut scenario = scenario;
         scenario["record"] = json!(record.display().to_string());
+        // The default machine this file tests on is one where the model is already installed and np's config
+        // names it, so a test about embedding does not have to stage a consent dialog first. That is a
+        // *default*, not a premise: the tests about asking overwrite both the config and this reply, and a
+        // fresh np — no config, nothing on disk, a 310 MB pin — has its own test.
+        let replies = scenario["replies"].as_object();
+        if replies.is_some_and(|replies| !replies.contains_key("models.list")) {
+            let mut listing = models_list_missing();
+            listing["models"][0]["state"] = json!("present");
+            scenario["replies"]["models.list"] = listing;
+        }
         let path = dir.path().join("scenario.json");
         std::fs::write(&path, scenario.to_string()).expect("write scenario");
         std::env::set_var("FAKE_NP_SCENARIO", &path);
@@ -68,6 +78,7 @@ impl Harness {
         let pool = Arc::new(NpPool::new(NpSource::Env(script), info()));
         let appdata = dir.path().join("appdata");
         let np_config = dir.path().join("np-config.toml");
+        std::fs::write(&np_config, config_naming("bge-m3")).expect("default np config");
         let stamps = Arc::new(Mutex::new(Stamps::with_root(appdata.clone(), &vault)));
         Harness { _dir: dir, vault, pool, stamps, record, np_config, appdata }
     }
@@ -153,7 +164,7 @@ async fn one_save_becomes_one_scan_then_one_embed() {
     queue.note_saved("notes/a.md");
     let events = collect(&mut rx, Duration::from_millis(900)).await;
 
-    assert_eq!(h.calls(), vec!["scan".to_string(), "embed".to_string()], "index first: embed reads the index (§18.2)");
+    assert_eq!(h.calls(), vec!["scan".to_string(), "models.list".to_string(), "embed".to_string()], "index first: embed reads the index (§18.2)");
     assert!(events.iter().any(|e| matches!(e, IngestEvent::Indexed(_))), "the tree needs to hear about the scan: {events:?}");
     assert!(events.iter().any(|e| matches!(e, IngestEvent::Embedded(_))), "and about the embed: {events:?}");
 }
@@ -213,7 +224,7 @@ async fn ten_saves_in_the_window_are_one_pair() {
 
     assert_eq!(
         h.calls(),
-        vec!["scan".to_string(), "embed".to_string()],
+        vec!["scan".to_string(), "models.list".to_string(), "embed".to_string()],
         "ten saves, one owed pass — np has no per-note call to make (§18.2)"
     );
 }
@@ -238,7 +249,7 @@ async fn flush_now_does_not_wait_for_the_debounce() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 
-    assert_eq!(h.calls(), vec!["scan".to_string(), "embed".to_string()]);
+    assert_eq!(h.calls(), vec!["scan".to_string(), "models.list".to_string(), "embed".to_string()]);
     assert!(started.elapsed() < Duration::from_millis(900), "flush means now: {:?}", started.elapsed());
 }
 
@@ -276,7 +287,7 @@ async fn a_saved_note_that_was_only_indexed_goes_back_for_embedding() {
     queue.note_saved("notes/a.md");
     tokio::time::sleep(Duration::from_millis(600)).await;
 
-    assert_eq!(h.calls(), vec!["scan".to_string(), "embed".to_string()], "the stamp says owed, so np is asked");
+    assert_eq!(h.calls(), vec!["scan".to_string(), "models.list".to_string(), "embed".to_string()], "the stamp says owed, so np is asked");
 }
 
 // ---- states are states (§11: locked and offline requeue; a refusal quotes np)
@@ -458,7 +469,11 @@ async fn granting_writes_the_config_then_embeds() {
     queue.note_saved("notes/a.md");
     tokio::time::sleep(Duration::from_millis(700)).await;
 
-    assert_eq!(h.calls(), vec!["scan".to_string(), "embed".to_string()]);
+    assert_eq!(
+        h.calls(),
+        vec!["scan".to_string(), "embed".to_string()],
+        "a decision already made is not asked about again: no `models.list` on this path"
+    );
     assert!(auto_fetch_allowed(&h.np_config), "[Download] means the key is written (§11)");
     assert_eq!(h.state("notes/a.md"), StampState::Embedded, "this time the vectors are real");
 }
@@ -509,18 +524,83 @@ async fn an_artifact_already_on_disk_needs_no_consent() {
 }
 
 #[tokio::test]
-async fn a_vault_with_no_model_configured_is_not_asked_for_consent() {
+async fn a_fresh_np_that_names_no_model_is_still_asked_before_any_download() {
     let _turn = SERIAL.lock().await;
-    // No `[embeddings] model` means there is no artifact to fetch: np answers the embed itself with a
-    // configuration state, and offering to download something unnamed is a prompt about nothing.
+    // The premise this replaces was wrong, and it was wrong in the direction that matters. A fresh np has no
+    // config file at all and so names no model — but 0.3.1 carries a built-in pin and will fetch it: measured
+    // here, a bare `np serve` downloaded 309,855,456 bytes on the first *search*, unprompted. "Nothing named"
+    // therefore means "ask about np's own default", not "nothing to ask".
     let h = Harness::new(json!({
         "replies": {
             "scan": fixture_result(2),
-            "embed": {"outcome": {"configuration-disabled": {"key": "[embeddings] model", "hint": "np config: set [embeddings] model"}}}
+            "models.list": {"models": [], "fetching": [], "unclaimed": [], "models_dir_error": null},
+            "embed": embed_current()
         }
     }))
     .await;
     std::fs::write(&h.np_config, "[log]\nlevel = \"info\"\n").unwrap();
+    let queue = h.queue();
+    let mut rx = queue.events();
+
+    queue.note_saved("notes/a.md");
+    let events = collect(&mut rx, Duration::from_millis(900)).await;
+
+    let asked: Vec<&IngestEvent> = events
+        .iter()
+        .filter(|e| matches!(e, IngestEvent::NeedsConsent { .. }))
+        .collect();
+    assert_eq!(asked.len(), 1, "a fresh np is exactly the case §12's prompt exists for: {events:?}");
+    match asked[0] {
+        IngestEvent::NeedsConsent { model_id, bytes, data_dir } => {
+            assert_eq!(model_id.as_deref(), Some("embeddinggemma-2"), "named from np's own pin, not invented");
+            assert_eq!(*bytes, Some(309_855_456), "the size in the prompt is the size np fetches");
+            assert!(!data_dir.as_os_str().is_empty(), "and it names the folder it goes to");
+        }
+        _ => unreachable!(),
+    }
+    assert_eq!(h.calls(), vec!["scan".to_string(), "models.list".to_string()], "asking is not doing: {events:?}");
+    assert_eq!(h.state("notes/a.md"), StampState::Indexed, "keyword search still arrives while the question waits");
+}
+
+/// Once np has the artifact on disk there is no download to consent to, whatever its config says — and this is
+/// the case where Jott's pin must *not* speak: np named a different model and np's answer is the one shown.
+#[tokio::test]
+async fn a_model_np_already_has_is_never_a_question_and_its_own_name_wins() {
+    let _turn = SERIAL.lock().await;
+    let mut listing = models_list_missing();
+    listing["models"][0]["state"] = json!("present");
+    let h = Harness::new(json!({
+        "replies": {"scan": fixture_result(2), "embed": embed_current(), "models.list": listing}
+    }))
+    .await;
+    std::fs::write(&h.np_config, config_naming("bge-m3")).unwrap();
+    let queue = h.queue();
+    let mut rx = queue.events();
+
+    queue.note_saved("notes/a.md");
+    let events = collect(&mut rx, Duration::from_millis(900)).await;
+
+    assert!(!events.iter().any(|e| matches!(e, IngestEvent::NeedsConsent { .. })), "{events:?}");
+    assert_eq!(h.calls(), vec!["scan".to_string(), "models.list".to_string(), "embed".to_string()]);
+}
+
+/// np *refusing* for a configuration reason is still a state to display, not a download to consent to — the
+/// distinction the old "no model named" test was really protecting. Here np names nothing but its own report
+/// says `configuration-disabled`, which happens after consent when np's config disables embeddings outright.
+#[tokio::test]
+async fn a_refusal_about_configuration_is_a_state_and_not_an_error() {
+    let _turn = SERIAL.lock().await;
+    let mut listing = models_list_missing();
+    listing["models"][0]["state"] = json!("present");
+    let h = Harness::new(json!({
+        "replies": {
+            "scan": fixture_result(2),
+            "models.list": listing,
+            "embed": {"outcome": {"configuration-disabled": {"key": "[embeddings] model", "hint": "np config: set [embeddings] model"}}}
+        }
+    }))
+    .await;
+    std::fs::write(&h.np_config, config_naming("bge-m3")).unwrap();
     let queue = h.queue();
     let mut rx = queue.events();
 
@@ -555,7 +635,7 @@ async fn drain_finishes_the_pass_it_started_and_saves_the_stamps() {
     queue.drain().await;
 
     assert!(started.elapsed() < Duration::from_secs(4), "finishing what was in flight is the point: {:?}", started.elapsed());
-    assert_eq!(h.calls(), vec!["scan".to_string(), "embed".to_string()]);
+    assert_eq!(h.calls(), vec!["scan".to_string(), "models.list".to_string(), "embed".to_string()]);
     let reloaded = h.reloaded();
     let hash = sha256_file(&h.vault.join("notes/a.md")).unwrap();
     assert_eq!(reloaded.state_of("notes/a.md", &hash), StampState::Embedded, "closing must not lose what happened");
@@ -760,4 +840,43 @@ async fn a_note_saved_twice_while_held_is_stamped_with_its_newest_bytes() {
     }
     assert_eq!(h.state("notes/a.md"), StampState::Embedded, "the stamp describes the bytes np embedded");
     queue.drain_now().await;
+}
+
+// ---- asking again (§12's decision belongs to the person, not to the first session) ----
+
+/// "Stay keyword-only" answers the question that was asked *then*. It should not be a life sentence: a month
+/// later the same vault may want semantic search, and there has to be a way back that is not editing a TOML
+/// file by hand. So the window can ask whether there is still something to offer.
+#[tokio::test]
+async fn an_earlier_no_can_be_asked_about_again() {
+    let _turn = SERIAL.lock().await;
+    let h = Harness::new(json!({
+        "replies": {"scan": fixture_result(2), "models.list": models_list_missing(), "embed": embed_current()}
+    }))
+    .await;
+    std::fs::write(&h.np_config, config_naming("bge-m3")).unwrap();
+    let queue = h.queue();
+    queue.set_consent(Consent::Declined);
+
+    let offer = queue.offer().await.expect("the bytes are still not on disk, so there is still a question");
+    assert_eq!(offer.model_id.as_deref(), Some("bge-m3"), "np's own answer, not Jott's pin");
+    assert!(!offer.data_dir.as_os_str().is_empty(), "and it names where they would go");
+    // `models.list` is how it knows — that call is the whole point. Asking is still not indexing, and still
+    // not fetching: np's answer empty-handed is what makes an offer honest.
+    assert_eq!(h.calls(), vec!["models.list".to_string()], "asking is not working: {offer:?}");
+}
+
+/// The other arm: nothing to offer when the model is already installed. Offering a download of bytes someone
+/// has is how §18.6's duplicate-fetch trap starts, and it would make the button a lie.
+#[tokio::test]
+async fn nothing_is_offered_when_the_bytes_are_already_there() {
+    let _turn = SERIAL.lock().await;
+    let h = Harness::new(json!({"replies": {"scan": fixture_result(2), "embed": embed_current()}})).await;
+    let queue = h.queue();
+
+    assert_eq!(queue.offer().await, None, "the default harness reports the model present");
+
+    // And a decision of yes is not a question either: np fetches on its own once it is allowed to.
+    queue.set_consent(Consent::Granted);
+    assert_eq!(queue.offer().await, None);
 }

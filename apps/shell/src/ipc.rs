@@ -10,6 +10,7 @@ use jott_core::about::AboutInfo;
 use jott_core::app_paths::app_data_dir;
 use jott_core::diagnostics::Journal;
 use jott_core::ingest::consent::np_config_path;
+use jott_core::ingest::queue::ConsentOffer;
 use jott_core::ipc::{
     self, IpcError, NpMissingPayload, NoteContent, RegistryInfo, RenameOutcome, SearchResults, VaultListing, VaultSession,
     WriteResult,
@@ -291,6 +292,15 @@ pub async fn search_vault(query: String, limit: u8, app: State<'_, App>) -> Resu
 pub fn ingest_all(app: State<'_, App>) -> Result<(), IpcError> {
     app.current()?.ingest_all();
     Ok(())
+}
+
+/// "Is setting embeddings up still on the table?" The window asks when it wants to offer the question again
+/// after an earlier no, and gets `null` when there is nothing to offer — either the bytes are already on disk
+/// or np was already told yes. Asked here rather than guessed in the webview because only the queue can ask
+/// np what it actually has.
+#[tauri::command]
+pub async fn embeddings_offer(app: State<'_, App>) -> Result<Option<ConsentOffer>, IpcError> {
+    Ok(Some(app.current()?.embeddings_offer().await).flatten())
 }
 
 /// The consent prompt's two buttons. The queue writes np's config; the registry remembers the answer for

@@ -6,6 +6,7 @@
 mod common;
 
 use common::repo_root;
+use jott_core::ingest::consent::auto_fetch_allowed;
 use jott_core::ingest::queue::{IngestEvent, StateReason};
 use jott_core::ipc::{self, ErrorKind, HitDto, NoteContent, RenameOutcome, SearchResults, VaultListing, WriteResult};
 use jott_core::np::outcomes::ScanReport;
@@ -698,4 +699,148 @@ async fn a_draft_survives_the_folder_being_opened_with_a_trailing_separator() {
 
     let note = again.read_note("draft.md").expect("read");
     assert_eq!(note.mirrored.map(|m| m.text).as_deref(), Some("typed and unsaved"), "one vault, one key, whatever the spelling");
+}
+
+// ---- np's own default, which fetches before anybody is asked ----
+
+/// Measured here against the shipped binary: a bare `np serve` with no config answered its first `search` by
+/// fetching 309,855,456 bytes. Nothing in Jott asked, because there was no decision to consult and np's
+/// `[models] auto_fetch` defaults to yes. So opening a vault with no answer recorded says *no* on the person's
+/// behalf — reversible by one click in the prompt that follows, where "No thanks" keeps it off.
+#[tokio::test]
+async fn opening_a_vault_with_no_answer_leaves_np_no_free_hand_to_fetch() {
+    let _turn = SERIAL.lock().await;
+    let harness = Harness::new();
+    harness.write("a.md", b"# A\n");
+    let config = harness.data.path().join("np-config.toml");
+    std::fs::write(&config, "[log]\nlevel = \"info\"\n").expect("write np config");
+
+    let (_sentinel, info) = ipc::np_absent();
+    let session = VaultSession::open_in_with(
+        common::unreachable_np(),
+        info,
+        None,
+        harness.vault.path(),
+        Consent::Undecided,
+        Some(config.clone()),
+        harness.data.path().to_path_buf(),
+    );
+
+    assert!(!auto_fetch_allowed(&config), "an undecided vault must not leave a 310 MB default switched on");
+    let after = std::fs::read_to_string(&config).expect("the same file");
+    assert!(after.contains("level = \"info\""), "np's own settings survive untouched: {after}");
+
+    session.close().await;
+}
+
+/// A remembered answer is an answer. Opening the vault again is not a new question, and quietly turning
+/// someone's "yes" into "no" because they relaunched the app would be worse than the hole being closed.
+#[tokio::test]
+async fn a_remembered_yes_is_not_overruled_by_opening_the_vault_again() {
+    let _turn = SERIAL.lock().await;
+    let harness = Harness::new();
+    harness.write("a.md", b"# A\n");
+    let config = harness.data.path().join("np-config.toml");
+    std::fs::write(&config, "[models]\nauto_fetch = true\n").expect("write np config");
+
+    let (_sentinel, info) = ipc::np_absent();
+    let session = VaultSession::open_in_with(
+        common::unreachable_np(),
+        info,
+        None,
+        harness.vault.path(),
+        Consent::Granted,
+        Some(config.clone()),
+        harness.data.path().to_path_buf(),
+    );
+
+    assert!(auto_fetch_allowed(&config), "a decision stands until somebody changes it");
+
+    session.close().await;
+}
+
+/// "Index now" on a folder nobody has typed into. The button's label promises the vault; flushing what is
+/// pending promises nothing, because on a freshly opened folder nothing is pending — and np's scan, which
+/// covers the whole workspace whenever any single note triggers it, never got asked at all.
+#[tokio::test]
+async fn index_now_covers_every_note_and_not_only_the_saved_ones() {
+    let _turn = SERIAL.lock().await;
+    let harness = Harness::new();
+    harness.write("a.md", b"# A\n");
+    harness.write("b.md", b"# B\n");
+
+    let record = harness.data.path().join("calls.ndjson");
+    std::fs::write(&record, "").expect("empty call record");
+    let scenario = json!({
+        "record": record.display().to_string(),
+        "replies": {
+            "scan": common::fixture_result(2),
+            "embed": embed_report(),
+            "models.list": models_present()
+        }
+    });
+    let scenario_file = harness.data.path().join("scenario.json");
+    std::fs::write(&scenario_file, scenario.to_string()).expect("write scenario");
+    // The stand-in reads its scenario from the environment, which is process-global: hence `SERIAL` above.
+    std::env::set_var("FAKE_NP_SCENARIO", &scenario_file);
+
+    let (_sentinel, info) = ipc::np_absent();
+    let session = VaultSession::open_in_with(
+        NpSource::Env(common::repo_root().join("tests/fake-np/np.py")),
+        info,
+        None,
+        harness.vault.path(),
+        Consent::Granted,
+        Some(harness.data.path().join("np-config.toml")),
+        harness.data.path().to_path_buf(),
+    );
+
+    session.ingest_all();
+
+    let mut states = Vec::new();
+    for _ in 0..80 {
+        let listing = session.listing().expect("the vault is readable");
+        states = listing
+            .nodes
+            .iter()
+            .map(|node| (node.rel.clone(), node.state.clone()))
+            .collect::<Vec<_>>();
+        if states.iter().all(|(_, state)| state == &Some(StampState::Embedded)) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(
+        states.iter().all(|(_, state)| state == &Some(StampState::Embedded)),
+        "every note in the folder went through the pass: {states:?}"
+    );
+
+    let asked: Vec<String> = std::fs::read_to_string(&record)
+        .expect("the stand-in recorded")
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter_map(|line| line["method"].as_str().map(str::to_string))
+        .filter(|method| method != "initialize" && method != "shutdown")
+        .collect();
+    assert_eq!(asked, vec!["scan".to_string(), "embed".to_string()], "one pass, both halves");
+
+    session.close().await;
+}
+
+/// np's embed report as the real one looked, trimmed to what `StampState::Embedded` depends on: `errors: 0`.
+fn embed_report() -> Value {
+    json!({
+        "outcome": "current", "model": "embeddinggemma-2", "chunks_seen": 2, "embedded": 2, "errors": 0,
+        "images_seen": 0, "images_embedded": 0, "images_refused": 0, "images_pruned": 0, "images_unchecked": 0,
+        "images_sweep_ran": true, "image_refusals": [], "fetched": null, "offline": false, "busy_gap": 0,
+        "refused_budget": 0, "current": 0, "verification": "self-consistent, not verified"
+    })
+}
+
+fn models_present() -> Value {
+    json!({
+        "models": [{"id": "embeddinggemma-2", "dim": 768, "sha256": null, "prefix_doc": null,
+                    "prefix_query": null, "installed_at": 1, "state": "present", "members": []}],
+        "fetching": [], "unclaimed": [], "models_dir_error": null
+    })
 }

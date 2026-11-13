@@ -11,8 +11,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 /** Which backend this window believes it is talking to. */
-type Scene = 'empty' | 'vault' | 'indexed'
+type Scene = 'empty' | 'vault' | 'indexed' | 'needs-embedding'
 const scenario = vi.hoisted(() => ({ current: 'empty' as unknown as Scene }))
+/** What the native confirm dialog answers. Tests set it before pressing a button that asks. */
+const confirmed = vi.hoisted(() => ({ current: false }))
 const commands = vi.hoisted(() => [] as string[])
 /** The window's event listeners, so a test can be the backend: fire `ingest://event` and watch what the tree
  *  does about it. */
@@ -50,7 +52,24 @@ vi.mock('@tauri-apps/api/core', () => ({
           docsUrl: 'https://github.com/Ex-Bot-01/jott/blob/main/docs/testing-on-windows.md',
           diagnostics: 'Jott 0.0.5 · https://github.com/Ex-Bot-01/jott\nnp 0.3.1 from bundled (C:\\Program Files\\Jott\\np\\np.exe)',
         })
+      case 'embeddings_offer':
+        // What core says about setting semantic search up. `null` means "nothing to offer", which is the arm
+        // every other scenario takes: a vault with no notes waiting, or bytes already on disk.
+        return Promise.resolve(
+          scenario.current === 'needs-embedding'
+            ? { modelId: 'embeddinggemma-2', bytes: 309_855_456, dataDir: 'C:\\Users\\chris\\AppData\\Roaming\\note-processor\\models' }
+            : null,
+        )
       case 'list_vault':
+        if (scenario.current === 'needs-embedding') {
+          return Promise.resolve({
+            vault: 'C:\\notes',
+            nodes: [
+              { rel: 'inbox.md', kind: 'Note', size: 12, mtimeMs: 1_700_000_000_000, state: 'Indexed' },
+            ],
+            warnings: [],
+          })
+        }
         if (scenario.current === 'indexed') {
           return Promise.resolve({
             vault: 'C:\\notes',
@@ -71,7 +90,10 @@ vi.mock('@tauri-apps/api/event', () => ({
     return () => {}
   },
 }))
-vi.mock('@tauri-apps/plugin-dialog', () => ({ open: async () => undefined }))
+vi.mock('@tauri-apps/plugin-dialog', () => ({
+  open: async () => undefined,
+  confirm: async () => confirmed.current,
+}))
 
 /** Run the app's real entry point against a fresh document, and say what it printed. */
 async function start(): Promise<{ errors: unknown[] }> {
@@ -123,6 +145,27 @@ describe('the window mounts', () => {
     await vi.waitFor(() => expect(document.body.textContent ?? '').not.toContain('not indexed yet'))
     expect(document.querySelector('[title="embedded"]'), 'the marker should say embedded by now').not.toBeNull()
     expect(commands).toContain('list_vault')
+  })
+
+  it('offers to set embeddings up when notes are indexed but have no vectors', async () => {
+    // The state a tester reached in 0.0.7 and read as broken: everything indexed, nothing embedded, search
+    // keyword-only, and no way in the window to change any of it. "Stay keyword-only" answers the moment, not
+    // the year — so the offer has to be findable again, and pressing it has to say what it will download.
+    scenario.current = 'needs-embedding'
+    confirmed.current = true
+    const { errors } = await start()
+
+    await vi.waitFor(() => expect(document.body.textContent ?? '').toContain('indexed but not embedded'))
+    const button = [...document.querySelectorAll('button')].find((b) => b.textContent === 'Set up embeddings')
+    expect(button, 'the offer line has no way to take it up').not.toBeNull()
+
+    button!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+
+    await vi.waitFor(() => expect(commands).toContain('set_consent'))
+    expect(commands).toContain('embeddings_offer')
+    // Granting is not a note in a diary: the vault goes through the pass straight away.
+    expect(commands).toContain('ingest_all')
+    expect(errors).toEqual([])
   })
 
   it('comes back to the folder it had, and shows what the walk reported', async () => {

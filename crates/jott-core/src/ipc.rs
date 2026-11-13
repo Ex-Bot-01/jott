@@ -247,11 +247,12 @@ impl VaultSession {
         });
         let stamps = Arc::new(Mutex::new(Stamps::with_root(data.clone(), vault)));
         let queue = Arc::new(
-            IngestQueue::spawn(pool.clone(), stamps.clone(), vault.to_path_buf()).with_np_config(np_config),
+            IngestQueue::spawn(pool.clone(), stamps.clone(), vault.to_path_buf()).with_np_config(np_config.clone()),
         );
         // The registry's remembered answer, applied without touching np's config file (§12): opening a
         // vault is not the same event as deciding about a download.
         queue.seed_consent(consent);
+        hold_np_fetching_until_asked(consent, np_config.as_deref());
         let session = Arc::new(VaultSession {
             vault: vault.to_path_buf(),
             journal: Arc::new(Mutex::new(Arc::new(Journal::void()))),
@@ -474,8 +475,25 @@ impl VaultSession {
     }
 
     /// The `[embed]` escape hatch and "ingest everything waiting" (§11): the same queue, run now.
+    /// "Index now" and `[embed]`: every note in the vault, not only the ones this run of the window saved.
+    ///
+    /// It used to flush whatever was pending, which meant that on a folder nobody had typed into it did
+    /// nothing at all — np scans the whole workspace whenever *any* note triggers it, but Jott's stamps are
+    /// per note, so every other row went on reading "not indexed yet" under a status line saying the pass was
+    /// done. A button with a label that promises the vault has to mean the vault.
     pub fn ingest_all(&self) {
+        if let Ok(notes) = walk::note_rels(&self.vault) {
+            for rel in notes {
+                self.queue.note_saved(&rel);
+            }
+        }
         self.queue.flush_now();
+    }
+
+    /// Whether embeddings are still something to *offer* — see [`IngestQueue::offer`]. The window asks this
+    /// when it wants to put a "Set up embeddings" control somewhere findable after an earlier no.
+    pub async fn embeddings_offer(&self) -> Option<crate::ingest::queue::ConsentOffer> {
+        self.queue.offer().await
     }
 
     /// The consent prompt's two buttons. Writing the decision into np's config is the queue's job (§11);
@@ -681,4 +699,29 @@ pub fn np_missing_payload(missing: &NpMissing, os: Os) -> NpMissingPayload {
 
 fn to_millis(when: &SystemTime) -> u64 {
     when.duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+}
+
+/// Until this vault has an answer, np gets no free hand: `[models] auto_fetch` defaults to yes and a plain
+/// `search` will fetch its built-in model — measured here at 309,855,456 bytes, on the first query, with
+/// nobody asked. §12's promise is that the person hears about the download *first*, so an undecided vault
+/// writes "no" and the prompt that follows offers one click to reverse it. A recorded answer is left exactly
+/// as it is: reopening a vault is not a new question, and undoing someone's "yes" on relaunch would be worse
+/// than the hole being closed.
+///
+/// Best effort in both directions. A config that cannot be written stays np's own problem to report — it is
+/// not a reason to fail opening a folder — and a config that cannot be parsed is left alone rather than
+/// rewritten over, since Jott did not write it.
+fn hold_np_fetching_until_asked(consent: Consent, np_config: Option<&std::path::Path>) {
+    use crate::ingest::consent::{auto_fetch_allowed, consent_file_is_unreadable, set_auto_fetch};
+
+    if consent != Consent::Undecided {
+        return;
+    }
+    let Some(path) = np_config else { return };
+    if consent_file_is_unreadable(path) || !auto_fetch_allowed(path) {
+        // Already "no", or a file whose meaning nobody can read: in neither case does Jott have a change to
+        // make that is worth touching someone's configuration for.
+        return;
+    }
+    let _ = set_auto_fetch(path, false);
 }
