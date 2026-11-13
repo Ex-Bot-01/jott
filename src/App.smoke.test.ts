@@ -86,6 +86,25 @@ vi.mock('@tauri-apps/api/core', () => ({
             ? { modelId: 'embeddinggemma-2', bytes: 309_855_456, dataDir: 'C:\\Users\\chris\\AppData\\Roaming\\note-processor\\models' }
             : null,
         )
+      case 'diagnostics':
+        // The drawer's snapshot: what this run is talking to, and what it has been asked so far.
+        return Promise.resolve({
+          runtime: {
+            npVersion: '0.3.1',
+            npPath: 'D:\\Jott\\np\\np.exe',
+            protocol: 1,
+            writer: 'up',
+            reader: 'idle',
+            dataDir: 'C:\\Users\\chris\\AppData\\Roaming\\note-processor',
+            logPath: 'C:\\Users\\chris\\AppData\\Roaming\\jott\\logs\\jott.jsonl',
+            logBytes: 4096,
+            consent: 'undecided',
+            autoFetch: false,
+          },
+          recent: [{ atMs: 1_700_000_000_000, kind: 'request', method: 'scan', outcome: 'applied', elapsedMs: 12, detail: null }],
+          queue: { waiting: 0, heldForConsent: 0, backoff: null, retryInMs: null },
+          vault: { notes: 1, embedded: 0, indexed: 1, waiting: 0, refused: 0, warnings: 0 },
+        })
       case 'list_vault':
         if (scenario.current === 'needs-embedding') {
           return Promise.resolve({
@@ -262,6 +281,57 @@ describe('the window mounts', () => {
     expect(text).toContain('C:\\Program Files\\Jott\\np\\np.exe')
     expect(text).toContain('bundled')
     expect(text).toContain('jott.jsonl')
+
+    // The panel is also the way into the drawer: whoever opens About opened it because something is wrong, and
+    // nobody reads a keyboard shortcut in a README at the moment they need one.
+    const diag = [...document.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Diagnostics')
+    expect(diag, 'the About panel has no way into the diagnostics drawer').not.toBeUndefined()
+    diag!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await vi.waitFor(() => expect(document.body.textContent ?? '').toContain('What Jott is doing'))
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await vi.waitFor(() => expect(document.body.textContent ?? '').not.toContain('What Jott is doing'))
+    expect(errors).toEqual([])
+  })
+
+  it('shows what the backend has been doing, without a second window', async () => {
+    // The reason this exists: "the save hung" used to mean reading a JSONL file in a text editor at 11pm.
+    scenario.current = 'vault'
+    const { errors } = await start()
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'd', ctrlKey: true, shiftKey: true, bubbles: true }))
+    await vi.waitFor(() => expect(document.body.textContent ?? '').toContain('What Jott is doing'))
+    const text = document.body.textContent ?? ''
+    expect(commands).toContain('diagnostics')
+    // The np file, the log with its size, and the one request this run made.
+    expect(text).toContain('D:\\Jott\\np\\np.exe')
+    expect(text).toContain('jott.jsonl')
+    expect(text).toContain('4.0 KiB')
+    expect(text).toContain('scan · applied · 12 ms')
+    // §4's promise, said out loud where the rows are: no note text in here.
+    expect(text).toContain('Nothing you have typed appears here')
+
+    // A row that arrives while the drawer is open shows up without reopening it.
+    handlers.get('trace://row')?.({
+      atMs: Date.now(),
+      kind: 'request',
+      method: 'embed',
+      outcome: 'fault',
+      elapsedMs: null,
+      detail: 'np said the index is locked by another process',
+    })
+    await vi.waitFor(() => expect(document.body.textContent ?? '').toContain('embed · fault'))
+    expect(document.body.textContent ?? '').toContain('np said the index is locked by another process')
+
+    // Escape closes it, and Ctrl+Shift+D again closes it too — one key for opening should be one for shutting.
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await vi.waitFor(() => expect(document.body.textContent ?? '').not.toContain('What Jott is doing'))
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'D', ctrlKey: true, shiftKey: true, bubbles: true }))
+    await vi.waitFor(() => expect(document.body.textContent ?? '').toContain('What Jott is doing'))
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'd', ctrlKey: true, shiftKey: true, bubbles: true }))
+    await vi.waitFor(() => expect(document.body.textContent ?? '').not.toContain('What Jott is doing'))
+
     expect(errors).toEqual([])
   })
 })

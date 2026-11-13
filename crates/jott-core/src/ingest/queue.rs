@@ -16,7 +16,7 @@
 //! * **A close that does not wait for a model.** [`IngestQueue::drain`] finishes what it started, gives
 //!   up after five seconds, and leaves the file waiting. The vault is files; nothing owed but time.
 
-use crate::diagnostics::{Journal, RequestRecord};
+use crate::diagnostics::{now_ms, Journal, RequestRecord, Trace, TraceEvent, TraceKind};
 use crate::hashes::sha256_file;
 use crate::ingest::consent::{
     consent_file_is_unreadable, default_bytes_for, embedding_model_named, set_auto_fetch,
@@ -53,7 +53,7 @@ pub fn backoff_ms(attempt: u32) -> u64 {
 ///
 /// `camelCase` on the way out: this enum exists to be read by the window, and a payload that arrives as
 /// `waited_ms` in one place and `retryInMs` in another is how a status line gets a `undefined`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum StateReason {
     // The field is renamed by hand because serde's container-level `rename_all` on an enum covers the
@@ -62,6 +62,17 @@ pub enum StateReason {
     // `tests/ipc_surface.rs` pins every key the window reads.
     Locked { #[serde(rename = "waitedMs")] waited_ms: u64 },
     Offline,
+}
+
+impl StateReason {
+    /// The word the status line, the journal and the diagnostics drawer all use for this state — one vocabulary
+    /// for one thing (§11).
+    pub fn word(&self) -> &'static str {
+        match self {
+            StateReason::Locked { .. } => "locked",
+            StateReason::Offline => "offline",
+        }
+    }
 }
 
 /// What the queue tells the window. The shell emits these as `ingest://event` (Task 10).
@@ -105,6 +116,21 @@ enum Msg {
     /// "Is there still a download to talk about?" — asked by the window when it wants to offer embeddings
     /// again after an earlier no. Answers `None` when there is nothing to offer.
     Offer(oneshot::Sender<Option<ConsentOffer>>),
+    /// "What are you holding?" Asked by the diagnostics snapshot, answered from the worker's own state rather
+    /// than a copy maintained elsewhere — a duplicate of this bookkeeping is a future disagreement.
+    Report(oneshot::Sender<QueueReport>),
+}
+
+/// What the queue is holding, in the words the drawer shows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueReport {
+    pub waiting: usize,
+    pub held_for_consent: usize,
+    /// The state that made work go back — `locked` or `offline` — and nothing when the queue is running free.
+    pub backoff: Option<String>,
+    #[serde(rename = "retryInMs")]
+    pub retry_in_ms: Option<u64>,
 }
 
 struct Options {
@@ -134,6 +160,9 @@ struct Shared {
     /// Where to write a line about each np request (Task 11). `None` until the shell says where, and a
     /// journal that has given up writing is treated the same way as `None`.
     journal: Mutex<Option<Arc<Journal>>>,
+    /// What the diagnostics drawer follows live. Same facts as the journal, kept in memory for the window;
+    /// `None` in tests and source builds that never attach one.
+    trace: Mutex<Option<Arc<Trace>>>,
     /// Set when the app is closing: no new work starts, and no events go out — a child we killed at the
     /// drain cap would otherwise arrive as a refusal the user did not do anything to deserve.
     closing: AtomicBool,
@@ -145,6 +174,7 @@ impl Default for Shared {
         Self {
             options: Mutex::new(Options::default()),
             consent: Mutex::new(Consent::Undecided),
+            trace: Mutex::new(None),
             journal: Mutex::new(None),
             closing: AtomicBool::new(false),
         }
@@ -213,6 +243,11 @@ impl IngestQueue {
         *self.shared.journal.lock().unwrap() = Some(journal);
     }
 
+    /// Attach the diagnostics trace. The window shows what is here; nothing about the run is invented for it.
+    pub fn set_trace(&self, trace: Arc<Trace>) {
+        *self.shared.trace.lock().unwrap() = Some(trace);
+    }
+
     /// A live view of what the queue says. Broadcast, so a window can come and go; a receiver that
     /// falls behind gets the lag signal rather than stalling the worker.
     pub fn events(&self) -> broadcast::Receiver<IngestEvent> {
@@ -262,6 +297,24 @@ impl IngestQueue {
                 }
             }
         }
+        if let Consent::Granted | Consent::Declined = consent {
+            // Only an answer is a row. "Undecided" is the absence of one, and the drawer showing it as a fact
+            // would be §4's invented value in a different costume.
+            push_trace(
+                &self.shared,
+                TraceEvent {
+                    at_ms: now_ms(),
+                    kind: TraceKind::Consent,
+                method: None,
+                outcome: None,
+                elapsed_ms: None,
+                    detail: Some(match consent {
+                        Consent::Granted => "granted",
+                        _ => "declined",
+                    }.to_string()),
+                },
+            );
+        }
         *self.shared.consent.lock().unwrap() = consent;
         let _ = self.tx.send(Msg::ConsentChanged);
     }
@@ -276,6 +329,17 @@ impl IngestQueue {
     ///
     /// This asks np — `models.list`, on the reader connection — because guessing from the config file alone
     /// would offer a download of an artifact that is already installed.
+    /// What the queue is holding right now, for the diagnostics snapshot. Zeros when the queue has shut down: a
+    /// drawer showing a session on its way out should read "nothing waiting", which is the truth it can act on.
+    pub async fn report(&self) -> QueueReport {
+        let empty = || QueueReport { waiting: 0, held_for_consent: 0, backoff: None, retry_in_ms: None };
+        let (tx, rx) = oneshot::channel();
+        if self.tx.send(Msg::Report(tx)).is_err() {
+            return empty();
+        }
+        rx.await.unwrap_or_else(|_| empty())
+    }
+
     pub async fn offer(&self) -> Option<ConsentOffer> {
         let (tx, rx) = oneshot::channel();
         if self.tx.send(Msg::Offer(tx)).is_err() {
@@ -333,6 +397,11 @@ struct State {
     last_save: Option<Instant>,
     flush: bool,
     consent_asked: bool,
+    /// Why work last went back, while it is still waiting. Cleared when the retry fires.
+    last_reason: Option<StateReason>,
+    /// The last progress line the diagnostics drawer was told about, so a fetch's thousand notifications become
+    /// a handful of rows. `(command, phase, when shown)`.
+    last_progress: Option<(String, String, Instant)>,
 }
 
 struct Worker {
@@ -351,12 +420,51 @@ impl Worker {
         if let Some(journal) = self.shared.journal.lock().unwrap().clone() {
             let _ = journal.record(&RequestRecord::new(method, &self.vault, elapsed, outcome));
         }
+        self.trace(TraceEvent {
+            at_ms: now_ms(),
+            kind: TraceKind::Request,
+            method: Some(method.to_string()),
+            outcome: Some(outcome),
+            elapsed_ms: Some(elapsed.as_millis() as u64),
+            detail: None,
+        });
+    }
+
+    /// Whether this progress line says something the drawer has not seen in the last second. A fetch sends one
+    /// per chunk of bytes — thousands for a 300 MB model — and a debugging screen that forwards them all becomes
+    /// the thing that is slow, which is the opposite of what it is for.
+    fn progress_is_news(&mut self, command: &str, phase: &str) -> bool {
+        use std::time::Instant;
+        let fresh = match &self.state.last_progress {
+            Some((last_command, last_phase, at)) => !(last_command == command && last_phase == phase && at.elapsed() < Duration::from_secs(1)),
+            None => true,
+        };
+        if fresh {
+            self.state.last_progress = Some((command.to_string(), phase.to_string(), Instant::now()));
+        }
+        fresh
+    }
+
+    /// One row for the drawer. Deliberately fed from the same call sites as the journal, so the log a person
+    /// sends and the screen they sent it from cannot disagree about what happened.
+    fn trace(&self, event: TraceEvent) {
+        push_trace(&self.shared, event);
     }
 
     fn record_fault(&self, method: &str, elapsed: Duration, code: i32, message: &str) {
         if let Some(journal) = self.shared.journal.lock().unwrap().clone() {
             let _ = journal.record(&RequestRecord::fault(method, &self.vault, elapsed, code as i64, message));
         }
+        // np's sentence whole. The drawer may truncate it for a row and the journal keeps it byte for byte;
+        // neither rewrites it (§4).
+        self.trace(TraceEvent {
+            at_ms: now_ms(),
+            kind: TraceKind::Request,
+            method: Some(method.to_string()),
+            outcome: Some("fault"),
+            elapsed_ms: Some(elapsed.as_millis() as u64),
+            detail: Some(message.to_string()),
+        });
     }
 
     async fn run(mut self, mut rx: mpsc::UnboundedReceiver<Msg>) {
@@ -373,6 +481,19 @@ impl Worker {
                         if !self.state.pending.is_empty() {
                             self.state.flush = true;
                         }
+                    }
+                    Some(Msg::Report(tx)) => {
+                        let retry_in_ms = self.state.retry_at.map(|at| {
+                            at.saturating_duration_since(Instant::now()).as_millis() as u64
+                        });
+                        let _ = tx.send(QueueReport {
+                            waiting: self.state.pending.len(),
+                            held_for_consent: self.state.held_for_consent.len(),
+                            // The reason is only worth showing while a retry is actually pending; once the wait
+                            // has passed, an old reason on screen reads as a current one.
+                            backoff: if retry_in_ms.is_some() { self.state.last_reason.map(|r| r.word().to_string()) } else { None },
+                            retry_in_ms,
+                        });
                     }
                     Some(Msg::Offer(tx)) => {
                         let np_config = self.shared.options.lock().unwrap().np_config.clone();
@@ -423,6 +544,16 @@ impl Worker {
                         // (§10), and mixing them would put somebody else's counters in this status line.
                         if note.connection == Connection::Writer && !self.shared.closing.load(Ordering::SeqCst) {
                             let _ = self.events.send(working(&note.note));
+                            if self.progress_is_news(&note.note.command, &note.note.phase) {
+                                self.trace(TraceEvent {
+                                    at_ms: now_ms(),
+                                    kind: TraceKind::Progress,
+                                    method: Some(note.note.command.clone()),
+                                    outcome: None,
+                                    elapsed_ms: None,
+                                    detail: Some(progress_detail(&note.note)),
+                                });
+                            }
                         }
                     }
                     // Lagged: the window was not reading; nothing this time.
@@ -658,6 +789,15 @@ impl Worker {
         let floor = self.shared.options.lock().unwrap().backoff_floor;
         self.put_back(owed);
         self.state.retry_at = Some(Instant::now() + floor.unwrap_or_else(|| Duration::from_millis(wait)));
+        self.state.last_reason = Some(reason);
+        self.trace(TraceEvent {
+            at_ms: now_ms(),
+            kind: TraceKind::Queue,
+            method: None,
+            outcome: None,
+            elapsed_ms: None,
+            detail: Some(reason.word().to_string()),
+        });
         self.emit(IngestEvent::Behind { reason, retry_in_ms: wait });
     }
 
@@ -770,6 +910,46 @@ async fn recv_progress(progress: &mut Option<broadcast::Receiver<PoolNote>>) -> 
 /// np's progress line, in the shape a status line can render. The counter keys are np's: `chunks_done`
 /// and `chunks_total` while embedding or writing, `bytes_done`/`bytes_total` while fetching — and absent
 /// means unknown, which is why `total` is an `Option` rather than a zero (§18.12).
+/// Hand one row to the drawer, if a drawer is attached. Both the worker and the public `IngestQueue` methods
+/// report, so this is the one place that knows where the trace lives.
+fn push_trace(shared: &Shared, event: TraceEvent) {
+    if let Some(trace) = shared.trace.lock().unwrap().clone() {
+        trace.push(event);
+    }
+}
+
+/// What a progress row says: np's phase, plus its counters when it sent any. The counter keys are np's own
+/// (`chunks_done` while embedding, `bytes_done` while fetching), and absent means unknown — nothing is filled in
+/// with a zero (§18.12), so a phase with no numbers stays a phase with no numbers.
+fn progress_detail(note: &ProgressNote) -> String {
+    let counters = match note.phase.as_str() {
+        "embedding" | "writing" => {
+            let done = note.extra.get("chunks_done").and_then(Value::as_u64);
+            match (done, note.extra.get("chunks_total").and_then(Value::as_u64)) {
+                (Some(done), Some(total)) => Some(format!("chunks {done}/{total}")),
+                (Some(done), None) => Some(format!("chunks {done}")),
+                _ => None,
+            }
+        }
+        "fetching" => {
+            let done = note.extra.get("bytes_done").and_then(Value::as_u64);
+            match (done, note.extra.get("bytes_total").and_then(Value::as_u64)) {
+                (Some(done), Some(total)) => Some(format!("{} / {} MiB", done / MIB, total / MIB)),
+                (Some(done), None) => Some(format!("{} MiB", done / MIB)),
+                _ => None,
+            }
+        }
+        _ => None,
+    };
+    match counters {
+        Some(counters) => format!("{} {}", note.phase, counters),
+        None => note.phase.clone(),
+    }
+}
+
+/// Bytes per MiB, for the one place a size is shown to a person.
+const MIB: u64 = 1024 * 1024;
+
 fn working(note: &ProgressNote) -> IngestEvent {
     let (done_key, total_key): (&str, &str) = match note.phase.as_str() {
         "embedding" | "writing" => ("chunks_done", "chunks_total"),

@@ -114,6 +114,28 @@ Two things worth checking while you are in there:
   with every occurrence marked. A hit that came from meaning rather than words has nothing marked and does not
   jump — that is correct, not broken.
 
+## 2c. Since 0.0.11: press **Ctrl+Shift+D** when something is odd
+
+A drawer opens at the bottom of the window with what this run has actually been doing:
+
+- which np file it is running, its version and protocol, and whether each connection is connected, not started,
+  or gone;
+- every request it made to np — `scan`, `embed`, `search` — with how long it took, and np's own error sentence on
+  a fault, in full;
+- what np said while it worked — `fetching 128 / 295 MiB`, `embedding chunks 41/100` — which is the line you want
+  open *during* a long wait, not described to me afterwards;
+- whether anything is queued, whether np has your folder locked, when Jott will retry;
+- how many notes are indexed and embedded, and whether any folder could not be read;
+- where the log file is, how big it is, and buttons to copy all of it or open the folder.
+
+**Press it while something is happening.** A save that has sat at "saving…" for a minute, or an *Index now* that
+has not moved any dots. The drawer shows this run's history either way, but seeing the request arrive and then not
+finish is a different diagnosis from seeing no request at all — and the second one means the button, not np.
+
+It cannot show the contents of a note, and it never will: the rows are the same records that go into the log file,
+whose key set is fixed by tests on both sides. If you ever see a sentence in there that looks like your writing,
+tell me — that would be a bug, not a feature.
+
 ## 3. One thing worth watching: np processes
 
 Jott starts np when it opens and keeps one running; a second starts the first time you search and stays until you
@@ -144,19 +166,23 @@ Then do it the other way round — `np scan .` running first, and a save in Jott
 
 ## 5. What to send back
 
-One file, plus anything you noticed in words:
+Open the drawer (**Ctrl+Shift+D**) and press **Copy details**, then send that text plus one file:
 
 ```
 %APPDATA%\jott\logs\jott.jsonl
 ```
 
-Send the About panel's *Copy details* text with it too — it names the np binary, which is the first thing I ask.
+The drawer's text names the np binary and version, both connections, the consent answer, the log's size, what is
+queued, and this run's last requests with their timings — which is most of what I would otherwise ask you to
+describe. The log file is the same information in full history, so a bug that happened yesterday is still there.
 
 That is the whole log: one line per request Jott made to np — the method, which vault, how long it took, and
 the outcome (`applied`, `locked`, `offline`, `disabled`, `refused`, `fault`) — with np's own error sentence on
 a fault. It rotates at 2 MiB and keeps older copies behind it (`jott.jsonl.1`, `jott.jsonl.2`). **It never
 contains the contents of your notes**; if you would rather look first, open it in Notepad and read it — each
-line is one JSON object with seven possible keys and nothing else.
+line is one JSON object with seven possible keys and nothing else. The drawer reads the same records; opening it
+asks np nothing and starts nothing, so it is safe to press on a machine where np is missing or unwell — which is
+usually when you want it.
 
 ## If the window shows nothing
 

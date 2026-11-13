@@ -28,6 +28,7 @@ fn main() {
             ipc::ingest_all,
             ipc::set_consent,
             ipc::embeddings_offer,
+            ipc::diagnostics,
             ipc::flush_on_close
         ])
         .setup(|app| {

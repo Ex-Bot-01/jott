@@ -6,9 +6,10 @@
 mod common;
 
 use common::repo_root;
+use jott_core::diagnostics::{TraceEvent, TraceKind};
 use jott_core::ingest::consent::auto_fetch_allowed;
 use jott_core::ingest::queue::{IngestEvent, StateReason};
-use jott_core::ipc::{self, ErrorKind, HitDto, NoteContent, RenameOutcome, SearchResults, VaultListing, WriteResult};
+use jott_core::ipc::{self, ConnectionState, ErrorKind, HitDto, NoteContent, RenameOutcome, SearchResults, VaultListing, WriteResult};
 use jott_core::np::outcomes::ScanReport;
 use jott_core::np::resolve::{NpMissing, NpSource, Os};
 use jott_core::np::{NpFeatures, NpInfo};
@@ -843,4 +844,266 @@ fn models_present() -> Value {
                     "prefix_query": null, "installed_at": 1, "state": "present", "members": []}],
         "fetching": [], "unclaimed": [], "models_dir_error": null
     })
+}
+
+// ---- what the drawer is shown about this session ----
+
+/// The drawer's promise is that it shows the same facts the log holds. A search through the session is a
+/// request like any other, and a row with no elapsed time would leave "why is search slow?" unanswered.
+#[tokio::test]
+async fn the_trace_shows_what_the_session_asked_np() {
+    let _turn = SERIAL.lock().await;
+    let harness = Harness::new();
+    harness.write("a.md", b"# A\n");
+    let (dir, client) = common::spawn(json!({
+        "replies": {"search": search_fixture()}
+    }))
+    .await;
+
+    let (_sentinel, info) = ipc::np_absent();
+    let session = VaultSession::open_in_with(
+        NpSource::Env(common::repo_root().join("tests/fake-np/np.py")),
+        info,
+        Some(Arc::new(client)),
+        harness.vault.path(),
+        Consent::Granted,
+        None,
+        harness.data.path().to_path_buf(),
+    );
+
+    session.search("kumquat", 8).await.expect("the stand-in answers");
+
+    let rows = session.trace().recent();
+    let search = rows
+        .iter()
+        .find(|row| row.method.as_deref() == Some("search") && row.kind == TraceKind::Request)
+        .unwrap_or_else(|| panic!("a search the window made should be on the screen: {rows:?}"));
+    assert_eq!(search.outcome, Some("applied"));
+    assert!(search.elapsed_ms.is_some(), "and how long it took");
+
+    // A subscriber that attached afterwards still gets what comes next — that is how a drawer opened mid-run
+    // keeps up without polling.
+    let mut rx = session.trace_events();
+    session.trace().push(TraceEvent::connection("test row"));
+    let got = tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv())
+        .await
+        .expect("delivered")
+        .expect("open");
+    assert_eq!(got.detail.as_deref(), Some("test row"));
+
+    session.close().await;
+    drop(dir);
+}
+
+/// A machine with no usable np is the state most worth showing, because it is the one where everything else on
+/// screen still works. The drawer has to say the child could not be started — not stay silent and let the
+/// runtime row claim a connection that never existed.
+#[tokio::test]
+async fn a_child_that_could_not_be_started_is_a_row_of_its_own() {
+    let _turn = SERIAL.lock().await;
+    let harness = Harness::new();
+    harness.write("a.md", b"# A\n");
+
+    let (_sentinel, info) = ipc::np_absent();
+    let session = VaultSession::open_in_with(
+        common::unreachable_np(),
+        info,
+        None,
+        harness.vault.path(),
+        Consent::Granted,
+        None,
+        harness.data.path().to_path_buf(),
+    );
+
+    let err = session.search("anything", 8).await.expect_err("np is not here");
+    assert_eq!(err.kind, ErrorKind::NpGone);
+
+    let rows = session.trace().recent();
+    let connection = rows
+        .iter()
+        .find(|row| row.kind == TraceKind::Connection)
+        .unwrap_or_else(|| panic!("the drawer has to show why nothing works: {rows:?}"));
+    assert!(
+        connection.detail.as_deref().is_some_and(|d| d.contains("np")),
+        "and name what it could not start: {connection:?}"
+    );
+
+    session.close().await;
+}
+
+// np's search answer as the real one is shaped: hits with snippets, and the four provenance keys §10 asks for.
+fn search_fixture() -> Value {
+    json!({
+        "hits": [{"path": "a.md", "snippet": "\u{2026}a [kumquat] tree\u{2026}", "kind": "note", "score": 1.2, "bm25": 1.2, "cosine": null}],
+        "mode": "keyword", "vectors": false, "offline": false, "reason": null
+    })
+}
+
+// ---- the snapshot behind the diagnostics drawer ----
+
+/// Opening the drawer ten minutes into a run must not show an empty pane: the answer is what already happened,
+/// not only what happens next.
+#[tokio::test]
+async fn the_snapshot_shows_the_run_so_far() {
+    let _turn = SERIAL.lock().await;
+    let harness = Harness::new();
+    harness.write("a.md", b"# A\n");
+    let (dir, client) = common::spawn(json!({"replies": {"search": search_fixture()}})).await;
+
+    let (_sentinel, info) = ipc::np_absent();
+    let protocol = info.protocol as u32;
+    let version = info.version.clone();
+    let session = VaultSession::open_in_with(
+        NpSource::Env(common::repo_root().join("tests/fake-np/np.py")),
+        info,
+        Some(Arc::new(client)),
+        harness.vault.path(),
+        Consent::Granted,
+        None,
+        harness.data.path().to_path_buf(),
+    );
+
+    session.search("kumquat", 8).await.expect("the stand-in answers");
+    let snapshot = session.diagnostics().await;
+
+    assert!(snapshot.recent.iter().any(|row| row.method.as_deref() == Some("search")));
+    assert_eq!(snapshot.runtime.protocol, Some(protocol));
+    assert_eq!(snapshot.runtime.np_version.as_deref(), Some(version.as_str()));
+    assert!(snapshot.runtime.np_path.as_deref().is_some_and(|p| p.ends_with("np.py")), "{:?}", snapshot.runtime.np_path);
+    assert_eq!(snapshot.runtime.writer, ConnectionState::Up, "the warm child is a live writer");
+    assert_eq!(snapshot.runtime.reader, ConnectionState::Up, "and search opened the reader");
+    assert_eq!(snapshot.vault.notes, 1);
+    assert_eq!(snapshot.queue.waiting, 0, "nothing was saved, so nothing is queued");
+
+    session.close().await;
+    drop(dir);
+}
+
+/// A folder that has only been looked at has no np children. Saying `idle` — rather than `down`, or a confident
+/// `up` — is what lets the drawer be believed when it later reports a fault.
+#[tokio::test]
+async fn a_folder_that_was_only_opened_has_no_connections_to_show() {
+    let _turn = SERIAL.lock().await;
+    let harness = Harness::new();
+    harness.write("a.md", b"# A\n");
+
+    let (_sentinel, info) = ipc::np_absent();
+    let session = VaultSession::open_in_with(
+        common::unreachable_np(),
+        info,
+        None,
+        harness.vault.path(),
+        Consent::Undecided,
+        None,
+        harness.data.path().to_path_buf(),
+    );
+
+    session.listing().expect("listing needs no np");
+    let snapshot = session.diagnostics().await;
+    assert_eq!(snapshot.runtime.writer, ConnectionState::Idle);
+    assert_eq!(snapshot.runtime.reader, ConnectionState::Idle);
+    // No journal attached on this path: the drawer says there is no log rather than naming a file it never
+    // opened. §4's rule about not inventing values, applied to a path string.
+    assert_eq!(snapshot.runtime.log_path, None);
+    assert_eq!(snapshot.runtime.log_bytes, None);
+
+    session.close().await;
+}
+
+/// With np missing, every other half of the window still works and the drawer still answers. Nothing here may
+/// panic or fill a blank with a guess.
+#[tokio::test]
+async fn the_snapshot_answers_even_with_no_backend_at_all() {
+    let _turn = SERIAL.lock().await;
+    let harness = Harness::new();
+    harness.write("a.md", b"# A\n");
+    harness.write("b.md", b"# B\n");
+
+    let (_sentinel, info) = ipc::np_absent();
+    let session = VaultSession::open_in_with(
+        common::unreachable_np(),
+        info,
+        None,
+        harness.vault.path(),
+        Consent::Declined,
+        None,
+        harness.data.path().to_path_buf(),
+    );
+
+    let snapshot = session.diagnostics().await;
+    assert_eq!(snapshot.vault.notes, 2);
+    assert_eq!(snapshot.runtime.consent, Consent::Declined, "what the registry remembered is shown as it is");
+    assert!(snapshot.recent.iter().all(|row| row.kind != TraceKind::Request), "nothing was asked, nothing to show");
+
+    session.close().await;
+}
+
+/// The log line worth having: a drawer that says "log: 412 KB" when the file could not be opened is worse than
+/// one that says nothing.
+#[tokio::test]
+async fn a_log_that_exists_is_named_and_measured() {
+    let _turn = SERIAL.lock().await;
+    let harness = Harness::new();
+    harness.write("a.md", b"# A\n");
+
+    let (_sentinel, info) = ipc::np_absent();
+    let session = VaultSession::open_in_with(
+        common::unreachable_np(),
+        info,
+        None,
+        harness.vault.path(),
+        Consent::Undecided,
+        None,
+        harness.data.path().to_path_buf(),
+    )
+    .with_journal(Arc::new(jott_core::diagnostics::Journal::open(
+        &harness.data.path().join("logs"),
+    )));
+
+    let snapshot = session.diagnostics().await;
+    let path = snapshot.runtime.log_path.clone().expect("a journal was opened");
+    assert!(path.ends_with("jott.jsonl"), "{path}");
+    assert_eq!(snapshot.runtime.log_bytes, Some(0), "opened, nothing written yet");
+
+    session.close().await;
+}
+
+/// The four DTOs are a wire contract with `src/lib/diagnostics.ts`. Keys drift silently otherwise — one renamed
+/// field is a drawer showing blanks while every Rust test still passes.
+#[test]
+fn the_snapshot_keys_are_the_ones_the_window_reads() {
+    let runtime = jott_core::ipc::RuntimeInfo {
+        np_version: Some("0.3.1".into()),
+        np_path: Some("/np".into()),
+        protocol: Some(1),
+        writer: ConnectionState::Up,
+        reader: ConnectionState::Idle,
+        data_dir: "/data".into(),
+        log_path: Some("/log".into()),
+        log_bytes: Some(1),
+        consent: Consent::Undecided,
+        auto_fetch: Some(false),
+    };
+    let queue = jott_core::ipc::QueueState { waiting: 0, held_for_consent: 0, backoff: None, retry_in_ms: None };
+    let vault = jott_core::ipc::VaultCounts { notes: 0, embedded: 0, indexed: 0, waiting: 0, refused: 0, warnings: 0 };
+    let snapshot =
+        jott_core::ipc::Diagnostics { runtime: runtime.clone(), recent: vec![], queue: queue.clone(), vault: vault.clone() };
+
+    let cases: Vec<(serde_json::Value, &[&'static str])> = vec![
+        (serde_json::to_value(&snapshot).unwrap(), &jott_core::ipc::Diagnostics::KEYS),
+        (serde_json::to_value(&runtime).unwrap(), &jott_core::ipc::RuntimeInfo::KEYS),
+        (serde_json::to_value(&queue).unwrap(), &jott_core::ipc::QueueState::KEYS),
+        (serde_json::to_value(&vault).unwrap(), &jott_core::ipc::VaultCounts::KEYS),
+    ];
+
+    for (value, keys) in cases {
+        let mut found: Vec<String> = value.as_object().expect("an object").keys().cloned().collect();
+        found.sort();
+        let mut expected: Vec<String> = keys.iter().map(|key| key.to_string()).collect();
+        expected.sort();
+        assert_eq!(found, expected);
+    }
+
+    // ConnectionState is read as a lowercase word by the window, not as a Rust variant name.
+    assert_eq!(serde_json::to_value(ConnectionState::Idle).unwrap(), json!("idle"));
 }

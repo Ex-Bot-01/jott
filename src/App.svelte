@@ -5,6 +5,7 @@
 
   import { onMount } from 'svelte'
   import About from './lib/About.svelte'
+  import Diagnostics from './lib/Diagnostics.svelte'
   import Tree from './lib/Tree.svelte'
   import Editor from './lib/Editor.svelte'
   import StatusLine from './lib/StatusLine.svelte'
@@ -13,6 +14,7 @@
   import { consentSentence, statusFor, type Status } from './lib/statusLine'
   import type { SavePhase } from './lib/saveState'
   import * as ipc from './lib/ipc'
+  import type { DiagnosticsSnapshot, TraceEvent } from './lib/diagnostics'
   import type { AboutInfo, IngestEvent, NoteContent, RegistryInfo, SearchResults, VaultListing } from './lib/ipc'
 
   let registry = $state<RegistryInfo | null>(null)
@@ -51,6 +53,12 @@
   let offerAskedFor: string | null = null
   let showAbout = $state(false)
   let aboutLoading = $state(false)
+
+  /** The diagnostics drawer. Its rows accumulate from launch rather than from the moment it opens: the question
+      that makes somebody press Ctrl+Shift+D is always about something that already happened. */
+  let showDiagnostics = $state(false)
+  let snapshot = $state<DiagnosticsSnapshot | null>(null)
+  let traceRows = $state<TraceEvent[]>([])
 
   let searchQuery = $state('')
   /** The query that produced the hit this note was opened from. Kept apart from `searchQuery` on purpose: the
@@ -153,12 +161,36 @@
     return result
   }
 
-  async function openAbout() {
-    showAbout = true
-    if (about) return
+  /** Both versions and which np file this run picked. Fetched once, whoever asks: the drawer needs the Jott
+      version for "copy details" too, and opening it should not be a second round trip to the same facts. */
+  async function loadAbout(): Promise<void> {
+    if (about || aboutLoading) return
     aboutLoading = true
     about = await call(() => ipc.appInfo())
     aboutLoading = false
+  }
+
+  async function openAbout() {
+    showAbout = true
+    await loadAbout()
+  }
+
+  async function openDiagnostics() {
+    showDiagnostics = true
+    void loadAbout()
+    // Asked again every time it opens. The queue and the counts are facts about right now, and a drawer stuck on
+    // the numbers from ten minutes ago is precisely how a debugging screen loses its credibility.
+    snapshot = await call(ipc.diagnostics)
+  }
+
+  async function toggleFromShortcut(event: KeyboardEvent) {
+    // Ctrl+Shift+D, because "show me what the backend did" should not need a menu tour — and because the
+    // alternative somebody reaches for otherwise is the log file, in a text editor, at 11pm.
+    if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'd') {
+      event.preventDefault()
+      if (showDiagnostics) showDiagnostics = false
+      else await openDiagnostics()
+    }
   }
 
   async function pickFolder() {
@@ -316,11 +348,19 @@
       // say "waiting for the index" — which is exactly what a tester reported and reasonably called confusing.
       if ('indexed' in event || 'embedded' in event || 'refused' in event || 'disabled' in event) scheduleRelist()
     })
+    // Bounded: a long run produces thousands of rows, and core's ring holds two hundred anyway. The drawer shows
+    // the newest ones, so dropping the oldest loses nothing that was still on screen.
+    void ipc.onTraceRow((row) => {
+      traceRows = [...traceRows.slice(-399), row]
+    })
+
     void ipc.onVaultChanged((change) => void onVaultChanged(change.rel))
     void ipc.onNpMissing((payload) => (npMissing = payload))
   })
 
 </script>
+
+<svelte:window onkeydown={(event) => void toggleFromShortcut(event)} />
 
 <main class="window">
   <aside class="side">
@@ -491,8 +531,22 @@
 
   <StatusLine {status} consent={consent} onembed={() => void ipc.ingestAll()} onconsent={(granted) => void answerConsent(granted)} />
 
+  {#if showDiagnostics}
+    <Diagnostics
+      snapshot={snapshot}
+      live={traceRows}
+      jottVersion={about?.jottVersion ?? 'unknown'}
+      onClose={() => (showDiagnostics = false)}
+    />
+  {/if}
+
   {#if showAbout}
-    <About info={about} loading={aboutLoading} onClose={() => (showAbout = false)} />
+    <About
+      info={about}
+      loading={aboutLoading}
+      onDiagnostics={() => void openDiagnostics()}
+      onClose={() => (showAbout = false)}
+    />
   {/if}
 </main>
 
