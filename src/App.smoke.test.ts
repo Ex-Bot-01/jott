@@ -1,4 +1,17 @@
 // @vitest-environment jsdom
+// jsdom has no layout engine: a `Range` there cannot answer `getClientRects`, and CodeMirror measures its text in an
+// animation frame — often after the test that mounted the editor has already finished, so the throw arrives as an
+// unhandled error and fails a suite whose tests all passed. These tests are about which words the window shows, not
+// about pixel geometry, so the measurement gets the honest jsdom answer: nothing is on screen yet.
+declare global {
+  interface Range {
+    getClientRects(): DOMRectList
+    getBoundingClientRect(): DOMRect
+  }
+}
+const emptyRect = { x: 0, y: 0, width: 0, height: 0, top: 0, left: 0, right: 0, bottom: 0 } as DOMRect
+Range.prototype.getClientRects = () => Object.assign([], { length: 0, item: () => null }) as unknown as DOMRectList
+Range.prototype.getBoundingClientRect = () => emptyRect
 /**
  * The window rendering *something* is the one thing no test checked until a colleague installed 0.0.3 and
  * reported a white screen. Everything else here is logic; this is the mount itself: `main.ts` runs, Svelte
