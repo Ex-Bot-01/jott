@@ -8,6 +8,9 @@
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { confirm, open } from '@tauri-apps/plugin-dialog'
+// The drawer's shapes live with the drawer (`lib/diagnostics.ts`), which pins them against the Rust key sets.
+// Re-declaring them here would be a second copy of a contract nobody would keep.
+import type { DiagnosticsSnapshot, TraceEvent } from './diagnostics'
 
 export type StampState = 'Waiting' | 'Indexed' | 'Embedded' | { Refused: string }
 
@@ -218,6 +221,14 @@ export const embeddingsOffer = () => invoke<ConsentOffer | null>('embeddings_off
 export const askConfirm = (message: string, title: string) => confirm(message, { title })
 // §14's two answers are not one command: *reload* re-reads the file (`readNote`), and *keep* is a
 // decision the window makes locally — it changes nothing on disk until the next save.
+
+/** Everything the diagnostics drawer shows: runtime facts, the queue, folder counts, and this run's rows. Built
+    from memory, so opening it never waits on np — and never starts it. */
+export const diagnostics = () => invoke<DiagnosticsSnapshot>('diagnostics')
+
+/** Live backend activity. Subscribed from launch, not when the drawer opens: a row about the save that hung ten
+    minutes ago is the reason somebody opens it. */
+export const onTraceRow = (handler: (row: TraceEvent) => void) => listen<TraceEvent>('trace://row', (e) => handler(e.payload))
 
 export const onIngestEvent = (handler: (event: IngestEvent) => void) => listen<IngestEvent>('ingest://event', (e) => handler(e.payload))
 export const onVaultChanged = (handler: (change: VaultChanged) => void) => listen<VaultChanged>('vault://changed', (e) => handler(e.payload))
