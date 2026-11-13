@@ -248,3 +248,101 @@ async fn the_ingest_queue_records_what_it_asked_np_for() {
 
     session.close().await;
 }
+
+// ---- the trace: this run's backend activity, kept in memory for the window to show ----
+
+use jott_core::diagnostics::{Trace, TraceEvent, TraceKind};
+
+fn request(method: &str, at_ms: u64) -> TraceEvent {
+    TraceEvent {
+        at_ms,
+        kind: TraceKind::Request,
+        method: Some(method.to_string()),
+        outcome: Some("applied"),
+        elapsed_ms: Some(40),
+        detail: None,
+    }
+}
+
+/// The drawer is opened on a run that has already been going for ten minutes, and the interesting part is what
+/// happened last. Oldest first, because the window shows newest at the top and should not have to know that.
+#[test]
+fn the_ring_keeps_the_most_recent_events_oldest_first() {
+    let trace = Trace::new(3);
+    for at in 1..=5 {
+        trace.push(request("scan", at));
+    }
+    let kept: Vec<u64> = trace.recent().into_iter().map(|e| e.at_ms).collect();
+    assert_eq!(kept, vec![3, 4, 5], "three kept, the newest three");
+}
+
+/// A window that opens late still gets the events after it subscribed, and a window that stopped reading (a
+/// closed drawer, a hung webview) must not be able to break the run.
+#[tokio::test]
+async fn subscribers_see_what_comes_next_and_lagging_is_harmless() {
+    let trace = Arc::new(Trace::new(4));
+    let mut rx = trace.subscribe();
+
+    trace.push(request("embed", 10));
+    let got = tokio::time::timeout(Duration::from_millis(500), rx.recv())
+        .await
+        .expect("the event arrives")
+        .expect("the channel is open");
+    assert_eq!(got.method.as_deref(), Some("embed"));
+
+    // Nobody reading while the ring wraps around twice: still no panic, still no block.
+    for at in 0..12 {
+        trace.push(request("scan", at));
+    }
+    assert_eq!(trace.recent().len(), 4);
+}
+
+/// The same rule the journal lives by, applied to what crosses into the webview: a closed set of keys, and none
+/// of them a place a note's text could go. This is the test that fails when someone adds `snippet` "just for
+/// debugging" three months from now — which is exactly when nobody is thinking about it.
+#[test]
+fn the_trace_carries_fields_and_never_contents() {
+    let filled = TraceEvent {
+        at_ms: 1,
+        kind: TraceKind::Progress,
+        method: Some("embed".into()),
+        outcome: Some("applied"),
+        elapsed_ms: Some(2),
+        detail: Some("chunks 7/7".into()),
+    };
+    // Compared sorted: `serde_json` keeps an object's keys in its own order, and what is being pinned here is
+    // *which* keys exist, not the order they happen to arrive in.
+    let mut keys: Vec<String> = serde_json::to_value(&filled)
+        .expect("an event serializes")
+        .as_object()
+        .expect("an object")
+        .keys()
+        .cloned()
+        .collect();
+    keys.sort();
+    let mut expected: Vec<String> = TraceEvent::KEYS.iter().map(|key| key.to_string()).collect();
+    expected.sort();
+    assert_eq!(keys, expected);
+
+    for forbidden in ["text", "snippet", "body", "contents", "query", "path"] {
+        assert!(
+            !TraceEvent::KEYS.contains(&forbidden),
+            "`{forbidden}` would put someone's note text on a screen that gets screenshotted"
+        );
+    }
+}
+
+/// `kind` is how the window groups rows. Lowercase, so the frontend can switch on it without learning Rust's
+/// spelling of a variant.
+#[test]
+fn kinds_arrive_lowercase() {
+    for (kind, word) in [
+        (TraceKind::Request, "request"),
+        (TraceKind::Progress, "progress"),
+        (TraceKind::Connection, "connection"),
+        (TraceKind::Consent, "consent"),
+        (TraceKind::Queue, "queue"),
+    ] {
+        assert_eq!(serde_json::to_value(&kind).unwrap(), json!(word));
+    }
+}

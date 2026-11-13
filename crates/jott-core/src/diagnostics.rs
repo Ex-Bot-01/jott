@@ -199,3 +199,95 @@ pub fn last_line(path: &Path) -> std::io::Result<Option<String>> {
     // splitting all 64 KiB of it.
     Ok(text.lines().rev().find(|line| !line.trim().is_empty()).map(str::to_string))
 }
+
+// ---------------------------------------------------------------- the trace, for the window
+
+/// One thing the backend did, as the diagnostics drawer shows it.
+///
+/// The same rule as [`RequestRecord`], for the same reason: this screen exists partly so a person can screenshot
+/// it at whoever maintains Jott, and a field that could hold note text would be sent before anyone thought about
+/// it. So the key set is closed and pinned by a test — `TraceEvent::KEYS`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TraceEvent {
+    /// Milliseconds since the epoch, so two runs and two rows can be told apart.
+    pub at_ms: u64,
+    pub kind: TraceKind,
+    /// The np method for a request or a progress line; nothing else has one.
+    pub method: Option<String>,
+    /// Jott's own state word — `applied`, `locked`, `offline`, `disabled`, `refused`, `fault` — the same one the
+    /// status line and the journal use, so no two surfaces disagree about what happened (§11).
+    pub outcome: Option<&'static str>,
+    pub elapsed_ms: Option<u64>,
+    /// np's sentence on a fault, byte for byte (§4); a counters summary on progress (`chunks 7/7`); a short fact
+    /// on the rest. Never anything read out of a note.
+    pub detail: Option<String>,
+}
+
+impl TraceEvent {
+    /// The closed contract with `src/lib/diagnostics.ts`. A field added here without a decision added there is
+    /// what this list is for: the test that compares them fails first.
+    pub const KEYS: &'static [&'static str] = &["atMs", "kind", "method", "outcome", "elapsedMs", "detail"];
+}
+
+/// What kind of thing happened, in the words the window groups rows by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TraceKind {
+    /// A JSON-RPC request and how it ended.
+    Request,
+    /// np's own progress, coalesced: a fetch sends one line per chunk of bytes and the drawer is not a console.
+    Progress,
+    /// A child was started, or stopped, or could not be started.
+    Connection,
+    /// Someone answered the download question.
+    Consent,
+    /// Work went back for another try, and why.
+    Queue,
+}
+
+/// What this run of Jott has done, kept in memory so the window can show it without reading a file.
+///
+/// Fixed size on purpose: the drawer is for *this* run, the journal is for the runs before it, and an unbounded
+/// trace would turn a 300 MB fetch — one np progress line per chunk — into a memory leak in a debugging screen.
+/// A subscriber that falls behind (drawer closed, webview hung) loses events and says nothing; the run must not
+/// feel the window.
+pub struct Trace {
+    capacity: usize,
+    events: std::sync::Mutex<std::collections::VecDeque<TraceEvent>>,
+    tx: tokio::sync::broadcast::Sender<TraceEvent>,
+}
+
+impl Default for Trace {
+    fn default() -> Self {
+        Self::new(200)
+    }
+}
+
+impl Trace {
+    pub fn new(capacity: usize) -> Trace {
+        let (tx, _) = tokio::sync::broadcast::channel(capacity.max(16) * 2);
+        Trace { capacity, events: std::sync::Mutex::new(std::collections::VecDeque::new()), tx }
+    }
+
+    /// Record one event and tell whoever is watching. Losing a send because nobody is listening is the normal
+    /// case, not an error worth returning.
+    pub fn push(&self, event: TraceEvent) {
+        if let Ok(mut events) = self.events.lock() {
+            events.push_back(event.clone());
+            while events.len() > self.capacity {
+                events.pop_front();
+            }
+        }
+        let _ = self.tx.send(event);
+    }
+
+    /// Everything kept, oldest first — the window puts the newest at the top of its own list.
+    pub fn recent(&self) -> Vec<TraceEvent> {
+        self.events.lock().map(|events| events.iter().cloned().collect()).unwrap_or_default()
+    }
+
+    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<TraceEvent> {
+        self.tx.subscribe()
+    }
+}
