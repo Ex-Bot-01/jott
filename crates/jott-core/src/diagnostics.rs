@@ -67,6 +67,126 @@ impl RequestRecord {
     pub const KEYS: [&'static str; 7] = ["method", "workspace", "elapsed_ms", "outcome", "code", "message", "at_ms"];
 }
 
+/// Where one run of Jott began, written once at startup.
+///
+/// Without it a log that spans an upgrade reads as one long run: the tester says "it worked yesterday" and there
+/// is no line saying yesterday's build talked to a different `np.exe`, from a different place, with a different
+/// state folder. The state folder is here for the same reason — [`crate::ipc`] falls back to a temp folder when
+/// the app data dir is unwritable, and unsaved-buffer mirrors then live somewhere nobody told anyone about.
+#[derive(Debug, Clone, Serialize)]
+pub struct RunRecord {
+    /// Jott's version, as the shell was built with it.
+    pub jott: String,
+    /// What np answered at the handshake, or `None` when nothing answered yet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub np: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<i64>,
+    /// The binary this run talks to, with `/` separators like every path in this file. `None` when nothing was
+    /// found — a run with no np still has a version and a state folder worth writing down.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub np_path: Option<String>,
+    /// `bundled`, `$NP_PATH` or `$PATH` — how that binary was found (§14's precedence).
+    pub np_source: String,
+    /// `windows-x86_64`, `linux-x86_64`: the platform the bytes were built for.
+    pub platform: String,
+    /// Where Jott keeps its own files: stamps, mirrored buffers, this log.
+    pub state_root: String,
+    /// True when that is a temporary fallback rather than the real app data folder.
+    pub state_root_is_fallback: bool,
+    pub at_ms: u64,
+}
+
+impl RunRecord {
+    /// Paths are written with `/` on every platform, as everywhere in this file.
+    pub fn new(
+        jott: impl Into<String>,
+        np: Option<String>,
+        protocol: Option<i64>,
+        np_path: Option<&Path>,
+        np_source: impl Into<String>,
+        state_root: &Path,
+        state_root_is_fallback: bool,
+    ) -> RunRecord {
+        RunRecord {
+            jott: jott.into(),
+            np,
+            protocol,
+            np_path: np_path.map(portable),
+            np_source: np_source.into(),
+            platform: format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH),
+            state_root: portable(state_root),
+            state_root_is_fallback,
+            at_ms: now_ms(),
+        }
+    }
+
+    /// The keys a run line may have — see [`RequestRecord::KEYS`] for why that list is a contract.
+    pub const KEYS: [&'static str; 9] = [
+        "jott",
+        "np",
+        "protocol",
+        "np_path",
+        "np_source",
+        "platform",
+        "state_root",
+        "state_root_is_fallback",
+        "at_ms",
+    ];
+
+    #[doc(hidden)]
+    pub fn for_test(jott: &str) -> RunRecord {
+        RunRecord::new(jott, Some("0.3.1".into()), Some(1), Some(Path::new("/np/np")), "bundled", Path::new("/state"), false)
+    }
+}
+
+/// One piece of file work around np: what Jott did to a note, or refused to do, and why.
+///
+/// `rel` is in this record on purpose — "my note vanished" is a question about *which file*, and no np request line
+/// can answer it. Contents are out on the same rule as everywhere else: the byte count says whether a write was
+/// empty without copying the note into a log someone will attach to a message.
+#[derive(Debug, Clone, Serialize)]
+pub struct LocalRecord {
+    /// `save`, `write-failed`, `conflict`, `mirror-replayed`, `mirror-discarded`, `deleted`, `consent`,
+    /// `index-now`, `watcher-unavailable`, `state-root-fallback`.
+    pub event: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rel: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<u64>,
+    /// A sentence in Jott's own words — for a deletion, where the note went and what the system trash said; for a
+    /// failure, the OS's reason. Never np's answer to a search, and never note text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    pub at_ms: u64,
+}
+
+impl LocalRecord {
+    pub fn new(event: &'static str) -> LocalRecord {
+        LocalRecord { event, rel: None, bytes: None, detail: None, at_ms: now_ms() }
+    }
+
+    /// Vault-relative, with `/`, like every `rel` Jott passes anywhere.
+    pub fn with_rel(mut self, rel: impl Into<String>) -> LocalRecord {
+        self.rel = Some(rel.into());
+        self
+    }
+
+    pub fn with_bytes(mut self, bytes: u64) -> LocalRecord {
+        self.bytes = Some(bytes);
+        self
+    }
+
+    pub fn with_detail(mut self, detail: impl Into<String>) -> LocalRecord {
+        self.detail = Some(detail.into());
+        self
+    }
+
+    /// The keys a local line may have. `rel` is deliberately the only path-shaped thing here and there is no
+    /// field that could hold what the file says — this list is where that stays true.
+    pub const KEYS: [&'static str; 5] = ["event", "rel", "bytes", "detail", "at_ms"];
+}
+
 /// The app data log. Writing never fails upward: a diagnostic that can stop a save is worse than no
 /// diagnostic, so the errors come back for callers to ignore rather than to propagate.
 #[derive(Debug)]
@@ -122,8 +242,22 @@ impl Journal {
         guarded(&self.state).is_none()
     }
 
-    /// Append one line. Rotates first if the file has passed [`ROTATE_AT_BYTES`].
+    /// Append one np request. Rotates first if the file has passed [`ROTATE_AT_BYTES`].
     pub fn record(&self, record: &RequestRecord) -> std::io::Result<()> {
+        self.append(record)
+    }
+
+    /// Append the line that says which run this is. See [`RunRecord`].
+    pub fn record_run(&self, record: &RunRecord) -> std::io::Result<()> {
+        self.append(record)
+    }
+
+    /// Append one piece of file work. See [`LocalRecord`].
+    pub fn record_local(&self, record: &LocalRecord) -> std::io::Result<()> {
+        self.append(record)
+    }
+
+    fn append<T: Serialize + ?Sized>(&self, record: &T) -> std::io::Result<()> {
         let line = serde_json::to_string(record).map_err(std::io::Error::other)? + "\n";
         let mut guard = guarded(&self.state);
         let Some(writer) = guard.as_mut() else {
@@ -192,6 +326,12 @@ impl Journal {
     pub fn void() -> Journal {
         Journal { dir: std::env::temp_dir(), state: Mutex::new(None) }
     }
+}
+
+/// A path as this file writes every path: `/` separators, so one log read after a Windows run needs no
+/// translation and a path can never be mistaken for a field boundary.
+fn portable(path: &Path) -> String {
+    path.display().to_string().replace('\\', "/")
 }
 
 /// Milliseconds since the epoch, for anything that wants to say *when* without a clock of its own.
@@ -276,6 +416,9 @@ pub enum TraceKind {
     Consent,
     /// Work went back for another try, and why.
     Queue,
+    /// File work around np: a note written, moved, trashed, a mirrored draft replayed or thrown away. The rows
+    /// that answer "my note vanished", which no request line can.
+    File,
 }
 
 /// What this run of Jott has done, kept in memory so the window can show it without reading a file.

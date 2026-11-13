@@ -10,7 +10,7 @@
 /** Whether a slot holds a live np child. `idle` means never needed, `down` means it was there. */
 export type ConnectionState = 'up' | 'idle' | 'down'
 
-export type TraceKind = 'request' | 'progress' | 'connection' | 'consent' | 'queue'
+export type TraceKind = 'request' | 'progress' | 'connection' | 'consent' | 'queue' | 'file'
 
 /** The registry's word for the embeddings decision, in the lowercase the wire carries. */
 export type ConsentWord = 'undecided' | 'granted' | 'declined'
@@ -32,7 +32,13 @@ export interface RuntimeInfo {
   protocol: number | null
   writer: ConnectionState
   reader: ConnectionState
+  /** np's own folder: models, index files. */
   dataDir: string
+  /** Where Jott keeps its state — stamps, mirrored unsaved buffers, the log. Not the same folder as `dataDir`. */
+  stateDir: string
+  /** True when `stateDir` is a temporary fallback because the app data folder was not writable, which is where
+   *  unsaved drafts are then landing. The drawer says it; nobody should find out by losing a draft. */
+  stateFallback: boolean
   logPath: string | null
   logBytes: number | null
   consent: ConsentWord
@@ -76,6 +82,8 @@ export const RUNTIME_KEYS = [
   'writer',
   'reader',
   'dataDir',
+  'stateDir',
+  'stateFallback',
   'logPath',
   'logBytes',
   'consent',
@@ -131,6 +139,7 @@ const KIND_LABELS: Record<TraceKind, string> = {
   connection: 'connection',
   consent: 'consent',
   queue: 'queue',
+  file: 'file',
 }
 
 /** The left-hand part of a row: what was asked, how it ended, how long it took — with no separators for facts
@@ -236,6 +245,11 @@ export function copyText(snapshot: DiagnosticsSnapshot, jottVersion: string): st
   const fetch = runtime.autoFetch === null ? 'unknown' : runtime.autoFetch ? 'yes' : 'no'
   lines.push(`embeddings consent: ${consentSentence(runtime.consent)} · np may fetch a model on its own: ${fetch}`)
   lines.push(`np data folder: ${runtime.dataDir || 'unknown'}`)
+  lines.push(
+    `Jott's files: ${runtime.stateDir || 'unknown'}${
+      runtime.stateFallback ? ' (temporary — the app data folder was not writable, so unsaved drafts live here)' : ''
+    }`,
+  )
   lines.push(
     runtime.logPath === null
       ? 'log: none'

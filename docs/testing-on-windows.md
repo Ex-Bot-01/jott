@@ -172,15 +172,25 @@ Open the drawer (**Ctrl+Shift+D**) and press **Copy details**, then send that te
 %APPDATA%\jott\logs\jott.jsonl
 ```
 
-The drawer's text names the np binary and version, both connections, the consent answer, the log's size, what is
-queued, and this run's last requests with their timings — which is most of what I would otherwise ask you to
-describe. The log file is the same information in full history, so a bug that happened yesterday is still there.
+The drawer's text names the np binary and version, both connections, the consent answer, where Jott keeps its own
+files, the log's size, what is queued, and this run's last requests and file work with their timings — which is most
+of what I would otherwise ask you to describe. The log file is the same information in full history, so a bug that happened yesterday is still there.
 
-That is the whole log: one line per request Jott made to np — the method, which vault, how long it took, and
-the outcome (`applied`, `locked`, `offline`, `disabled`, `refused`, `fault`) — with np's own error sentence on
-a fault. It rotates at 2 MiB and keeps older copies behind it (`jott.jsonl.1`, `jott.jsonl.2`). **It never
-contains the contents of your notes**; if you would rather look first, open it in Notepad and read it — each
-line is one JSON object with seven possible keys and nothing else. The drawer reads the same records; opening it
+That is the whole log. Three shapes of line share the file, and each is recognisable by the key only it has:
+
+* **a request to np** (`method`) — which vault, how long it took, the outcome (`applied`, `locked`, `offline`,
+  `disabled`, `refused`, `fault`), and np's own error sentence on a fault.
+* **the start of a run** (`jott`) — Jott's version, the np version and the exact `np.exe` this run talked to and how
+  it was found, your platform, and the folder Jott keeps its own files in. Look here first when a report spans "it
+  worked yesterday": each day's run names its own build and its own np.
+* **file work** (`event`) — `save`, `created`, `write-failed`, `renamed`, `moved`, `deleted` (with where the note
+  went), `mirror-replayed`, `mirror-discarded`, `consent`, `index-now`, `watcher-unavailable`,
+  `state-root-fallback`. This is the shape that answers "I saved and my note vanished", which no request line can.
+
+It rotates at 2 MiB and keeps older copies behind it (`jott.jsonl.1`, `jott.jsonl.2`). **It never contains the
+contents of your notes**: a file line records which file and how many bytes, never what they spell. Each line is one
+JSON object with a fixed set of keys and nothing else — 7 for a request, 9 for a run, 5 for a file event. The drawer
+shows these same facts live; opening it
 asks np nothing and starts nothing, so it is safe to press on a machine where np is missing or unwell — which is
 usually when you want it.
 

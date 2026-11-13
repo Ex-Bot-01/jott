@@ -1079,6 +1079,8 @@ fn the_snapshot_keys_are_the_ones_the_window_reads() {
         writer: ConnectionState::Up,
         reader: ConnectionState::Idle,
         data_dir: "/data".into(),
+        state_dir: "/state".into(),
+        state_fallback: false,
         log_path: Some("/log".into()),
         log_bytes: Some(1),
         consent: Consent::Undecided,
@@ -1252,4 +1254,85 @@ async fn np_is_asked_about_the_folder_and_not_one_spelling_of_it() {
         "np gets the folder, not the spelling"
     );
     drop(dir);
+}
+
+// ---- the log beside the window: what Jott did to a file ----
+
+/// np request lines cannot answer the report that actually arrives ("I saved and my note vanished", "it deleted
+/// the wrong thing"). The session writes one line per piece of file work, into the same file, under its own key
+/// set — and the byte count is what gets recorded rather than the bytes.
+#[tokio::test]
+async fn the_log_records_the_file_work_around_np() {
+    let _turn = SERIAL.lock().await;
+    let harness = Harness::new();
+    harness.write("b.md", b"# doomed\n");
+    let journal = Arc::new(jott_core::diagnostics::Journal::open(harness.data.path()));
+
+    // No np anywhere: this is about what Jott did to files, and it has to be recorded whether or not a child
+    // is alive to be told about it.
+    let (sentinel, info) = ipc::np_absent();
+    let session = VaultSession::open_in_with(
+        common::unreachable_np(),
+        info,
+        None,
+        harness.vault.path(),
+        Consent::Undecided,
+        None,
+        harness.data.path().to_path_buf(),
+    )
+    .with_journal(journal.clone());
+
+    let typed = "# A, typed by somebody\n";
+    session.save_note("a.md", typed).expect("saved");
+    session.create_note("fresh.md").expect("created");
+    let where_it_went = session.delete_entry("b.md").expect("deleted");
+    session.ingest_all();
+    session.close().await;
+
+    let lines = journal.read_lines().expect("the log reads back");
+    let events: Vec<&str> = lines.iter().filter_map(|line| line["event"].as_str()).collect();
+    for expected in ["save", "created", "deleted", "index-now"] {
+        assert!(events.contains(&expected), "{expected} is missing from {events:?}");
+    }
+
+    let save = lines.iter().find(|l| l["event"] == "save").expect("the save line");
+    assert_eq!(save["rel"], "a.md");
+    assert_eq!(save["bytes"], typed.len() as u64, "the count is the whole story the log needs");
+
+    let deletion = lines.iter().find(|l| l["event"] == "deleted").expect("the delete line");
+    assert_eq!(deletion["rel"], "b.md");
+    assert_eq!(
+        deletion["detail"].as_str(),
+        Some(where_it_went.as_str()),
+        "the log says the same place the window said the note went"
+    );
+
+    // The privacy rule, applied to a real run rather than to a fixture.
+    let raw = std::fs::read_to_string(journal.path()).expect("the log is a file someone can send");
+    assert!(!raw.contains("typed by somebody"), "note contents never enter the log: {raw}");
+    drop(sentinel);
+}
+
+/// The drawer names np's folder already. It has to name Jott's own too, and say when that is a temp fallback —
+/// the case where unsaved drafts land in `%TEMP%\jott-unwritable` and nobody told the person they were there.
+#[tokio::test]
+async fn the_snapshot_says_where_jott_keeps_its_own_files() {
+    let _turn = SERIAL.lock().await;
+    let harness = Harness::new();
+    let (sentinel, info) = ipc::np_absent();
+    let session = VaultSession::open_in_with(
+        common::unreachable_np(),
+        info,
+        None,
+        harness.vault.path(),
+        Consent::Undecided,
+        None,
+        harness.data.path().to_path_buf(),
+    );
+
+    let snapshot = session.diagnostics().await;
+    assert_eq!(snapshot.runtime.state_dir, harness.data.path().to_string_lossy(), "the folder named is the folder used");
+    assert!(!snapshot.runtime.state_fallback, "somebody named this one, so it is not a fallback");
+    drop(sentinel);
+    session.close().await;
 }

@@ -4,7 +4,7 @@
 mod common;
 
 use common::repo_root;
-use jott_core::diagnostics::{Journal, RequestRecord};
+use jott_core::diagnostics::{now_ms, Journal, LocalRecord, RequestRecord, RunRecord};
 use jott_core::ipc::VaultSession;
 use jott_core::np::resolve::NpSource;
 use jott_core::np::{NpFeatures, NpInfo};
@@ -345,4 +345,94 @@ fn kinds_arrive_lowercase() {
     ] {
         assert_eq!(serde_json::to_value(kind).unwrap(), json!(word));
     }
+}
+
+// ---- B8: the run boundary, and B9: the file work around np ----
+
+/// A log that spans an upgrade cannot be read as two runs without a line saying where one run started, on which
+/// build, against which np binary. "It worked yesterday" is answerable only if yesterday's line names yesterday's
+/// `np.exe`.
+#[test]
+fn a_run_line_says_which_build_ran_against_which_np() {
+    let dir = tempfile::tempdir().expect("app data");
+    let journal = Journal::open(dir.path());
+    let run = RunRecord {
+        jott: "0.0.12".into(),
+        np: Some("0.3.1".into()),
+        protocol: Some(1),
+        np_path: Some("D:/Jott/np/np.exe".into()),
+        np_source: "bundled".into(),
+        platform: "windows-x86_64".into(),
+        state_root: "C:/Users/chris/AppData/Roaming/jott".into(),
+        state_root_is_fallback: false,
+        at_ms: now_ms(),
+    };
+    journal.record_run(&run).expect("the run line is written");
+
+    let lines = journal.read_lines().unwrap();
+    assert_eq!(lines.len(), 1);
+    // Sorted on both sides: `serde_json` hands object keys back in order, and the contract is the *set* of keys.
+    let mut keys: Vec<&str> = lines[0].as_object().unwrap().keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    let mut expected = RunRecord::KEYS.to_vec();
+    expected.sort_unstable();
+    assert_eq!(keys, expected);
+    assert_eq!(lines[0]["np_source"], "bundled");
+    // Forward slashes in the file even for a Windows path: one rule for every path Jott writes down.
+    assert_eq!(lines[0]["np_path"], "D:/Jott/np/np.exe");
+}
+
+/// The question a tester asks that no np request can answer: "my note vanished". Saves, deletions, replays and
+/// refusals are the events, and `rel` is allowed here precisely because *which file* is the question. What is not
+/// allowed is the file's contents — the same rule as everywhere else, stated next to the key list.
+#[test]
+fn a_local_line_names_the_file_and_never_its_contents() {
+    let dir = tempfile::tempdir().expect("app data");
+    let journal = Journal::open(dir.path());
+    journal
+        .record_local(&LocalRecord::new("save").with_rel("notes/a.md").with_bytes(4))
+        .expect("the line is written");
+    journal
+        .record_local(&LocalRecord::new("deleted").with_detail("moved to Jott's own folder, refused: no backend"))
+        .expect("the second line too");
+
+    let lines = journal.read_lines().unwrap();
+    assert_eq!(lines.len(), 2);
+    for line in &lines {
+        let keys: Vec<&str> = line.as_object().unwrap().keys().map(String::as_str).collect();
+        for key in &keys {
+            assert!(LocalRecord::KEYS.contains(key), "{key} is not in the local line's contract: {line}");
+        }
+        assert!(
+            keys.contains(&"event") && keys.contains(&"at_ms"),
+            "the two keys that are never optional: {line}"
+        );
+    }
+    assert_eq!(lines[0]["event"], "save");
+    assert_eq!(lines[0]["rel"], "notes/a.md");
+    assert_eq!(lines[0]["bytes"], 4);
+    assert!(lines[0].get("detail").is_none(), "an absent detail is not written as null");
+    assert_eq!(lines[1]["detail"].as_str().unwrap(), "moved to Jott's own folder, refused: no backend");
+
+    // The privacy rule, stated as a refusal rather than a hope.
+    for forbidden in ["text", "snippet", "body", "contents", "query"] {
+        assert!(!LocalRecord::KEYS.contains(&forbidden), "{forbidden} must never become a key");
+    }
+}
+
+/// Both shapes land in the same file, and rotation counts bytes across them: the log is one artifact a person
+/// attaches, not three.
+#[test]
+fn the_shapes_share_one_file_and_one_rotation() {
+    let dir = tempfile::tempdir().expect("app data");
+    let journal = Journal::open(dir.path());
+    journal.record_run(&RunRecord::for_test("0.0.12")).expect("run");
+    journal.record(&RequestRecord::new("scan", Path::new("/v"), Duration::from_millis(5), "applied")).unwrap();
+    journal.record_local(&LocalRecord::new("index-now")).unwrap();
+
+    let lines = journal.read_lines().unwrap();
+    assert_eq!(lines.len(), 3);
+    assert!(lines[0].get("jott").is_some(), "the run line came first");
+    assert!(lines[1].get("method").is_some(), "then the request");
+    assert!(lines[2].get("event").is_some(), "then the local event");
 }

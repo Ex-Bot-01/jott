@@ -9,7 +9,7 @@
 use jott_core::about::AboutInfo;
 use jott_core::app_paths::app_data_dir;
 use jott_core::sync::guarded;
-use jott_core::diagnostics::Journal;
+use jott_core::diagnostics::{Journal, RunRecord};
 use jott_core::ingest::consent::np_config_path;
 use jott_core::ingest::queue::ConsentOffer;
 use jott_core::ipc::{
@@ -40,6 +40,10 @@ pub struct App {
     /// `<app_data>/logs/jott.jsonl` — the file §19's hand-off asks for. One per run, shared by every vault
     /// opened in it, because "what happened this afternoon" is the question it answers.
     journal: Arc<Journal>,
+    /// True when `data` is a temp folder because the real app data dir was unwritable. The run line says so, and
+    /// every session opened from here inherits it — unsaved drafts land wherever Jott could write, and someone
+    /// reading the log tomorrow should be able to tell that folder from the one they chose.
+    state_fallback: bool,
     /// The folder holding the np we ship inside the installer (`$RESOURCES/np`). Empty when there is none —
     /// a source build without `scripts/fetch-np` — and resolution then falls through to PATH as it always did.
     np_bundle: PathBuf,
@@ -53,7 +57,8 @@ impl App {
     /// Open what the app knows about at startup. A registry that cannot be read is not a reason not to
     /// show a window — Task 6 quarantines the broken file and starts empty.
     pub fn startup(np_bundle: PathBuf) -> App {
-        let data = app_data_dir().unwrap_or_else(|_| std::env::temp_dir().join("jott"));
+        let (data, state_fallback) =
+            app_data_dir().map(|data| (data, false)).unwrap_or_else(|_| (std::env::temp_dir().join("jott"), true));
         let store = VaultStore::new(data.clone());
         let journal = Arc::new(Journal::open(&data));
         App {
@@ -61,6 +66,7 @@ impl App {
             data,
             np_bundle,
             journal,
+            state_fallback,
             np: Mutex::new(None),
             problem: Mutex::new(None),
             session: Mutex::new(None),
@@ -100,10 +106,31 @@ impl App {
             Ok(pair) => {
                 *guarded(&self.problem) = None;
                 *guarded(&self.np) = Some(pair.clone());
+                let (source, info) = &pair;
+                let _ = self.journal.record_run(&RunRecord::new(
+                    env!("CARGO_PKG_VERSION"),
+                    Some(info.version.clone()),
+                    Some(i64::from(info.protocol)),
+                    Some(source.path()),
+                    jott_core::about::source_label(source),
+                    &self.data,
+                    self.state_fallback,
+                ));
                 pair
             }
             Err(payload) => {
                 *guarded(&self.problem) = Some(payload);
+                // Written even when nothing answered: a log with no run line for this morning is read as "Jott
+                // never ran", which sends someone checking the wrong machine.
+                let _ = self.journal.record_run(&RunRecord::new(
+                    env!("CARGO_PKG_VERSION"),
+                    None,
+                    None,
+                    None,
+                    "not found",
+                    &self.data,
+                    self.state_fallback,
+                ));
                 ipc::np_absent()
             }
         }
