@@ -1,50 +1,77 @@
-# Jott 0.0.11 — a screen that says what the backend has been doing
+# Jott 0.0.12 — the whole app was inspected; here is what it could not do yet
 
-Press **Ctrl+Shift+D**. A drawer opens at the bottom of the window with this run's whole conversation with np:
-which np file is running, every request and how long it took, np's own error sentences, what is queued, how many
-notes are indexed and embedded, and where the log lives — with *Copy details* and *Open log folder* buttons.
+This release came out of reading every part of Jott — the vault code, the np client, the window, the log, the CI —
+and asking what a person would find missing or misleading. It turned out to be mostly about *accuracy*: what the
+window says when np refuses something, what the log knows about a run, and which keys actually do what they look
+like they should.
 
-Until now that information existed only as `%APPDATA%\jott\logs\jott.jsonl`, which meant reporting a problem took
-finding a path, opening Notepad, and reading JSON at eleven o'clock. The drawer shows the same records — the ones
-the journal writes — so a screenshot and a log can no longer disagree about the same scan.
+Two bugs were found in np itself while checking this, and filed: [note-processor#4](https://github.com/Ex-Bot-01/note-processor/issues/4)
+(a workspace is keyed by the exact path string, so `D:\Notes\` and `D:\Notes` can re-index a vault once) and
+[#5](https://github.com/Ex-Bot-01/note-processor/issues/5) (a search cannot tell "never indexed" from "no matches",
+and reports `hybrid` when only keywords ran). Jott now works around both without pretending the words mean more
+than they do.
 
-## New since 0.0.10
+## Saying what actually happened
 
-- **`Ctrl+Shift+D`** opens and closes the drawer; **Esc** closes it too. It is part of the main window rather than a
-  second one, because the thing you are looking at is usually the note a new window would cover.
-- **Rows arrive while you watch.** A save that stalls shows the request land and nothing follow it — which is a
-  different diagnosis from no request at all, and says whether to look at Jott or at np.
-- **np's sentences are kept whole.** The row shortens for display; the tooltip and *Copy details* carry every word
-  np wrote, unedited. "np said: the index is locked by another process" is the answer to a question that used to
-  take three messages.
-- **Connections are named, not guessed.** `writer connected · reader not started` is normal until you search;
-  `gone` means a child died. On a machine with two np installs, the path on the second line ends the argument.
-- **Consent and fetching, visible.** What the registry remembered, and whether np's config currently lets it pull
-  a model on its own — the setting that decides whether a 300 MB download starts.
-- **Nothing you typed is in there, ever.** The rows carry method, timing, outcome, np's status words. The key set
-  is closed and pinned by tests on both sides: a future field holding "the note involved" fails CI rather than
-  quietly shipping your prose to a screenshot.
+- **A refusal is no longer reported as a missing np.** When np answered `-32000 workspace … is not a directory that
+  exists`, Jott told you to go install something that was running fine and had just refused you. Refusals now say
+  *np said this*, in np's own words; only genuine silence or a dead child says np is gone; `-32601` says the build
+  is too old and names the version Jott needs (0.3.1).
+- **An empty search says which kind of empty it is.** A folder that has never been indexed gets *"This folder is not
+  indexed yet (7 notes are waiting) — use Index now"*, not *"Nothing matched"*, because retyping a search that
+  could never answer is nobody's idea of feedback.
+- **The results header stopped claiming a mode.** np 0.3.1 answers `hybrid` for searches where only keywords ran, so
+  the word on screen promised vectors that did not exist. It shows a count now: counts cannot lie.
+- **Search answers in the order you typed.** Overlapping requests used to land whenever np felt like it, and the
+  slowest one won — which read as the box ignoring what you had just typed.
 
-Opening the drawer asks np nothing and starts nothing, so it is safe to press on a machine where np is missing or
-unwell — which is usually exactly when you want it.
+## The log knows which run it is
 
-## Also in this build, since 0.0.10
+`jott.jsonl` used to hold one line per np request and nothing else, so the two reports that actually arrive had no
+answer in it. There are now three shapes of line, each with its own fixed keys:
 
-Faster folder listings (a 2,000-note vault relists in about 3 ms instead of ~35 ms), a caret you can find at
-Windows display scaling, search terms marked in results and in the opened note, and markdown styled in place
-instead of raw syntax — no side-by-side preview, so typing keeps its full width.
+- **a request** (`method`) — as before, plus timing and np's sentence on a fault;
+- **the start of a run** (`jott`) — Jott's version, the exact `np.exe` this run talked to and how it was found, your
+  platform, and where Jott keeps its own files. So "it worked yesterday" can be located in the log: each day's run
+  names its own build and its own np;
+- **file work** (`event`) — `save`, `created`, `write-failed`, `renamed`, `moved`, `deleted` (with where the note went
+  and what the system trash said), `mirror-replayed`, `mirror-discarded`, `consent`, `index-now`,
+  `watcher-unavailable`, `state-root-fallback`.
 
-## Earlier, if you are jumping in
+Still no note contents anywhere: a file line records *which* file and how many bytes, never what they spell. The
+diagnostics drawer shows these as live rows too, and now names Jott's own folder beside np's — saying out loud when
+that folder is a temporary fallback, which is the case where unsaved drafts are quietly landing in `%TEMP%`.
 
-- **0.0.9** — *Index now* covers the whole folder; embeddings stay off until you answer, and Jott writes
-  `auto_fetch = false` so np cannot download a model behind the prompt.
-- **0.0.8** — closing a folder or quitting lets go of every np child; startup's np is reused rather than restarted.
-- **0.0.7** — no black console windows from np, tree markers agree with the status line, and a new folder says
-  "N notes are not indexed yet" instead of nothing.
-- **0.0.6** — the bridge to np actually connects: Jott starts `np serve` (bare `np` prints usage and exits) and
-  folds what np said on stderr into the error you see.
-- **0.0.5** — the About panel: both versions, which np file this run picked, where Jott keeps its files.
-- **0.0.4** — dark mode stopped shipping invisible text; the window opens with a visible skeleton.
-- **0.0.3** — np ships inside the installer, so installing Jott installs the backend.
+## Things that were always meant to work
 
-Install `jott-windows-x64.msi`, then work through [docs/testing-on-windows.md](testing-on-windows.md).
+- **You can make a folder.** `create_folder` and `move_entry` have had commands and tests since the first milestone
+  and nothing in the window ever called them. Right-click a row (or empty ground) for *New note here · New folder
+  here · Rename · Move to… · Move to trash*, or use the header buttons. Right-clicking `INDEX.md` offers nothing,
+  because that file belongs to np.
+- **The keyboard means what it says:** `Ctrl+N` new note, `Ctrl+Shift+N` new folder, `Ctrl+R`/`F2` rename, `Delete`
+  trash (after asking), `Ctrl+F` search, `Ctrl+S` save now. F2 and Delete stand down while you are typing in a note —
+  the difference between a shortcut and a way to lose a file.
+- **The window remembers itself:** size and position come back, the title says `Jott — <folder>`, and the recent
+  folders the registry has kept all along are now a menu beside *Open…*.
+- **np's own files stopped waking the window.** `INDEX.md` changes on every indexing pass; the watcher reported that
+  as an outside edit, which re-listed the tree once per pass — the flicker. It is np's file, and Jott treats it as
+  one.
+
+## Under the hood, where a stall used to be forever
+
+- **A wedged np can no longer hang the window.** `initialize`, `models.list` and `status.get` wait 30 s, a search
+  60 s, and then Jott stops waiting and says so. Indexing and embedding deliberately keep *no* deadline: embedding a
+  large vault legitimately runs for minutes, and killing it mid-flight would throw away real work to guard against a
+  stall that the quit path already bounds.
+- **One bug no longer breaks every later save.** A panicked worker used to poison the journal's lock, and the next
+  save would panic on it — a log that can stop your work contradicts the rule the log is built on. Logging, the trace
+  ring and the stamp map now carry on, and report what failed where it happened.
+- **A committed index brings the retry wait back down.** With embeddings switched off, a two-second lock climbed the
+  ladder to 60 s and never came back down, because only a finished embed used to reset it.
+- **One folder, one spelling** in everything sent to np (see note-processor#4), so alternating spellings cannot cost
+  a full re-add of your vault.
+
+## For whoever tests this
+
+`docs/testing-on-windows.md` has the new section (§2b-ii) for the menu and shortcuts, plus what to watch for with the
+window title and recents. §5 now describes all three log shapes so a report can name the right one.

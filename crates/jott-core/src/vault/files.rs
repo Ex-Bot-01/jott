@@ -451,9 +451,29 @@ fn moved_rels(source: &Path, from: &str, to: &str) -> Vec<String> {
 pub enum Trashed {
     /// The operating system's own trash. Jott cannot read it back and does not claim to.
     Os,
-    /// `Jott`'s folder inside the app data dir, because there was no OS trash to use — a headless
-    /// Linux box, a disabled Recycle Bin, a network share. The bytes are at this path.
-    AppDir(PathBuf),
+    /// `Jott`'s folder inside the app data dir, because the operating system refused to take it — a headless
+    /// Linux box, a disabled Recycle Bin, a network share. The bytes are at `to`, and `reason` is what the
+    /// operating system said when asked, which is the difference between "where is my note" and "why is it not
+    /// in the Recycle Bin".
+    AppDir { to: PathBuf, reason: String },
+}
+
+impl Trashed {
+    /// What to tell the person, in one sentence that names where the note is. Both arms are a success — the note
+    /// is out of the vault either way — but only one of them is where they would go looking for it, so the other
+    /// says why and where instead of leaving them to find out by opening Recycle Bin.
+    pub fn sentence(&self) -> String {
+        match self {
+            Trashed::Os => "moved to the system trash".to_string(),
+            Trashed::AppDir { to, reason } if reason.is_empty() => {
+                format!("moved to Jott's own folder: {}", to.display())
+            }
+            Trashed::AppDir { to, reason } => format!(
+                "moved to Jott's own folder ({}), because the system trash refused: {reason}",
+                to.display()
+            ),
+        }
+    }
 }
 
 /// Move a file or folder out of the vault. Never deletes: the only promise Jott makes about a note it
@@ -478,8 +498,7 @@ pub fn delete_to_trash(root: &Path, rel: &str) -> Result<Trashed, FileError> {
             let target = unique_in(&dest, &name);
             std::fs::create_dir_all(&dest).map_err(|source| FileError::Io { rel: rel.to_string(), source })?;
             move_tree(&path, &target).map_err(|source| FileError::Io { rel: rel.to_string(), source })?;
-            let _ = os_refusal;
-            Ok(Trashed::AppDir(target))
+            Ok(Trashed::AppDir { to: target, reason: os_refusal.to_string() })
         }
     }
 }

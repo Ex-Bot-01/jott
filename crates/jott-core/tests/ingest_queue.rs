@@ -983,3 +983,39 @@ async fn answers_and_retries_are_rows_too() {
         "and so does the answer someone gave: {rows:?}"
     );
 }
+
+/// The ladder exists so a vault locked by somebody else is not knocked on every two seconds for an hour. It was
+/// also never coming back down: the counter reset only when an embed finished, so one `configuration-disabled`
+/// answer — or any pass that indexed and then stopped short — left the *next* lock waiting 60 s for a two-second
+/// problem. A committed index is the fact that matters: the index is not behind any more.
+#[tokio::test]
+async fn a_committed_index_brings_the_retry_wait_back_down() {
+    let _turn = SERIAL.lock().await;
+    let locked = || json!({"command": "scan", "locked": true, "waited_ms": 1000});
+    let h = Harness::new(json!({
+        "sequence": {
+            // call 1 locked, call 2 (the retry) commits, call 3 is a fresh lock after a real pass.
+            "scan": [{"reply": locked()}, {"reply": fixture_result(2)}, {"reply": locked()}]
+        },
+        "replies": { "embed": {"outcome": {"configuration-disabled": {"key": "[embeddings] model"}}} }
+    }))
+    .await;
+    let queue = h.queue().with_backoff_floor(Duration::from_millis(300));
+    let mut rx = queue.events();
+
+    queue.note_saved("notes/a.md");
+    let first = collect(&mut rx, Duration::from_millis(1_500)).await;
+    let (_, wait) = behind(&first).expect("the locked scan says behind");
+    assert_eq!(wait, backoff_ms(0), "the first lock is the first rung");
+    assert!(
+        first.iter().any(|e| matches!(e, IngestEvent::Indexed(_))),
+        "and the retry got through: {first:?}"
+    );
+
+    // A new note, a new lock: the ladder starts again, because in between np indexed the vault.
+    std::fs::write(h.vault.join("notes/b.md"), "# B\n").unwrap();
+    queue.note_saved("notes/b.md");
+    let after = collect(&mut rx, Duration::from_millis(1_500)).await;
+    let (_, wait) = behind(&after).unwrap_or_else(|| panic!("the third scan is locked again: {after:?}"));
+    assert_eq!(wait, backoff_ms(0), "a committed index resets the ladder, so this is rung one again");
+}

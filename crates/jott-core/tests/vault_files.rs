@@ -330,9 +330,10 @@ fn a_deletion_says_where_the_file_went() {
     match trashed {
         // The OS trash: Jott cannot read it back to prove anything, and does not claim to.
         Trashed::Os => {}
-        Trashed::AppDir(path) => {
+        Trashed::AppDir { to: ref path, reason: ref refusal } => {
+            assert!(!refusal.trim().is_empty(), "a fallback says what the system trash said: {}", trashed.sentence());
             assert!(path.is_file(), "{} is where the bytes are now", path.display());
-            assert_eq!(std::fs::read(&path).unwrap(), b"# gone\n", "the fallback keeps the bytes, not a copy of a name");
+            assert_eq!(std::fs::read(path).unwrap(), b"# gone\n", "the fallback keeps the bytes, not a copy of a name");
             assert!(path.starts_with(jott_core::app_paths::app_data_dir().unwrap()), "inside the app data dir: {}", path.display());
         }
     }
@@ -346,7 +347,7 @@ fn two_deletions_of_the_same_name_do_not_overwrite_each_other() {
     write_raw(&root, "gone.md", "# second\n");
     let second = files::delete_to_trash(&root, "gone.md").unwrap();
 
-    if let (Trashed::AppDir(a), Trashed::AppDir(b)) = (&first, &second) {
+    if let (Trashed::AppDir { to: a, .. }, Trashed::AppDir { to: b, .. }) = (&first, &second) {
         assert_ne!(a, b, "one trash file cannot hold both notes: {} / {}", a.display(), b.display());
         assert_eq!(std::fs::read(a).unwrap(), b"# first\n");
         assert_eq!(std::fs::read(b).unwrap(), b"# second\n");

@@ -16,6 +16,11 @@ const scenario = vi.hoisted(() => ({ current: 'empty' as unknown as Scene }))
 /** What the native confirm dialog answers. Tests set it before pressing a button that asks. */
 const confirmed = vi.hoisted(() => ({ current: false }))
 const commands = vi.hoisted(() => [] as string[])
+/** Set by one test to make `search_vault` answer a slow query *later* than the query typed after it — the order np
+ *  is free to hand back in, and the reason the window has to know which answer belongs on screen. */
+const slowSearch = vi.hoisted(() => ({ on: false }))
+/** A second folder in the registry's recents, for the test about reopening it. */
+const extraRecent = vi.hoisted(() => ({ current: null as string | null }))
 /** The window's event listeners, so a test can be the backend: fire `ingest://event` and watch what the tree
  *  does about it. */
 const handlers = vi.hoisted(() => new Map<string, (payload: unknown) => void>())
@@ -36,7 +41,10 @@ vi.mock('@tauri-apps/api/core', () => ({
       case 'registry_info':
         return Promise.resolve(
           scenario.current === 'vault'
-            ? { recent: ['C:\\notes'], consent: 'undecided' }
+            ? {
+                recent: extraRecent.current ? ['C:\\notes', extraRecent.current] : ['C:\\notes'],
+                consent: 'undecided',
+              }
             : { recent: [], consent: 'undecided' },
         )
       case 'open_vault':
@@ -52,12 +60,13 @@ vi.mock('@tauri-apps/api/core', () => ({
           docsUrl: 'https://github.com/Ex-Bot-01/jott/blob/main/docs/testing-on-windows.md',
           diagnostics: 'Jott 0.0.5 · https://github.com/Ex-Bot-01/jott\nnp 0.3.1 from bundled (C:\\Program Files\\Jott\\np\\np.exe)',
         })
-      case 'search_vault':
-        return Promise.resolve({
+      case 'search_vault': {
+        const query = String((args as { query?: string } | undefined)?.query ?? '')
+        const hit = (path: string, snippet: string) => ({
           hits: [
             {
-              path: 'inbox.md',
-              snippet: '…a kumquat tree in the corner…',
+              path,
+              snippet,
               kind: 'note',
               score: 1.4,
               bm25: 1.4,
@@ -69,6 +78,14 @@ vi.mock('@tauri-apps/api/core', () => ({
           offline: false,
           reason: null,
         })
+        if (slowSearch.on && query === 'kumquat') {
+          return new Promise((resolve) => setTimeout(() => resolve(hit('stale.md', '…an old kumquat page…')), 400))
+        }
+        if (/zzz/.test(query)) {
+          return Promise.resolve({ hits: [], mode: 'keyword', vectors: false, offline: false, reason: null })
+        }
+        return Promise.resolve(hit('inbox.md', '…a kumquat tree in the corner…'))
+      }
       case 'read_note':
         return Promise.resolve({
           rel: 'inbox.md',
@@ -105,6 +122,10 @@ vi.mock('@tauri-apps/api/core', () => ({
           queue: { waiting: 0, heldForConsent: 0, backoff: null, retryInMs: null },
           vault: { notes: 1, embedded: 0, indexed: 1, waiting: 0, refused: 0, warnings: 0 },
         })
+      case 'create_folder':
+      case 'move_entry':
+      case 'save_note':
+        return Promise.resolve({ hash: 'b'.repeat(64), mtimeMs: 1_700_000_000_500 })
       case 'list_vault':
         if (scenario.current === 'needs-embedding') {
           return Promise.resolve({
@@ -205,6 +226,44 @@ describe('the window mounts', () => {
     await vi.waitFor(() => expect(document.querySelector('.hit-snippet mark')).not.toBeNull(), { timeout: 2000 })
     expect(document.querySelector('.hit-snippet mark')!.textContent).toBe('kumquat')
     expect(document.body.textContent ?? '').toContain('tree in the corner')
+  })
+
+  it('drops an answer that arrived after a newer one', async () => {
+    // Three keystrokes are three requests, and np may answer them out of order. The list must end up showing what
+    // was typed last — otherwise the box looks like it is ignoring you, which is what this read as in the field.
+    scenario.current = 'vault'
+    slowSearch.on = true
+    try {
+      await start()
+      const box = document.querySelector('input[type="search"]') as HTMLInputElement
+      box.value = 'kumquat'
+      box.dispatchEvent(new Event('input', { bubbles: true }))
+      // Long enough for the debounce to fire and the slow request to be in flight — not long enough for it to answer.
+      await new Promise((resolve) => setTimeout(resolve, 300))
+      box.value = 'kumquats'
+      box.dispatchEvent(new Event('input', { bubbles: true }))
+
+      await vi.waitFor(() => expect(document.querySelector('.hit-path')?.textContent).toBe('inbox.md'), { timeout: 2000 })
+      // The slow one answers at ~650 ms, after the newer answer is already on screen; it must not land.
+      await new Promise((resolve) => setTimeout(resolve, 600))
+      expect(document.body.textContent ?? '').not.toContain('stale.md')
+      expect(document.querySelector('.hit-path')!.textContent).toBe('inbox.md')
+    } finally {
+      slowSearch.on = false
+    }
+  })
+
+  it('says the folder is not indexed rather than that nothing matched', async () => {
+    scenario.current = 'vault'
+    await start()
+    const box = document.querySelector('input[type="search"]') as HTMLInputElement
+    // The stub answers with an empty list for a query nobody has typed in this test run.
+    box.value = 'zzznothing'
+    box.dispatchEvent(new Event('input', { bubbles: true }))
+
+    await vi.waitFor(() => expect(document.querySelector('.results .none')).not.toBeNull(), { timeout: 2000 })
+    // The vault fixture has one note at state `Waiting`: the honest sentence is "not indexed yet", not "no matches".
+    expect(document.querySelector('.results .none')!.textContent).toContain('not indexed yet')
   })
 
   it('lists the folder once for a pass, not once per event', async () => {
@@ -333,5 +392,97 @@ describe('the window mounts', () => {
     await vi.waitFor(() => expect(document.body.textContent ?? '').not.toContain('What Jott is doing'))
 
     expect(errors).toEqual([])
+  })
+
+  it('offers only what can be done to the row that was right-clicked', async () => {
+    // `create_folder` and `move_entry` have been wired commands since Task 8 and nothing in the window ever called
+    // them: the features existed and were unreachable. The menu is how they stop being so.
+    scenario.current = 'vault'
+    await start()
+
+    const row = document.querySelector('.tree button:not(:disabled)') as HTMLElement
+    row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 40, clientY: 90 }))
+
+    let items: string[] = []
+    await vi.waitFor(() => {
+      items = [...document.querySelectorAll('.row-menu [role="menuitem"]')].map((item) => item.textContent?.trim() ?? '')
+      expect(items.length).toBeGreaterThan(0)
+    })
+    expect(items).toEqual(['Rename  (F2)', 'Move to…', 'Move to trash  (Delete)'])
+
+    ;(document.querySelector('.row-menu button') as HTMLElement).click()
+    await vi.waitFor(() => expect(document.body.textContent ?? '').toContain('Rename to:'))
+  })
+
+  it('makes a folder where the keyboard said to', async () => {
+    scenario.current = 'vault'
+    commands.length = 0
+    await start()
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'n', ctrlKey: true, shiftKey: true, bubbles: true }))
+    await vi.waitFor(() => expect(document.body.textContent ?? '').toContain('New folder'))
+
+    const field = document.querySelector('#rel') as HTMLInputElement
+    field.value = 'reading'
+    field.dispatchEvent(new Event('input', { bubbles: true }))
+    ;(document.querySelector('form.ask') as HTMLFormElement).dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+
+    await vi.waitFor(() => expect(commands).toContain('create_folder'))
+  })
+
+  it('answers Ctrl+F and Ctrl+S wherever focus is', async () => {
+    scenario.current = 'vault'
+    await start()
+
+    const box = document.querySelector('input[type="search"]') as HTMLInputElement
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', ctrlKey: true, bubbles: true }))
+    expect(document.activeElement).toBe(box)
+
+    // Ctrl+S is the key people press. Whether the buffer then needs writing is the editor's call (§11's saveState);
+    // the window's job is to take the key and hand it in rather than let the browser try to save the page.
+    const event = new KeyboardEvent('keydown', { key: 's', ctrlKey: true, bubbles: true, cancelable: true })
+    window.dispatchEvent(event)
+    expect(event.defaultPrevented).toBe(true)
+  })
+
+  it('reopens a folder from the recents list', async () => {
+    // The registry has kept recent folders since Task 6 and the window showed none of them, so "back to yesterday's
+    // notes" meant walking the folder picker every time.
+    scenario.current = 'vault'
+    extraRecent.current = 'D:\\other'
+    commands.length = 0
+    try {
+      await start()
+      const menu = document.querySelector('select.recents') as HTMLSelectElement
+      expect(menu).not.toBeNull()
+      expect([...menu.options].map((option) => option.textContent?.trim())).toContain('other')
+
+      menu.value = 'D:\\other'
+      menu.dispatchEvent(new Event('change', { bubbles: true }))
+      await vi.waitFor(() => expect(commands.filter((cmd) => cmd === 'open_vault').length).toBeGreaterThan(1))
+    } finally {
+      extraRecent.current = null
+    }
+  })
+
+  it('does not rename the selection while somebody is typing in the editor', async () => {
+    // F2 and Delete belong to the tree — until focus is inside text, where they mean "type this". Without the
+    // guard, one keystroke in a note can throw the file away.
+    scenario.current = 'vault'
+    await start()
+
+    const row = document.querySelector('.tree button:not(:disabled)') as HTMLElement
+    row.click()
+    // The editor's own surface, not any element the shell always draws: `.editor` exists before a note is open,
+    // and waiting on it says nothing.
+    await vi.waitFor(() => expect(document.querySelector('[contenteditable="true"]')).not.toBeNull())
+
+    const typing = document.querySelector('[contenteditable="true"]') ?? (document.querySelector('input[type="search"]') as Element)
+    typing.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true }))
+    expect(document.body.textContent ?? '').not.toContain('Move ')// no trash prompt raised
+
+    // And from the tree, where the key does belong, it asks before trashing anything.
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true }))
+    await vi.waitFor(() => expect(document.body.textContent ?? '').toContain('to the trash?'))
   })
 })

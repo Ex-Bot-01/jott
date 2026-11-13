@@ -71,6 +71,25 @@ fn the_windows_flag_is_create_no_window() {
     assert_eq!(0x0800_0000u32, 1 << 27, "CREATE_NO_WINDOW is the 28th flag, not a neighbour of 0x10");
 }
 
+/// How long a call may take before Jott stops waiting on it.
+///
+/// The split is by what the call is for, not by how big the vault might be. `initialize`, `models.list` and
+/// `status.get` answer from memory; §18.1 measured a healthy `search` in milliseconds, so a search still pending
+/// after a minute is a wedged child rather than a slow one — and a spinning search overlay is what gets reported
+/// as "the whole app froze".
+///
+/// `scan` and `embed` get **no** deadline on purpose. Indexing or embedding a large vault legitimately runs for
+/// minutes, and killing it mid-flight would throw away real work to guard against a stall that is already bounded
+/// where it matters: the drain cap at close (§11). A stalled long call stays visible instead — the diagnostics
+/// drawer shows it as an unfinished row with its elapsed time.
+pub fn deadline_for(method: &str) -> Option<Duration> {
+    match method {
+        "initialize" | "models.list" | "status.get" => Some(Duration::from_secs(30)),
+        "search" => Some(Duration::from_secs(60)),
+        _ => None,
+    }
+}
+
 /// Keep the last thing np said, in one line, so it can travel inside a fault message. `String` is bytes, and
 /// slicing at an arbitrary index can cut a character in half — hence chars.
 fn last_words(raw: &str, budget: usize) -> String {
@@ -198,7 +217,14 @@ impl NpClient {
         self.notes.subscribe()
     }
 
+    /// Ask np something and wait as long as this kind of call is allowed to take. See [`deadline_for`].
     pub async fn request(&self, method: &str, params: Value) -> Result<Value, NpFault> {
+        self.request_within(method, params, deadline_for(method)).await
+    }
+
+    /// [`Self::request`] with the patience named. `None` waits for as long as the child takes, which is right for
+    /// a first index of a big vault and wrong for a search box. Tests use the short end of it.
+    pub async fn request_within(&self, method: &str, params: Value, limit: Option<Duration>) -> Result<Value, NpFault> {
         let id = self.next_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let (tx, rx) = oneshot::channel();
         {
@@ -223,10 +249,34 @@ impl NpClient {
         // The guard is held until the answer arrives, on purpose: it is what makes `shutdown`
         // wait for in-flight work rather than closing np's stdin mid-request (the queue's drain
         // step depends on that), and np answers one request per connection regardless.
-        rx.await.map_err(|_| NpFault {
-            code: -32603,
-            message: format!("np ended while answering {method}"),
-        })?
+        // Two layers of result here: whether the channel delivered anything at all, and what np said inside it.
+        // The `?` below takes the first layer; the second is the caller's answer.
+        let answer = match limit {
+            None => rx.await.map_err(|_| NpFault {
+                code: -32603,
+                message: format!("np ended while answering {method}"),
+            }),
+            Some(wait) => match tokio::time::timeout(wait, rx).await {
+                Ok(inside) => inside.map_err(|_| NpFault {
+                    code: -32603,
+                    message: format!("np ended while answering {method}"),
+                }),
+                Err(_elapsed) => {
+                    // Nobody is owed this answer any more, so stop the reader from holding it (and the id map
+                    // from holding a sender that will never be read). The child keeps its request — np may well
+                    // still be working on it — and later calls go through on the same connection.
+                    self.pending.lock().await.remove(&id);
+                    Err(NpFault {
+                        code: -32603,
+                        message: format!(
+                            "np did not answer {method} within {} s and Jott stopped waiting",
+                            wait.as_secs().max(1)
+                        ),
+                    })
+                }
+            },
+        }?;
+        answer
     }
 
     /// Ask np to end, then close stdin. Exit 0 at EOF is normal, not a crash.

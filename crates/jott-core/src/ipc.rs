@@ -10,13 +10,14 @@
 //! * **Answers carry facts, not adjectives.** A save returns the hash that landed; a delete says where
 //!   the file went; a search says which halves answered. The window never has to guess what happened.
 
-use crate::diagnostics::{now_ms, Journal, RequestRecord, Trace, TraceEvent, TraceKind};
+use crate::sync::guarded;
+use crate::diagnostics::{now_ms, Journal, LocalRecord, RequestRecord, Trace, TraceEvent, TraceKind};
 use crate::ingest::queue::{IngestEvent, IngestQueue};
 use crate::np::handshake::NpInfo;
 use crate::np::pool::NpPool;
 use crate::np::resolve::{install_hint, NpMissing, NpSource, Os};
 use crate::vault::buffers::{self, MirroredBuffer};
-use crate::vault::files::{self, FileError, Trashed};
+use crate::vault::files::{self, FileError};
 use crate::vault::stamps::{StampState, Stamps};
 use crate::vault::store::Consent;
 use crate::vault::walk::{self, EntryKind, TreeEntry};
@@ -48,7 +49,14 @@ pub enum ErrorKind {
     NotUtf8,
     NpGenerated,
     NoVault,
+    /// np could not be reached, or never answered: not installed, not runnable, killed mid-request, or silent past
+    /// its deadline. Nothing about the *content* of a request.
     NpGone,
+    /// np is running and refused this request — `-32000` "workspace … is not a directory that exists", `-32602`
+    /// bad params, anything else it chose to answer with. Its sentence is the message (§4).
+    NpRefused,
+    /// np answered `-32601`: this build does not implement what Jott asks for, which in practice means too old.
+    NpTooOld,
     Io,
 }
 
@@ -76,6 +84,27 @@ impl IpcError {
     /// The one refusal with no more specific kind: the filesystem said no, in its own words.
     pub fn io(rel: &str, source: impl std::fmt::Display) -> IpcError {
         IpcError { kind: ErrorKind::Io, message: format!("could not use {rel}: {source}") }
+    }
+
+    /// A JSON-RPC fault, sorted into the kind that says what actually happened.
+    ///
+    /// The distinction is worth two new kinds because every fault used to arrive as `npGone`, which told a person
+    /// to go install something that was running fine and had just refused them — the same class of mislabelling
+    /// that cost the v0.0.6 release ("np ended before answering", which was Jott forgetting to say `serve`).
+    ///
+    /// `-32603` stays `npGone` on purpose: our own transport failures flatten to that code, so it means "no answer
+    /// came", whether np's doing or ours.
+    pub fn np_fault(fault: &crate::np::NpFault) -> IpcError {
+        let message = fault.message.clone();
+        let kind = match fault.code {
+            -32601 => return IpcError {
+                kind: ErrorKind::NpTooOld,
+                message: format!("{message} — Jott needs np {} or newer", version_text()),
+            },
+            -32603 => ErrorKind::NpGone,
+            _ => ErrorKind::NpRefused,
+        };
+        IpcError { kind, message }
     }
 }
 
@@ -210,7 +239,15 @@ pub struct RuntimeInfo {
     pub protocol: Option<u32>,
     pub writer: ConnectionState,
     pub reader: ConnectionState,
+    /// np's own folder for models and index files.
     pub data_dir: String,
+    /// Where *Jott* keeps its state — stamps, mirrored unsaved buffers, this log. Different from `dataDir`, and
+    /// worth naming separately when the two are on different drives or one of them is a fallback.
+    pub state_dir: String,
+    /// True when that is a temporary folder rather than the real app data dir, which happens when the real one is
+    /// not writable. Unsaved drafts then live somewhere nobody chose, so the window says so instead of letting
+    /// someone discover it by losing a draft.
+    pub state_fallback: bool,
     pub log_path: Option<String>,
     /// Bytes in that file, so "send the log" arrives with a sense of how much. `None` when there is no log —
     /// never zero standing in for unknown (§4).
@@ -222,9 +259,9 @@ pub struct RuntimeInfo {
 }
 
 impl RuntimeInfo {
-    pub const KEYS: [&'static str; 10] = [
-        "npVersion", "npPath", "protocol", "writer", "reader", "dataDir", "logPath", "logBytes", "consent",
-        "autoFetch",
+    pub const KEYS: [&'static str; 12] = [
+        "npVersion", "npPath", "protocol", "writer", "reader", "dataDir", "stateDir", "stateFallback", "logPath",
+        "logBytes", "consent", "autoFetch",
     ];
 }
 
@@ -298,6 +335,9 @@ pub struct VaultSession {
     self_writes: Arc<SelfWrites>,
     changed: tokio::sync::broadcast::Sender<String>,
     watch_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Whether `data` is the temp fallback rather than the real app data dir. Set by [`VaultSession::open`],
+    /// which is the only place that decides to fall back; every other constructor passes a folder somebody named.
+    state_fallback: std::sync::atomic::AtomicBool,
     /// The watcher pump is a blocking thread that outlives no one else, so it needs telling to stop.
     /// Nothing waits for it on purpose — but a runtime being dropped does wait for its threads, and a
     /// session nobody holds must not hold one open forever.
@@ -313,7 +353,15 @@ impl VaultSession {
             Ok(data) => VaultSession::open_in(np, info, vault, consent, np_config, data),
             // No writable app data dir means no stamps and no mirrors. The window still opens the folder:
             // reading and writing notes does not need them (§1), and the tree simply has nothing to mark.
-            Err(_) => VaultSession::open_in(np, info, vault, consent, np_config, std::env::temp_dir().join("jott-unwritable")),
+            Err(_) => {
+                let session =
+                    VaultSession::open_in(np, info, vault, consent, np_config, std::env::temp_dir().join("jott-unwritable"));
+                // Named in the drawer and in "copy details", because a draft saved into a temp folder that nobody
+                // was told about is a lost draft with an extra step.
+                session.state_fallback.store(true, std::sync::atomic::Ordering::Relaxed);
+                session.local(LocalRecord::new("state-root-fallback").with_detail(std::env::temp_dir().join("jott-unwritable").display().to_string()));
+                session
+            }
         }
     }
 
@@ -377,7 +425,13 @@ impl VaultSession {
             ));
         }
         let session = Arc::new(VaultSession {
-            vault: vault.to_path_buf(),
+            // One folder, one spelling. The picker can hand back `D:\Notes\` where the registry holds
+            // `D:\Notes`, and np keys a workspace by the exact string it is sent — measured, then filed as
+            // note-processor#4: alternating spellings cost a full re-add of the vault once. Normalising here
+            // covers every downstream user at once: what np is asked about, what the tree header shows, and the
+            // keys for stamps and mirrored buffers (which already normalised, so they were disagreeing with np).
+            // Lexical, like `to_abs` always is: a symlinked vault stays the folder somebody chose.
+            vault: crate::vault::store::to_abs(vault),
             journal: Arc::new(Mutex::new(Arc::new(Journal::void()))),
             np_config: np_config.clone(),
             trace,
@@ -390,6 +444,7 @@ impl VaultSession {
             // person typing in it.
             self_writes: crate::vault::files::default_self_writes().clone(),
             changed: tokio::sync::broadcast::channel(64).0,
+            state_fallback: std::sync::atomic::AtomicBool::new(false),
             watch_task: Mutex::new(None),
             stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         });
@@ -400,14 +455,14 @@ impl VaultSession {
     /// Attach the hand-off log. Also reaches the ingest queue, so a scan or an embed is recorded where it
     /// happened rather than being reconstructed later from what the window was told.
     pub fn with_journal(self: &Arc<Self>, journal: Arc<Journal>) -> Arc<VaultSession> {
-        *self.journal.lock().unwrap() = journal.clone();
+        *guarded(&self.journal) = journal.clone();
         self.queue.set_journal(journal);
         Arc::clone(self)
     }
 
     /// Where the log goes, for whoever opens a second window on the same vault.
     pub fn journal(&self) -> Arc<Journal> {
-        self.journal.lock().unwrap().clone()
+        guarded(&self.journal).clone()
     }
 
     pub fn vault(&self) -> &Path {
@@ -441,7 +496,7 @@ impl VaultSession {
             SlotState::Gone => ConnectionState::Down,
         };
 
-        let journal = self.journal.lock().unwrap().clone();
+        let journal = guarded(&self.journal).clone();
         let report = self.queue.report().await;
 
         // Walked rather than remembered. The digest cache makes this cheap — a vault whose notes have not moved
@@ -451,7 +506,7 @@ impl VaultSession {
         // failing the whole snapshot over it, would both be worse than an honest empty panel (§4).
         if let Ok(tree) = crate::vault::walk::walk_with(
             &self.vault,
-            &self.stamps.lock().unwrap(),
+            &guarded(&self.stamps),
             crate::vault::walk::default_hash_cache(),
         ) {
         for entry in &tree {
@@ -490,6 +545,8 @@ impl VaultSession {
                 writer: state(writer),
                 reader: state(reader),
                 data_dir: self.pool.info().data_dir.clone(),
+                state_dir: self.data.to_string_lossy().into_owned(),
+                state_fallback: self.state_fallback.load(std::sync::atomic::Ordering::Relaxed),
                 log_path: journal.file().map(|p| p.to_string_lossy().into_owned()),
                 log_bytes: journal.size(),
                 consent: self.queue.consent(),
@@ -522,11 +579,16 @@ impl VaultSession {
     }
 
     fn start_watching(&self) {
-        let Ok(watch) = VaultWatch::start(&self.vault, self.self_writes.clone()) else {
-            // No watcher backend is a degraded session, not a failed one: the tree stays as walked and
-            // the next save still ingests. The status line says nothing about it, because "no live watch"
-            // is not something a user can act on (§4).
-            return;
+        // No watcher backend is a degraded session, not a failed one: the tree stays as walked and the next save
+        // still ingests. The status line says nothing about it, because "no live watch" is not something a user can
+        // act on (§4) — but the log says it, because that is the difference between "Jott never noticed my edit"
+        // and an unexplained silence.
+        let watch = match VaultWatch::start(&self.vault, self.self_writes.clone()) {
+            Ok(watch) => watch,
+            Err(e) => {
+                self.local(LocalRecord::new("watcher-unavailable").with_detail(e.to_string()));
+                return;
+            }
         };
         let sink = self.changed.clone();
         let stop = self.stop.clone();
@@ -548,13 +610,13 @@ impl VaultSession {
                 }
             }
         });
-        *self.watch_task.lock().unwrap() = Some(handle);
+        *guarded(&self.watch_task) = Some(handle);
     }
 
     /// The tree, from our own walk (Task 7) with the stamps that make §9's markers answerable.
     pub fn listing(&self) -> Result<VaultListing, IpcError> {
         // A read-only copy: the walk asks questions of the stamps and must not hold the shared store.
-        let stamps = (*self.stamps.lock().unwrap()).clone();
+        let stamps = (*guarded(&self.stamps)).clone();
         let entries: Vec<TreeEntry> = walk::walk(&self.vault, &stamps).map_err(|e| IpcError { kind: ErrorKind::Io, message: e.to_string() })?;
         // Sentences, not codes: `warnings` holds more than walk trouble (the shell adds the nested-vault
         // notice from §8.2 here too), and a list of bare paths would force the window to guess which kind
@@ -600,12 +662,23 @@ impl VaultSession {
                     .is_some_and(|file_mtime| mirror.newer_than(file_mtime))
             })
             .map(MirroredText::from);
+        if mirrored.is_some() {
+            // "My note vanished" is usually this: a draft was replayed over what the file says. It has to be in
+            // the log, because the person looking tomorrow sees only a file they did not write.
+            self.local(LocalRecord::new("mirror-replayed").with_rel(rel));
+        }
         Ok(NoteContent { rel: rel.to_string(), text, hash: disk_hash.clone(), disk_hash, disk_mtime_ms: mtime_ms, mirrored })
     }
 
     /// Write the buffer, tell the queue its bytes changed, and drop the mirror that was standing in for it.
     pub fn save_note(&self, rel: &str, text: &str) -> Result<WriteResult, IpcError> {
-        files::write_note(&self.vault, rel, text.as_bytes()).map_err(IpcError::from)?;
+        if let Err(e) = files::write_note(&self.vault, rel, text.as_bytes()) {
+            self.local(LocalRecord::new("write-failed").with_rel(rel).with_detail(e.to_string()));
+            return Err(e.into());
+        }
+        // The byte count, never the bytes: "was anything written at all" is the question a log answers, and it
+        // does not need somebody's sentence to answer it.
+        self.local(LocalRecord::new("save").with_rel(rel).with_bytes(text.len() as u64));
         let _ = buffers::clear_mirror_in(&self.data, &self.vault, rel);
         self.queue.note_saved(rel);
         self.write_result(rel)
@@ -614,6 +687,7 @@ impl VaultSession {
     /// An empty note, and the folders it needs. Refuses a name that is taken (§9's new-note dialog).
     pub fn create_note(&self, rel: &str) -> Result<WriteResult, IpcError> {
         files::create_note(&self.vault, rel).map_err(IpcError::from)?;
+        self.local(LocalRecord::new("created").with_rel(rel));
         self.queue.note_saved(rel);
         self.write_result(rel)
     }
@@ -638,12 +712,15 @@ impl VaultSession {
     /// draft would come back on the next open, which is the opposite of what was just agreed.
     pub fn discard_mirror(&self, rel: &str) -> Result<(), IpcError> {
         files::PathGuard::new(&self.vault).resolve(rel).map_err(IpcError::from)?;
-        buffers::clear_mirror_in(&self.data, &self.vault, rel).map_err(|e| IpcError::io(rel, e))
+        buffers::clear_mirror_in(&self.data, &self.vault, rel).map_err(|e| IpcError::io(rel, e))?;
+        self.local(LocalRecord::new("mirror-discarded").with_rel(rel));
+        Ok(())
     }
 
     pub fn rename_entry(&self, from: &str, to: &str) -> Result<RenameOutcome, IpcError> {
         let report = files::rename(&self.vault, from, to).map_err(IpcError::from)?;
         // Both names matter to the tree: what moved, and whatever it left behind in the index.
+        self.local(LocalRecord::new("renamed").with_rel(to).with_detail(format!("from {from}")));
         self.queue.note_saved(to);
         Ok(RenameOutcome { incoming_links: report.incoming_links.into_iter().map(LinkRefDto::from).collect() })
     }
@@ -652,6 +729,7 @@ impl VaultSession {
     /// and they are the same operation with different words in the dialog.
     pub fn move_entry(&self, from: &str, to: &str) -> Result<(), IpcError> {
         files::move_entry(&self.vault, from, to).map_err(IpcError::from)?;
+        self.local(LocalRecord::new("moved").with_rel(to).with_detail(format!("from {from}")));
         self.queue.note_saved(to);
         Ok(())
     }
@@ -659,10 +737,11 @@ impl VaultSession {
     /// Out of the vault and into a trash somebody can open. The sentence names which one, because "I
     /// deleted it" and "Jott put it where you can get it back" are different promises.
     pub fn delete_entry(&self, rel: &str) -> Result<String, IpcError> {
-        match files::delete_to_trash(&self.vault, rel).map_err(IpcError::from)? {
-            Trashed::Os => Ok("moved to the system trash".into()),
-            Trashed::AppDir(path) => Ok(format!("moved to Jott's own folder: {}", path.display())),
-        }
+        // The sentence names where the note went — and when the operating system refused to take it, why. It goes
+        // in the log too: a deletion with no record of a deletion is the "my note vanished" report by definition.
+        let where_it_went = files::delete_to_trash(&self.vault, rel).map_err(IpcError::from)?.sentence();
+        self.local(LocalRecord::new("deleted").with_rel(rel).with_detail(&where_it_went));
+        Ok(where_it_went)
     }
 
     /// Content search. Reader connection, so it answers while an embed is running — §18.1 measured
@@ -672,7 +751,7 @@ impl VaultSession {
         let started = std::time::Instant::now();
         let answer = self.pool.search(&self.vault, query, limit).await.map_err(|fault| {
             self.record_fault("search", started.elapsed(), fault.code, &fault.message);
-            IpcError { kind: ErrorKind::NpGone, message: fault.message }
+            IpcError::np_fault(&fault)
         })?;
         // `offline` is its own outcome here: §4 wants a degraded answer visible, and a log that calls a
         // keyword-only search "applied" hides the one thing worth knowing about it.
@@ -695,11 +774,14 @@ impl VaultSession {
     /// per note, so every other row went on reading "not indexed yet" under a status line saying the pass was
     /// done. A button with a label that promises the vault has to mean the vault.
     pub fn ingest_all(&self) {
+        let mut queued = 0usize;
         if let Ok(notes) = walk::note_rels(&self.vault) {
             for rel in notes {
                 self.queue.note_saved(&rel);
+                queued += 1;
             }
         }
+        self.local(LocalRecord::new("index-now").with_detail(format!("{queued} notes queued")));
         self.queue.flush_now();
     }
 
@@ -712,6 +794,7 @@ impl VaultSession {
     /// The consent prompt's two buttons. Writing the decision into np's config is the queue's job (§11);
     /// remembering it across launches is the registry's, and the shell does that beside this call.
     pub fn set_consent(&self, granted: bool) {
+        self.local(LocalRecord::new("consent").with_detail(if granted { "granted" } else { "declined" }));
         self.queue.set_consent(if granted { Consent::Granted } else { Consent::Declined });
     }
 
@@ -719,7 +802,7 @@ impl VaultSession {
     /// model (§11).
     pub async fn close(&self) {
         self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
-        if let Some(task) = self.watch_task.lock().unwrap().take() {
+        if let Some(task) = guarded(&self.watch_task).take() {
             task.abort();
         }
         // The queue drains its own in-flight pass and closes the pool, at its cap (§11). Bounded here too,
@@ -738,7 +821,7 @@ impl VaultSession {
 
     /// One line in the hand-off log. Same shape as the queue's: never questioned, never fatal.
     fn record(&self, method: &str, elapsed: std::time::Duration, outcome: &'static str) {
-        let _ = self.journal.lock().unwrap().clone().record(&RequestRecord::new(method, &self.vault, elapsed, outcome));
+        let _ = guarded(&self.journal).clone().record(&RequestRecord::new(method, &self.vault, elapsed, outcome));
         // The same facts, for the window that is open now rather than the file a person sends later. One place
         // fills both, so they cannot drift into disagreeing about the same request (§11).
         self.trace.push(TraceEvent {
@@ -751,13 +834,39 @@ impl VaultSession {
         });
     }
 
+    /// One line about what Jott did to a file, in the log and in the drawer.
+    ///
+    /// Both from one call so the two can never disagree about whether a save happened, and neither can fail the
+    /// operation it describes: the log's own rule is that a diagnostic must not stop a save (§19).
+    fn local(&self, record: LocalRecord) {
+        let _ = guarded(&self.journal).clone().record_local(&record);
+        let mut detail = record.event.to_string();
+        if let Some(rel) = &record.rel {
+            detail.push(' ');
+            detail.push_str(rel);
+        }
+        if let Some(more) = &record.detail {
+            detail.push_str(" — ");
+            detail.push_str(more);
+        }
+        self.trace.push(TraceEvent {
+            at_ms: now_ms(),
+            kind: TraceKind::File,
+            method: None,
+            outcome: None,
+            elapsed_ms: None,
+            detail: Some(detail),
+        });
+    }
+
     fn record_fault(&self, method: &str, elapsed: std::time::Duration, code: i32, message: &str) {
-        let _ = self
-            .journal
-            .lock()
-            .unwrap()
-            .clone()
-            .record(&RequestRecord::fault(method, &self.vault, elapsed, code as i64, message));
+        let _ = guarded(&self.journal).clone().record(&RequestRecord::fault(
+            method,
+            &self.vault,
+            elapsed,
+            code as i64,
+            message,
+        ));
         self.trace.push(TraceEvent {
             at_ms: now_ms(),
             kind: TraceKind::Request,
@@ -783,7 +892,7 @@ impl Drop for VaultSession {
         // session that kept a thread alive would make every test — and every quit — hang in exactly the
         // way this one did the first time.
         self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
-        if let Some(task) = self.watch_task.lock().unwrap().take() {
+        if let Some(task) = guarded(&self.watch_task).take() {
             task.abort();
         }
     }

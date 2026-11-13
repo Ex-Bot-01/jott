@@ -151,3 +151,22 @@ fn a_new_file_somewhere_in_the_vault_arrives() {
     write_raw(&root, "notes/new.md", b"# new\n");
     assert_eq!(watch.next_change(Duration::from_secs(10)).as_deref(), Some("notes/new.md"));
 }
+
+/// np rewrites its own catalogues as a side effect of indexing — `INDEX.md` on every pass, plus an `INDEX-<date>.md`
+/// when it rotates. Those are not changes to somebody's note, and reporting them made the window re-list the tree
+/// once per ingest pass: exactly the "Jott flickers while it indexes" complaint, arriving as a file event from np.
+#[test]
+fn np_writing_its_own_catalogue_is_not_a_change_to_somebodys_note() {
+    let writes = SelfWrites::new();
+    assert!(jott_core::vault::watch::should_report("notes/a.md", &writes), "a note is still news");
+
+    for catalogue in ["INDEX.md", "INDEX-2026-11-09.md", "notes/INDEX.md"] {
+        assert!(
+            !jott_core::vault::watch::should_report(catalogue, &writes),
+            "{catalogue} is np's own file: it changes on every pass"
+        );
+    }
+    // Ours to report, because Jott would be editing it if it were a note — and the tree shows it either way.
+    assert!(jott_core::vault::watch::should_report("index.md", &writes), "lower-case is somebody's note");
+    assert!(jott_core::vault::watch::should_report("INDEXES.md", &writes));
+}

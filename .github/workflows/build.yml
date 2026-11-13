@@ -24,9 +24,30 @@ jobs:
           npx svelte-check --tsconfig ./tsconfig.app.json --output human
       - uses: dtolnay/rust-toolchain@stable
         with: { components: rustfmt, clippy }
+      # Several tests are about what happens when np is *not installed*, and they can pass for the wrong reason on
+      # a machine that has it. The runner has no np; this says so in the log, so "the suite was green" also carries
+      # the evidence that the absence tests were honest.
+      - name: what np this machine can see
+        run: |
+          if command -v np >/dev/null 2>&1; then
+            echo "::warning title=np is installed::$(np --version 2>/dev/null || echo unknown) — tests that assume no np may pass for the wrong reason"
+          else
+            echo "np is not on PATH: the absence tests are testing what they claim to test"
+          fi
       - name: core suites
         working-directory: crates/jott-core
-        run: cargo test
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test 2>&1 | tee /tmp/cargo-test.log
+          passed=$(grep -E '^test result' /tmp/cargo-test.log | sed -E 's/.*ok\. ([0-9]+).*/\1/' | paste -sd+ | bc)
+          echo "Rust tests passing: $passed"
+          # A floor, not a target. A scripted edit once deleted five tests from a file and the suite stayed green;
+          # only the count noticed, and only on someone's laptop. In CI the count has to notice out loud.
+          if [ "$passed" -lt 230 ]; then
+            echo "::error title=Tests disappeared::expected at least 230 passing Rust tests, got $passed"
+            exit 1
+          fi
       - name: clippy
         working-directory: crates/jott-core
         run: cargo clippy --all-targets -- -D warnings

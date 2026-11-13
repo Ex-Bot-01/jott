@@ -1079,6 +1079,8 @@ fn the_snapshot_keys_are_the_ones_the_window_reads() {
         writer: ConnectionState::Up,
         reader: ConnectionState::Idle,
         data_dir: "/data".into(),
+        state_dir: "/state".into(),
+        state_fallback: false,
         log_path: Some("/log".into()),
         log_bytes: Some(1),
         consent: Consent::Undecided,
@@ -1106,4 +1108,231 @@ fn the_snapshot_keys_are_the_ones_the_window_reads() {
 
     // ConnectionState is read as a lowercase word by the window, not as a Rust variant name.
     assert_eq!(serde_json::to_value(ConnectionState::Idle).unwrap(), json!("idle"));
+}
+
+// ---- what the window is told when np answers and refuses ----
+
+/// Measured against real np 0.3.1: an unknown folder answers `-32000` with "workspace … is not a directory that
+/// exists". That is np talking, from a running process — reporting it as `npGone` tells the person to go install
+/// something that is already installed. The v0.0.6 release was spent on exactly this class of mislabelling.
+#[tokio::test]
+async fn a_refusal_from_np_is_not_reported_as_np_being_gone() {
+    let _turn = SERIAL.lock().await;
+    let harness = Harness::new();
+    harness.write("a.md", b"# A\n");
+    let sentence = "workspace /tmp/notes is not a directory that exists (No such file or directory (os error 2)); \
+                    refusing before anything is read or written";
+    let (dir, client) = common::spawn(json!({
+        "faults": { "search": { "code": -32000, "message": sentence } }
+    }))
+    .await;
+
+    let (_sentinel, info) = ipc::np_absent();
+    let session = VaultSession::open_in_with(
+        NpSource::Env(common::repo_root().join("tests/fake-np/np.py")),
+        info,
+        Some(Arc::new(client)),
+        harness.vault.path(),
+        Consent::Undecided,
+        None,
+        harness.data.path().to_path_buf(),
+    );
+
+    let err = session.search("anything", 8).await.expect_err("np refused");
+    assert_eq!(err.kind, ErrorKind::NpRefused, "np answered; nothing is missing");
+    assert_eq!(err.message, sentence, "and np's own sentence is the message (§4)");
+
+    session.close().await;
+    drop(dir);
+}
+
+/// `-32601` is the one refusal that really does mean "this build is too old for what Jott asks", and np says so by
+/// listing what it does answer. The floor belongs next to that list.
+#[tokio::test]
+async fn a_method_this_np_does_not_answer_says_which_floor_jott_needs() {
+    let _turn = SERIAL.lock().await;
+    let harness = Harness::new();
+    harness.write("a.md", b"# A\n");
+    let (dir, client) = common::spawn(json!({
+        "faults": { "search": { "code": -32601, "message": "unknown method `search`: this build answers initialize, shutdown" } }
+    }))
+    .await;
+
+    let (_sentinel, info) = ipc::np_absent();
+    let session = VaultSession::open_in_with(
+        NpSource::Env(common::repo_root().join("tests/fake-np/np.py")),
+        info,
+        Some(Arc::new(client)),
+        harness.vault.path(),
+        Consent::Undecided,
+        None,
+        harness.data.path().to_path_buf(),
+    );
+
+    let err = session.search("anything", 8).await.expect_err("too old");
+    assert_eq!(err.kind, ErrorKind::NpTooOld);
+    assert!(err.message.contains("0.3.1"), "the floor is named: {}", err.message);
+
+    session.close().await;
+    drop(dir);
+}
+
+/// The kinds are a wire contract with `src/lib/ipc.ts`, which branches on them. A kind the front end does not list
+/// falls through silently, so the whole list is pinned here rather than the two new ones.
+#[test]
+fn every_error_kind_the_window_can_receive() {
+    let kinds = [
+        ErrorKind::EscapesRoot,
+        ErrorKind::NotFound,
+        ErrorKind::AlreadyExists,
+        ErrorKind::IntoItself,
+        ErrorKind::TooLarge,
+        ErrorKind::NotUtf8,
+        ErrorKind::NpGenerated,
+        ErrorKind::NoVault,
+        ErrorKind::NpGone,
+        ErrorKind::NpRefused,
+        ErrorKind::NpTooOld,
+        ErrorKind::Io,
+    ];
+    let spellings: Vec<String> = kinds
+        .iter()
+        .map(|kind| serde_json::to_value(kind).unwrap().as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        spellings,
+        vec![
+            "escapesRoot", "notFound", "alreadyExists", "intoItself", "tooLarge", "notUtf8", "npGenerated",
+            "noVault", "npGone", "npRefused", "npTooOld", "io"
+        ]
+    );
+}
+
+// ---- one folder, one spelling, even when the picker disagrees with the registry ----
+
+/// Filed against np as note-processor#4 and measured here: `scan` keys a workspace by the string it is handed, so
+/// `/vault` and `/vault/` re-add a whole vault once when a client alternates between them. The folder picker on
+/// Windows can hand back `D:\Notes\`; the registry stores `D:\Notes`. Jott normalises for its own keys, so it was
+/// the one sending both spellings — and waiting for np to fix a thing we can simply stop doing.
+#[tokio::test]
+async fn np_is_asked_about_the_folder_and_not_one_spelling_of_it() {
+    let _turn = SERIAL.lock().await;
+    let harness = Harness::new();
+    harness.write("a.md", b"# A\n");
+    let recorded = harness.data.path().join("requests.jsonl");
+    let (dir, client) = common::spawn(json!({
+        "record": recorded.display().to_string(),
+        "replies": {"search": search_fixture()}
+    }))
+    .await;
+
+    // The spelling a picker produces: the same folder with a separator stuck on the end.
+    let spelled = format!("{}/", harness.vault.path().display());
+    let (_sentinel, info) = ipc::np_absent();
+    let session = VaultSession::open_in_with(
+        NpSource::Env(common::repo_root().join("tests/fake-np/np.py")),
+        info,
+        Some(Arc::new(client)),
+        std::path::Path::new(&spelled),
+        Consent::Undecided,
+        None,
+        harness.data.path().to_path_buf(),
+    );
+
+    session.search("kumquat", 8).await.expect("the stand-in answers");
+    session.close().await;
+
+    let lines = std::fs::read_to_string(&recorded).expect("the stand-in recorded what it was asked");
+    let asked = lines
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find(|line| line["method"] == "search")
+        .expect("a search was recorded");
+    assert_eq!(
+        asked["params"]["workspace"].as_str(),
+        Some(harness.vault.path().to_str().unwrap()),
+        "np gets the folder, not the spelling"
+    );
+    drop(dir);
+}
+
+// ---- the log beside the window: what Jott did to a file ----
+
+/// np request lines cannot answer the report that actually arrives ("I saved and my note vanished", "it deleted
+/// the wrong thing"). The session writes one line per piece of file work, into the same file, under its own key
+/// set — and the byte count is what gets recorded rather than the bytes.
+#[tokio::test]
+async fn the_log_records_the_file_work_around_np() {
+    let _turn = SERIAL.lock().await;
+    let harness = Harness::new();
+    harness.write("b.md", b"# doomed\n");
+    let journal = Arc::new(jott_core::diagnostics::Journal::open(harness.data.path()));
+
+    // No np anywhere: this is about what Jott did to files, and it has to be recorded whether or not a child
+    // is alive to be told about it.
+    let (sentinel, info) = ipc::np_absent();
+    let session = VaultSession::open_in_with(
+        common::unreachable_np(),
+        info,
+        None,
+        harness.vault.path(),
+        Consent::Undecided,
+        None,
+        harness.data.path().to_path_buf(),
+    )
+    .with_journal(journal.clone());
+
+    let typed = "# A, typed by somebody\n";
+    session.save_note("a.md", typed).expect("saved");
+    session.create_note("fresh.md").expect("created");
+    let where_it_went = session.delete_entry("b.md").expect("deleted");
+    session.ingest_all();
+    session.close().await;
+
+    let lines = journal.read_lines().expect("the log reads back");
+    let events: Vec<&str> = lines.iter().filter_map(|line| line["event"].as_str()).collect();
+    for expected in ["save", "created", "deleted", "index-now"] {
+        assert!(events.contains(&expected), "{expected} is missing from {events:?}");
+    }
+
+    let save = lines.iter().find(|l| l["event"] == "save").expect("the save line");
+    assert_eq!(save["rel"], "a.md");
+    assert_eq!(save["bytes"], typed.len() as u64, "the count is the whole story the log needs");
+
+    let deletion = lines.iter().find(|l| l["event"] == "deleted").expect("the delete line");
+    assert_eq!(deletion["rel"], "b.md");
+    assert_eq!(
+        deletion["detail"].as_str(),
+        Some(where_it_went.as_str()),
+        "the log says the same place the window said the note went"
+    );
+
+    // The privacy rule, applied to a real run rather than to a fixture.
+    let raw = std::fs::read_to_string(journal.path()).expect("the log is a file someone can send");
+    assert!(!raw.contains("typed by somebody"), "note contents never enter the log: {raw}");
+    drop(sentinel);
+}
+
+/// The drawer names np's folder already. It has to name Jott's own too, and say when that is a temp fallback —
+/// the case where unsaved drafts land in `%TEMP%\jott-unwritable` and nobody told the person they were there.
+#[tokio::test]
+async fn the_snapshot_says_where_jott_keeps_its_own_files() {
+    let _turn = SERIAL.lock().await;
+    let harness = Harness::new();
+    let (sentinel, info) = ipc::np_absent();
+    let session = VaultSession::open_in_with(
+        common::unreachable_np(),
+        info,
+        None,
+        harness.vault.path(),
+        Consent::Undecided,
+        None,
+        harness.data.path().to_path_buf(),
+    );
+
+    let snapshot = session.diagnostics().await;
+    assert_eq!(snapshot.runtime.state_dir, harness.data.path().to_string_lossy(), "the folder named is the folder used");
+    assert!(!snapshot.runtime.state_fallback, "somebody named this one, so it is not a fallback");
+    drop(sentinel);
+    session.close().await;
 }

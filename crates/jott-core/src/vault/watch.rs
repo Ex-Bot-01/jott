@@ -73,7 +73,15 @@ impl SelfWrites {
 /// change to `.git/HEAD` has nothing on screen to update — without this rule, every branch switch in
 /// a git-synced vault wakes the editor.
 pub fn should_report(rel: &str, writes: &SelfWrites) -> bool {
-    !rel.split('/').any(|part| part.starts_with('.')) && !writes.is_recent(rel)
+    if rel.split('/').any(|part| part.starts_with('.')) || writes.is_recent(rel) {
+        return false;
+    }
+    // np's own catalogues change on every ingest pass — `INDEX.md` always, `INDEX-<date>.md` when it rotates — and
+    // they are not changes to anybody's note. Reporting them woke the editor and re-listed the tree once per pass,
+    // which is what looked like the window flickering while it indexed. The names are np's rule (§18.5), shared
+    // with the tree's greyed-out rows, so the two can never disagree about who owns that file.
+    let name = rel.rsplit('/').next().unwrap_or(rel);
+    !crate::vault::walk::is_generated_index(name)
 }
 
 fn interesting(kind: &EventKind) -> bool {

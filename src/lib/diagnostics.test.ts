@@ -46,6 +46,8 @@ function snapshot(over: Partial<DiagnosticsSnapshot> = {}): DiagnosticsSnapshot 
       writer: 'up',
       reader: 'idle',
       dataDir: 'C:\\Users\\chris\\AppData\\Roaming\\note-processor',
+      stateDir: 'C:\\Users\\chris\\AppData\\Roaming\\jott',
+      stateFallback: false,
       logPath: 'C:\\Users\\chris\\AppData\\Roaming\\jott\\logs\\jott.jsonl',
       logBytes: 4096,
       consent: 'undecided',
@@ -277,5 +279,62 @@ describe('the wire contract', () => {
     // A typo in a path above would make the comparison vacuous — zero keys compared, everything green.
     const source = readFileSync(fileURLToPath(new URL('../../crates/jott-core/src/ipc.rs', import.meta.url)), 'utf8')
     expect(source).toContain('pub const KEYS')
+  })
+})
+
+describe("where a run keeps its files", () => {
+  const snapshot = (over: Partial<DiagnosticsSnapshot['runtime']> = {}) => ({
+    runtime: {
+      npVersion: '0.3.1',
+      npPath: 'D:/Jott/np/np.exe',
+      protocol: 1,
+      writer: 'up' as const,
+      reader: 'idle' as const,
+      dataDir: 'C:/Users/chris/AppData/Roaming/note-processor',
+      stateDir: 'C:/Users/chris/AppData/Roaming/jott',
+      stateFallback: false,
+      logPath: 'C:/Users/chris/AppData/Roaming/jott/logs/jott.jsonl',
+      logBytes: 2048,
+      consent: 'granted' as const,
+      autoFetch: false,
+      ...over,
+    },
+    recent: [],
+    queue: { waiting: 0, heldForConsent: 0, backoff: null, retryInMs: null },
+    vault: { notes: 3, embedded: 3, indexed: 0, waiting: 0, refused: 0, warnings: 0 },
+  })
+
+  it("names the run's own folder beside np's", () => {
+    const text = copyText(snapshot(), '0.0.12')
+    expect(text).toContain('np data folder: C:/Users/chris/AppData/Roaming/note-processor')
+    expect(text).toContain("Jott's files: C:/Users/chris/AppData/Roaming/jott")
+  })
+
+  it('says so when that folder is a temp fallback', () => {
+    // The case worth words: drafts are being mirrored into %TEMP%\jott-unwritable and nobody chose that.
+    const text = copyText(snapshot({ stateDir: '/tmp/jott-unwritable', stateFallback: true }), '0.0.12')
+    expect(text).toMatch(/Jott's files: \/tmp\/jott-unwritable .*temporary/)
+  })
+
+  it('keeps the runtime keys the drawer reads in step with Rust', () => {
+    expect(RUNTIME_KEYS).toEqual([
+      'npVersion',
+      'npPath',
+      'protocol',
+      'writer',
+      'reader',
+      'dataDir',
+      'stateDir',
+      'stateFallback',
+      'logPath',
+      'logBytes',
+      'consent',
+      'autoFetch',
+    ])
+  })
+
+  it('shows a file row, because “my note vanished” is a file question', () => {
+    expect(rowLabel({ atMs: 1, kind: 'file', method: null, outcome: null, elapsedMs: null, detail: 'save notes/a.md' })).toBe('file')
+    expect(rowDetail({ atMs: 1, kind: 'file', method: null, outcome: null, elapsedMs: null, detail: 'save notes/a.md' })).toBe('save notes/a.md')
   })
 })

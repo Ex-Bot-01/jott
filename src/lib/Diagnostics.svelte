@@ -116,6 +116,15 @@
       <dt>np data folder</dt>
       <dd><code>{runtime.dataDir || 'unknown'}</code></dd>
 
+      <dt>Jott's files</dt>
+      <dd>
+        <code>{runtime.stateDir || 'unknown'}</code>
+        {#if runtime.stateFallback}
+          <!-- Unsaved drafts are mirrored here, so a folder nobody chose is worth saying out loud. -->
+          <span class="warn">temporary — the app data folder was not writable</span>
+        {/if}
+      </dd>
+
       <dt>log</dt>
       <dd>
         {#if runtime.logPath}
@@ -252,6 +261,13 @@
 
   .quiet {
     opacity: 0.66;
+  }
+
+  /* A state folder that is a temp fallback is worth more weight than a footnote: unsaved drafts live there. */
+  .warn {
+    display: block;
+    color: var(--danger, inherit);
+    font-size: 0.85em;
   }
 
   .down {

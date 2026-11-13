@@ -1,6 +1,6 @@
 [package]
 name = "jott-shell"
-version = "0.0.11"
+version = "0.0.12"
 edition = "2021"
 description = "The Jott window: a thin Tauri v2 shell over jott-core."
 
@@ -17,5 +17,8 @@ serde_json = "1"
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
+# Remember the window size and position between runs. The plan asked for the window to come back to the
+# folder it had; coming back to the shape it had is the other half of "it is where I left it".
+tauri-plugin-window-state = "2"
 # Only to name `broadcast`'s receive-error variants while forwarding trace rows; Tauri brings its own runtime.
 tokio = { version = "1", features = ["sync"] }

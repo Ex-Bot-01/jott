@@ -9,7 +9,10 @@
   import Tree from './lib/Tree.svelte'
   import Editor from './lib/Editor.svelte'
   import StatusLine from './lib/StatusLine.svelte'
-  import { flattenTree, notesAwaitingEmbedding, notesAwaitingIndex } from './lib/tree'
+  import { actionsFor, flattenTree, moveTargets, moveTo, notesAwaitingEmbedding, notesAwaitingIndex, targetFolder } from './lib/tree'
+  import type { TreeAction } from './lib/tree'
+  import { bareKeyFor, isTypingTarget, shortcutFor } from './lib/shortcuts'
+  import { noResultsSentence, resultsHeadline, searchIsCurrent } from './lib/searchState'
   import { markTerms } from './lib/highlight'
   import { consentSentence, statusFor, type Status } from './lib/statusLine'
   import type { SavePhase } from './lib/saveState'
@@ -68,12 +71,42 @@
   let searching = $state(false)
   let searchTimer: ReturnType<typeof setTimeout> | undefined
 
-  let dialog = $state<{ kind: 'new' | 'rename'; value: string } | null>(null)
+  /** `folder` is where a new note or folder lands; `rel` is what is being moved. */
+  let dialog = $state<{ kind: 'new' | 'rename' | 'folder' | 'move'; value: string; folder?: string; rel?: string } | null>(null)
   let confirmDelete = $state<string | null>(null)
+  /** The row menu: where it was opened, and for what. `null` means empty ground — only creating is on offer there. */
+  let menu = $state<{ rel: string | null; x: number; y: number } | null>(null)
+  /** Bumped to ask the editor to write its buffer now (Ctrl+S with focus outside it). */
+  let saveSignal = $state(0)
+  let searchBox = $state<HTMLInputElement | null>(null)
 
   const rows = $derived(flattenTree(listing?.nodes ?? [], openFolders))
   /** A folder is "open" only while its parent is; `flattenTree` handles the hiding, this holds the wish. */
   const vaultName = $derived(listing ? basename(listing.vault) : null)
+
+  function actionLabel(action: TreeAction): string {
+    switch (action) {
+      case 'new-note':
+        return 'New note here'
+      case 'new-folder':
+        return 'New folder here'
+      case 'rename':
+        return 'Rename  (F2)'
+      case 'move':
+        return 'Move to…'
+      case 'delete':
+        return 'Move to trash  (Delete)'
+    }
+  }
+
+  /** The folders the registry remembers, minus the one already open: a recent that is current is noise. */
+  const recents = $derived((registry?.recent ?? []).filter((folder) => folder !== listing?.vault))
+
+  async function openRecent(folder: string) {
+    if (!folder) return
+    const next = await call(() => ipc.openVault(folder))
+    if (next) listing = next
+  }
 
   function basename(path: string): string {
     const trimmed = path.replace(/[\\/]+$/, '')
@@ -183,14 +216,87 @@
     snapshot = await call(ipc.diagnostics)
   }
 
-  async function toggleFromShortcut(event: KeyboardEvent) {
-    // Ctrl+Shift+D, because "show me what the backend did" should not need a menu tour — and because the
-    // alternative somebody reaches for otherwise is the log file, in a text editor, at 11pm.
-    if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'd') {
+  /** The window's whole keyboard, decided by `shortcuts.ts` so one table says what every binding does. */
+  async function onWindowKey(event: KeyboardEvent) {
+    const shortcut = shortcutFor(event)
+    if (shortcut !== null) {
+      // Ctrl+S inside the editor is CodeMirror's own binding and it already prevented this event; asking again
+      // would save a second time, which is at best a wasted round trip to np.
+      if (shortcut === 'save') {
+        // Ask before preventing: the editor's own binding has already taken the key when it has focus, and a second
+        // save for one keystroke is its own bug.
+        const alreadyHandled = event.defaultPrevented
+        event.preventDefault()
+        if (!alreadyHandled) saveSignal += 1
+        return
+      }
+      if (shortcut === 'close-drawer') {
+        menu = null
+        return
+      }
       event.preventDefault()
-      if (showDiagnostics) showDiagnostics = false
-      else await openDiagnostics()
+      if (shortcut === 'diagnostics') {
+        // Ctrl+Shift+D, because "show me what the backend did" should not need a menu tour — and because the
+        // alternative somebody reaches for otherwise is the log file, in a text editor, at 11pm.
+        if (showDiagnostics) showDiagnostics = false
+        else await openDiagnostics()
+        return
+      }
+      if (shortcut === 'search') {
+        searchBox?.focus()
+        searchBox?.select()
+        return
+      }
+      runAction(shortcut === 'new-note' ? 'new-note' : shortcut === 'new-folder' ? 'new-folder' : 'rename')
+      return
     }
+
+    // F2 and Delete belong to the selected row — and stop belonging to it the moment focus is somewhere someone
+    // is typing, where those keys mean "type this".
+    const bare = bareKeyFor(event)
+    if (bare !== null && selected !== null && !isTypingTarget(event.target)) {
+      event.preventDefault()
+      runAction(bare)
+    }
+  }
+
+  /** One place turns an intention into a dialog or a command, whether it came from the menu, a button or a key. */
+  function runAction(action: TreeAction, on?: string | null) {
+    // Which row the intention is about: the one the menu was opened on, else the selected one. Read before `menu`
+    // is cleared, or every action would silently fall back to the root of the vault.
+    const row = rowFor(on === undefined ? menu?.rel ?? null : on)
+    menu = null
+    switch (action) {
+      case 'new-note':
+        dialog = { kind: 'new', value: '', folder: targetFolder(row) }
+        return
+      case 'new-folder':
+        dialog = { kind: 'folder', value: '', folder: targetFolder(row) }
+        return
+      case 'rename':
+        if (selected === null) return
+        dialog = { kind: 'rename', value: selected }
+        return
+      case 'move':
+        if (selected === null) return
+        dialog = { kind: 'move', value: '', rel: selected }
+        return
+      case 'delete':
+        if (selected === null) return
+        confirmDelete = selected
+        return
+    }
+  }
+
+  /** The row a menu was opened on, or the selected one when the action came from a key. */
+  function rowFor(rel: string | null) {
+    const which = rel ?? selected
+    return which === null ? null : rows.find((candidate) => candidate.rel === which) ?? null
+  }
+
+  function openMenu(rel: string | null, x: number, y: number) {
+    if (rel !== null) selected = rel
+    menu = { rel, x, y }
   }
 
   async function pickFolder() {
@@ -250,14 +356,22 @@
     await refresh()
   }
 
+  /** Counts up with every request so a late answer can be recognised as late. */
+  let searchSeq = 0
+
   async function runSearch() {
     const query = searchQuery.trim()
     if (!query) {
       results = null
+      searching = false
       return
     }
+    const seq = ++searchSeq
     searching = true
     const answer = await call(() => ipc.searchVault(query, 12))
+    // Typing "abc" fires three requests and np is free to answer them in any order. Without this guard the slowest
+    // one wins, which reads as the search box ignoring what you typed last.
+    if (!searchIsCurrent(seq, searchSeq)) return
     results = answer
     searching = false
   }
@@ -266,6 +380,26 @@
     clearTimeout(searchTimer)
     // 250 ms of quiet before asking np: each keystroke would otherwise start a search nobody finishes.
     searchTimer = setTimeout(() => void runSearch(), 250)
+  }
+
+  /** Where a dialog's new thing goes: the folder it was asked for, spelled as a `rel` prefix. */
+  function prefixed(dialog: { folder?: string }, name: string): string {
+    return `${dialog.folder ?? ''}${name}`
+  }
+
+  async function createFolder(rel: string) {
+    const made = await call(() => ipc.createFolder(rel))
+    dialog = null
+    if (made !== null) await refresh()
+  }
+
+  async function moveEntry(from: string, to: string) {
+    const moved = await call(() => ipc.moveEntry(from, to))
+    dialog = null
+    if (moved !== null) {
+      await refresh()
+      if (selected === from) selected = to
+    }
   }
 
   async function createNote(rel: string) {
@@ -360,7 +494,10 @@
 
 </script>
 
-<svelte:window onkeydown={(event) => void toggleFromShortcut(event)} />
+<svelte:window
+  onkeydown={(event) => void onWindowKey(event)}
+  onclick={() => (menu = null)}
+/>
 
 <main class="window">
   <aside class="side">
@@ -368,6 +505,21 @@
       {#if vaultName}
         <span class="vault-name" title={listing?.vault}>{vaultName}</span>
         <button type="button" onclick={() => void pickFolder()}>Open…</button>
+        {#if recents.length > 0}
+          <!-- The registry has kept a list of folders since Task 6 and showed none of it. Reopening yesterday's
+               notes was a dialog tour; now it is a click. -->
+          <select
+            class="recents"
+            aria-label="Recent folders"
+            onchange={(event) => void openRecent(event.currentTarget.value)}
+            value=""
+          >
+            <option value="" disabled>recent…</option>
+            {#each recents as folder (folder)}
+              <option value={folder}>{basename(folder)}</option>
+            {/each}
+          </select>
+        {/if}
       {:else}
         <button type="button" onclick={() => void pickFolder()}>Open a folder</button>
       {/if}
@@ -384,14 +536,18 @@
 
     <div class="tools">
       <input
+        bind:this={searchBox}
         type="search"
-        placeholder="Search this vault"
+        placeholder="Search this vault (Ctrl+F)"
         bind:value={searchQuery}
         oninput={scheduleSearch}
         aria-label="Search the vault"
       />
       <span class="tool-buttons">
-        <button type="button" title="New note" onclick={() => (dialog = { kind: 'new', value: '' })}>+ note</button>
+        <button type="button" title="New note (Ctrl+N)" onclick={() => runAction('new-note', null)}>+ note</button>
+        <button type="button" title="New folder (Ctrl+Shift+N)" onclick={() => runAction('new-folder', null)}>
+          + folder
+        </button>
         <button
           type="button"
           title="Rename this note"
@@ -408,6 +564,15 @@
 
     {#if results}
       <ul class="results">
+        {#if results.hits.length === 0}
+          <!-- An empty list is two different facts and only one of them is about the words: np cannot tell an
+               unindexed folder from a vault with no matches (note-processor#5), so the sentence comes from what
+               the tree knows locally. -->
+          <li class="none">
+            {noResultsSentence(searchQuery.trim(), awaitingIndex)}
+            {#if results.offline}(np is offline — keyword search only){/if}
+          </li>
+        {/if}
         {#each results.hits as hit (hit.path)}
           <li>
             <button type="button" onclick={() => void openNote(hit.path, searchQuery.trim())}>
@@ -419,16 +584,23 @@
               </span>
             </button>
           </li>
-        {:else}
-          <li class="none">
-            Nothing matched.
-            {#if results.offline}(offline — keyword search only){/if}
-          </li>
         {/each}
-        <li class="mode">{results.mode}{searching ? ' · searching…' : ''}</li>
+        {#if resultsHeadline(results.hits.length)}
+          <!-- A count, not np's `mode` word: 0.3.1 answers "hybrid" for searches where only keywords ran. -->
+          <li class="mode">{resultsHeadline(results.hits.length)}{searching ? ' · searching…' : ''}</li>
+        {:else if searching}
+          <li class="mode quiet">searching…</li>
+        {/if}
       </ul>
     {:else}
-      <Tree {rows} open={openFolders} selected={selected} ontoggle={toggleFolder} onselect={(rel) => void openNote(rel)} />
+      <Tree
+        {rows}
+        open={openFolders}
+        selected={selected}
+        ontoggle={toggleFolder}
+        onselect={(rel) => void openNote(rel)}
+        onmenu={openMenu}
+      />
     {/if}
 
     {#if listing && awaitingIndex > 0 && !selected}
@@ -472,6 +644,23 @@
     </div>
   </aside>
 
+  {#if menu !== null}
+    <!-- A real menu, on the row that was clicked, offering only what `actionsFor` says can be done to it. -->
+    <div class="row-menu" style:left="{menu.x}px" style:top="{menu.y}px" role="menu" tabindex="-1">
+      {#each actionsFor(menu.rel === null ? null : rows.find((row) => row.rel === menu?.rel) ?? null) as action (action)}
+        <button
+          type="button"
+          role="menuitem"
+          onclick={() => runAction(action, menu?.rel ?? null)}
+        >
+          {actionLabel(action)}
+        </button>
+      {:else}
+        <span class="quiet">Nothing to do here.</span>
+      {/each}
+    </div>
+  {/if}
+
   <section class="middle">
     {#if dialog}
       <form
@@ -480,12 +669,29 @@
           event.preventDefault()
           const value = dialog?.value.trim() ?? ''
           if (!value) return
-          if (dialog?.kind === 'new') void createNote(value)
+          if (dialog?.kind === 'new') void createNote(prefixed(dialog, value))
+          else if (dialog?.kind === 'folder') void createFolder(prefixed(dialog, value))
+          else if (dialog?.kind === 'move' && dialog.rel) void moveEntry(dialog.rel, moveTo(dialog.rel, value))
           else void renameEntry(value)
         }}
       >
-        <label for="rel">{dialog.kind === 'new' ? 'New note, in a path from the vault root:' : 'Rename to:'}</label>
-        <input id="rel" bind:value={dialog.value} spellcheck="false" autocomplete="off" />
+        {#if dialog.kind === 'move'}
+          <label for="rel">Move {dialog.rel} into:</label>
+          <select id="rel" bind:value={dialog.value}>
+            {#each moveTargets(rows, dialog.rel ?? '') as folder (folder)}
+              <option value={folder}>{folder === '' ? 'the vault root' : folder}</option>
+            {/each}
+          </select>
+        {:else}
+          <label for="rel">
+            {dialog.kind === 'new'
+              ? `New note${dialog.folder ? ` in ${dialog.folder}` : ', in a path from the vault root'}:`
+              : dialog.kind === 'folder'
+                ? `New folder${dialog.folder ? ` in ${dialog.folder}` : ':'}`
+                : 'Rename to:'}
+          </label>
+          <input id="rel" bind:value={dialog.value} spellcheck="false" autocomplete="off" />
+        {/if}
         <span>
           <button type="submit">OK</button>
           <button type="button" onclick={() => (dialog = null)}>Cancel</button>
@@ -504,6 +710,7 @@
     {/if}
 
     <Editor
+      saveSignal={saveSignal}
       highlight={hitQuery}
       rel={selected}
       {note}
@@ -592,6 +799,10 @@
     padding: 0.1rem 0.3rem;
     cursor: default;
   }
+  .recents {
+    max-width: 8rem;
+    font: inherit;
+  }
   .vault-name {
     font-weight: 600;
     overflow: hidden;
@@ -661,6 +872,7 @@
     border-radius: 2px;
   }
   .results .none,
+  .results .mode.quiet,
   .results .mode {
     padding: 0.35rem 0.5rem;
     color: color-mix(in srgb, currentColor 60%, transparent);
@@ -718,5 +930,36 @@
     border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
     background: none;
     color: inherit;
+  }
+  .row-menu {
+    position: fixed;
+    z-index: 40;
+    display: flex;
+    flex-direction: column;
+    min-width: 11rem;
+    padding: 0.25rem;
+    border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+    border-radius: 6px;
+    background: var(--paper);
+    color: var(--ink);
+    box-shadow: 0 6px 18px rgb(0 0 0 / 18%);
+    font-size: 0.85rem;
+  }
+  .row-menu button {
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: start;
+    padding: 0.3rem 0.45rem;
+    border-radius: 4px;
+    cursor: default;
+  }
+  .row-menu button:hover {
+    background: color-mix(in srgb, currentColor 12%, transparent);
+  }
+  .row-menu .quiet {
+    padding: 0.3rem 0.45rem;
+    opacity: 0.6;
   }
 </style>

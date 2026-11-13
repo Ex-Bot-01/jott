@@ -16,6 +16,7 @@
 //! * **A close that does not wait for a model.** [`IngestQueue::drain`] finishes what it started, gives
 //!   up after five seconds, and leaves the file waiting. The vault is files; nothing owed but time.
 
+use crate::sync::guarded;
 use crate::diagnostics::{now_ms, Journal, RequestRecord, Trace, TraceEvent, TraceKind};
 use crate::hashes::sha256_file;
 use crate::ingest::consent::{
@@ -216,36 +217,36 @@ impl IngestQueue {
 
     /// §11's number, shortened for tests that are not measuring it.
     pub fn with_debounce(self, debounce: Duration) -> Self {
-        self.shared.options.lock().unwrap().debounce = debounce;
+        guarded(&self.shared.options).debounce = debounce;
         self
     }
 
     pub fn with_drain_cap(self, cap: Duration) -> Self {
-        self.shared.options.lock().unwrap().drain_cap = cap;
+        guarded(&self.shared.options).drain_cap = cap;
         self
     }
 
     pub fn with_backoff_floor(self, floor: Duration) -> Self {
-        self.shared.options.lock().unwrap().backoff_floor = Some(floor);
+        guarded(&self.shared.options).backoff_floor = Some(floor);
         self
     }
 
     /// np's `config.toml` — the file §11 says consent is written to. Unset means a decision lives in
     /// memory only, and the gate cannot tell which model is configured, so it asks for nothing.
     pub fn with_np_config(self, path: Option<PathBuf>) -> Self {
-        self.shared.options.lock().unwrap().np_config = path;
+        guarded(&self.shared.options).np_config = path;
         self
     }
 
     /// Where the log goes. Takes `&self` where its siblings take `self`, because the shell attaches it to
     /// a queue it already holds behind an `Arc`.
     pub fn set_journal(&self, journal: Arc<Journal>) {
-        *self.shared.journal.lock().unwrap() = Some(journal);
+        *guarded(&self.shared.journal) = Some(journal);
     }
 
     /// Attach the diagnostics trace. The window shows what is here; nothing about the run is invented for it.
     pub fn set_trace(&self, trace: Arc<Trace>) {
-        *self.shared.trace.lock().unwrap() = Some(trace);
+        *guarded(&self.shared.trace) = Some(trace);
     }
 
     /// A live view of what the queue says. Broadcast, so a window can come and go; a receiver that
@@ -269,7 +270,7 @@ impl IngestQueue {
     /// re-consenting, and writing np's file on every launch would overwrite an edit someone made in a text
     /// editor between sessions (§12 says show a diff before that; here there is no reason to write at all).
     pub fn seed_consent(&self, consent: Consent) {
-        *self.shared.consent.lock().unwrap() = consent;
+        *guarded(&self.shared.consent) = consent;
     }
 
     /// The user answered the consent prompt. Granted writes `auto_fetch = true` and runs what was held at
@@ -280,7 +281,7 @@ impl IngestQueue {
         // session is not the same fact as somebody pressing a button now (§11), and the file is where np
         // reads it. Writing the same value twice leaves the file unchanged anyway — `toml_edit` keeps the
         // rest of it as it was.
-        let config = self.shared.options.lock().unwrap().np_config.clone();
+        let config = guarded(&self.shared.options).np_config.clone();
         // The file first, then the in-memory answer: the file is where np reads it, so if writing failed,
         // the answer has not been given anywhere that matters and saying so beats promising a download
         // the child will refuse.
@@ -315,12 +316,12 @@ impl IngestQueue {
                 },
             );
         }
-        *self.shared.consent.lock().unwrap() = consent;
+        *guarded(&self.shared.consent) = consent;
         let _ = self.tx.send(Msg::ConsentChanged);
     }
 
     pub fn consent(&self) -> Consent {
-        *self.shared.consent.lock().unwrap()
+        *guarded(&self.shared.consent)
     }
 
     /// Whether there is still a download to talk about, for a window that wants to ask again after an
@@ -360,7 +361,7 @@ impl IngestQueue {
     pub async fn drain_now(&self) {
         let (done, waited) = oneshot::channel::<()>();
         self.shared.closing.store(true, Ordering::SeqCst);
-        let cap = self.shared.options.lock().unwrap().drain_cap;
+        let cap = guarded(&self.shared.options).drain_cap;
         if self.tx.send(Msg::Drain(done)).is_ok() {
             if tokio::time::timeout(cap, waited).await.is_err() {
                 // Still embedding at the cap. Shutting the pool from here is what makes the wait end —
@@ -417,7 +418,7 @@ impl Worker {
     /// One line in the hand-off log for one np request. Never questioned: a diagnostic that can make a
     /// save fail is worse than no diagnostic (`Journal` already stops trying once writing fails).
     fn record(&self, method: &str, elapsed: Duration, outcome: &'static str) {
-        if let Some(journal) = self.shared.journal.lock().unwrap().clone() {
+        if let Some(journal) = guarded(&self.shared.journal).clone() {
             let _ = journal.record(&RequestRecord::new(method, &self.vault, elapsed, outcome));
         }
         self.trace(TraceEvent {
@@ -452,7 +453,7 @@ impl Worker {
     }
 
     fn record_fault(&self, method: &str, elapsed: Duration, code: i32, message: &str) {
-        if let Some(journal) = self.shared.journal.lock().unwrap().clone() {
+        if let Some(journal) = guarded(&self.shared.journal).clone() {
             let _ = journal.record(&RequestRecord::fault(method, &self.vault, elapsed, code as i64, message));
         }
         // np's sentence whole. The drawer may truncate it for a row and the journal keeps it byte for byte;
@@ -496,7 +497,7 @@ impl Worker {
                         });
                     }
                     Some(Msg::Offer(tx)) => {
-                        let np_config = self.shared.options.lock().unwrap().np_config.clone();
+                        let np_config = guarded(&self.shared.options).np_config.clone();
                         let offer = match self.consent() {
                             // Yes was answered: np fetches when it embeds, so there is nothing left to offer.
                             Consent::Granted => None,
@@ -572,7 +573,7 @@ impl Worker {
         }
         // Whatever the loop did, the stamps are what we last learned. Saving here is what stops closing
         // from losing an index pass that finished a moment ago.
-        if let Err(e) = self.stamps.lock().unwrap().save() {
+        if let Err(e) = guarded(&self.stamps).save() {
             self.emit(IngestEvent::Refused { message: e.to_string() });
         }
         let _ = self.pool.close().await;
@@ -586,7 +587,7 @@ impl Worker {
         if let Some(retry_at) = self.state.retry_at {
             return Some(retry_at);
         }
-        let options = self.shared.options.lock().unwrap();
+        let options = guarded(&self.shared.options);
         if self.state.flush || options.debounce.is_zero() {
             return Some(Instant::now());
         }
@@ -607,7 +608,7 @@ impl Worker {
     }
 
     fn consent(&self) -> Consent {
-        *self.shared.consent.lock().unwrap()
+        *guarded(&self.shared.consent)
     }
 
     fn emit(&self, event: IngestEvent) {
@@ -621,7 +622,7 @@ impl Worker {
     async fn cycle(&mut self) {
         self.state.flush = false;
         self.state.retry_at = None;
-        let np_config = self.shared.options.lock().unwrap().np_config.clone();
+        let np_config = guarded(&self.shared.options).np_config.clone();
 
         let mut owed: Vec<(String, String)> = Vec::new();
         while let Some(rel) = self.state.pending.pop_front() {
@@ -634,7 +635,7 @@ impl Worker {
                 continue;
             };
             let already = {
-                let stamps = self.stamps.lock().unwrap();
+                let stamps = guarded(&self.stamps);
                 // §11: a write that left the bytes exactly as np last embedded them triggers nothing.
                 // Anything else — never seen, indexed but not embedded, refused before — is owed.
                 stamps.state_of(&rel, &hash) == StampState::Embedded
@@ -659,7 +660,14 @@ impl Worker {
                 self.requeue(&owed, StateReason::Locked { waited_ms });
                 return;
             }
-            Ok(ScanOutcome::Applied(report)) => report,
+            Ok(ScanOutcome::Applied(report)) => {
+                // The index is not behind any more, so the wait for asking again starts over. Reset here rather
+                // than only after a finished embed: a vault whose embeddings are switched off — np answers
+                // `configuration-disabled`, or consent was "not now" — climbed the ladder to 60 s on a
+                // two-second lock and never came back down, because an embed that never runs cannot reset it.
+                self.state.attempt = 0;
+                report
+            }
             Err(fault) => {
                 // A fault is not a state. The work goes back and the note stays *waiting*; np's sentence
                 // is shown as it arrived (§11). No timer retries it: a refusal that will answer the same
@@ -678,7 +686,7 @@ impl Worker {
             .map(|loss| loss.names.iter().map(String::as_str).collect())
             .unwrap_or_default();
         {
-            let mut stamps = self.stamps.lock().unwrap();
+            let mut stamps = guarded(&self.stamps);
             for (rel, hash) in &owed {
                 if skipped.contains(rel.as_str()) {
                     // np's own word for it. The reason lives in a diagnostic line with a rule token
@@ -745,7 +753,7 @@ impl Worker {
         match embed_result {
             Ok(EmbedOutcome::Applied(report)) => {
                 if report.errors == 0 {
-                    let mut stamps = self.stamps.lock().unwrap();
+                    let mut stamps = guarded(&self.stamps);
                     for (rel, hash) in owed {
                         stamps.mark_embedded(rel, hash);
                     }
@@ -786,7 +794,7 @@ impl Worker {
         let attempt = self.state.attempt;
         let wait = backoff_ms(attempt);
         self.state.attempt = attempt.saturating_add(1);
-        let floor = self.shared.options.lock().unwrap().backoff_floor;
+        let floor = guarded(&self.shared.options).backoff_floor;
         self.put_back(owed);
         self.state.retry_at = Some(Instant::now() + floor.unwrap_or_else(|| Duration::from_millis(wait)));
         self.state.last_reason = Some(reason);
@@ -815,7 +823,7 @@ impl Worker {
     fn save_stamps(&self) {
         // A stamp file that cannot be written is worth saying out loud: the tree will look right until
         // the restart, and then it will not.
-        if let Err(e) = self.stamps.lock().unwrap().save() {
+        if let Err(e) = guarded(&self.stamps).save() {
             self.emit(IngestEvent::Refused { message: e.to_string() });
         }
     }
@@ -913,7 +921,7 @@ async fn recv_progress(progress: &mut Option<broadcast::Receiver<PoolNote>>) -> 
 /// Hand one row to the drawer, if a drawer is attached. Both the worker and the public `IngestQueue` methods
 /// report, so this is the one place that knows where the trace lives.
 fn push_trace(shared: &Shared, event: TraceEvent) {
-    if let Some(trace) = shared.trace.lock().unwrap().clone() {
+    if let Some(trace) = guarded(&shared.trace).clone() {
         trace.push(event);
     }
 }

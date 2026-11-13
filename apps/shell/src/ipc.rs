@@ -8,7 +8,8 @@
 
 use jott_core::about::AboutInfo;
 use jott_core::app_paths::app_data_dir;
-use jott_core::diagnostics::Journal;
+use jott_core::sync::guarded;
+use jott_core::diagnostics::{Journal, RunRecord};
 use jott_core::ingest::consent::np_config_path;
 use jott_core::ingest::queue::ConsentOffer;
 use jott_core::ipc::{
@@ -39,6 +40,10 @@ pub struct App {
     /// `<app_data>/logs/jott.jsonl` — the file §19's hand-off asks for. One per run, shared by every vault
     /// opened in it, because "what happened this afternoon" is the question it answers.
     journal: Arc<Journal>,
+    /// True when `data` is a temp folder because the real app data dir was unwritable. The run line says so, and
+    /// every session opened from here inherits it — unsaved drafts land wherever Jott could write, and someone
+    /// reading the log tomorrow should be able to tell that folder from the one they chose.
+    state_fallback: bool,
     /// The folder holding the np we ship inside the installer (`$RESOURCES/np`). Empty when there is none —
     /// a source build without `scripts/fetch-np` — and resolution then falls through to PATH as it always did.
     np_bundle: PathBuf,
@@ -52,7 +57,8 @@ impl App {
     /// Open what the app knows about at startup. A registry that cannot be read is not a reason not to
     /// show a window — Task 6 quarantines the broken file and starts empty.
     pub fn startup(np_bundle: PathBuf) -> App {
-        let data = app_data_dir().unwrap_or_else(|_| std::env::temp_dir().join("jott"));
+        let (data, state_fallback) =
+            app_data_dir().map(|data| (data, false)).unwrap_or_else(|_| (std::env::temp_dir().join("jott"), true));
         let store = VaultStore::new(data.clone());
         let journal = Arc::new(Journal::open(&data));
         App {
@@ -60,6 +66,7 @@ impl App {
             data,
             np_bundle,
             journal,
+            state_fallback,
             np: Mutex::new(None),
             problem: Mutex::new(None),
             session: Mutex::new(None),
@@ -68,13 +75,13 @@ impl App {
     }
 
     fn current(&self) -> Result<Arc<VaultSession>, IpcError> {
-        self.session.lock().unwrap().clone().ok_or_else(IpcError::no_vault)
+        guarded(&self.session).clone().ok_or_else(IpcError::no_vault)
     }
 
     /// Ask np once per run. A failure is remembered and turned into the fallback session's inputs, so the
     /// window keeps working on the parts of itself that do not need a model (§1).
     async fn np_pair(&self) -> (NpSource, NpInfo) {
-        if let Some(pair) = self.np.lock().unwrap().clone() {
+        if let Some(pair) = guarded(&self.np).clone() {
             return pair;
         }
         let os = current_os();
@@ -89,7 +96,7 @@ impl App {
             Ok(source) => ipc::read_np_info_warm(&source)
                 .await
                 .map(|(client, info)| {
-                    *self.warm.lock().unwrap() = Some(client);
+                    *guarded(&self.warm) = Some(client);
                     (source.clone(), info)
                 })
                 .map_err(|gone| gone.payload(os)),
@@ -97,12 +104,33 @@ impl App {
         };
         match outcome {
             Ok(pair) => {
-                *self.problem.lock().unwrap() = None;
-                *self.np.lock().unwrap() = Some(pair.clone());
+                *guarded(&self.problem) = None;
+                *guarded(&self.np) = Some(pair.clone());
+                let (source, info) = &pair;
+                let _ = self.journal.record_run(&RunRecord::new(
+                    env!("CARGO_PKG_VERSION"),
+                    Some(info.version.clone()),
+                    Some(i64::from(info.protocol)),
+                    Some(source.path()),
+                    jott_core::about::source_label(source),
+                    &self.data,
+                    self.state_fallback,
+                ));
                 pair
             }
             Err(payload) => {
-                *self.problem.lock().unwrap() = Some(payload);
+                *guarded(&self.problem) = Some(payload);
+                // Written even when nothing answered: a log with no run line for this morning is read as "Jott
+                // never ran", which sends someone checking the wrong machine.
+                let _ = self.journal.record_run(&RunRecord::new(
+                    env!("CARGO_PKG_VERSION"),
+                    None,
+                    None,
+                    None,
+                    "not found",
+                    &self.data,
+                    self.state_fallback,
+                ));
                 ipc::np_absent()
             }
         }
@@ -128,27 +156,42 @@ impl App {
         // queues on one workspace would race over np's lock and both write the same stamp file, so this is
         // not a nicety. It does not re-detect np — the session speaks to the child it was opened with, and
         // installing np mid-session is what `np_problem` and a reopen are for.
-        if let Some(current) = self.session.lock().unwrap().clone() {
+        if let Some(current) = guarded(&self.session).clone() {
             if to_abs(current.vault()) == to_abs(path) {
+                set_window_title(handle, path);
                 return Ok(with_nested_warning(current.listing()?, nested));
             }
         }
         let consent = self.store.consent(path);
         let (source, info) = self.np_pair().await;
         // The handshake child, if nobody has used it yet. `None` by the second vault, which spawns its own.
-        let warm = self.warm.lock().unwrap().take();
+        let warm = guarded(&self.warm).take();
         let session =
             VaultSession::open_in_with(source, info, warm, path, consent, np_config_path(), self.data.clone())
                 .with_journal(self.journal.clone());
         bridge(handle, &session);
 
-        let previous = self.session.lock().unwrap().replace(session.clone());
+        let previous = guarded(&self.session).replace(session.clone());
         if let Some(previous) = previous {
             tauri::async_runtime::spawn(async move { previous.close().await });
         }
 
         // §8.2: a vault inside a vault is legal, and worth one sentence about the second index it means.
+        set_window_title(handle, path);
         Ok(with_nested_warning(session.listing()?, nested))
+    }
+}
+
+/// The title says which folder is open.
+///
+/// A window titled "Jott" is fine until there are two of them, or until the same person works in `work-notes` and
+/// `holiday-notes` on alternate days and types a paragraph into the wrong one. The folder name costs nothing and is
+/// the only fact that tells those windows apart — in the taskbar too.
+fn set_window_title(handle: &AppHandle, path: &Path) {
+    use tauri::Manager;
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string());
+    if let Some(window) = handle.get_webview_window("main") {
+        let _ = window.set_title(&format!("Jott — {name}"));
     }
 }
 
@@ -207,7 +250,7 @@ pub async fn announce_np(handle: &AppHandle) {
     // Read it and put the guard down in one statement. Written as `if let Some(p) = self.lock().clone()`,
     // the guard is a temporary that outlives the block, and its borrow of the managed state outlives `app` —
     // which only shows up when something actually compiles this file.
-    let problem = { app.problem.lock().unwrap().clone() };
+    let problem = { guarded(&app.problem).clone() };
     if let Some(payload) = problem {
         let _ = handle.emit("np://missing", payload);
     }
@@ -222,7 +265,7 @@ pub fn registry_info(app: State<'_, App>) -> RegistryInfo {
 
 #[tauri::command]
 pub fn np_status(app: State<'_, App>) -> Option<NpMissingPayload> {
-    app.problem.lock().unwrap().clone()
+    guarded(&app.problem).clone()
 }
 
 /// What the About panel shows: both versions, which np file this run is actually talking to, and where Jott
@@ -236,7 +279,7 @@ pub fn np_status(app: State<'_, App>) -> Option<NpMissingPayload> {
 #[tauri::command]
 pub async fn app_info(app: State<'_, App>) -> Result<AboutInfo, IpcError> {
     let (source, info) = app.np_pair().await;
-    let problem = app.problem.lock().unwrap().clone();
+    let problem = guarded(&app.problem).clone();
     Ok(jott_core::about::about(
         env!("CARGO_PKG_VERSION"),
         Some(&source),
@@ -347,13 +390,13 @@ pub fn set_consent(granted: bool, app: State<'_, App>) -> Result<(), IpcError> {
 pub async fn flush_on_close(app: State<'_, App>) -> Result<(), IpcError> {
     // Taken out of the mutex first: a guard held across an `await` would sit on the whole shell while np
     // finishes what it was asked to do.
-    let session = { app.session.lock().unwrap().clone() };
+    let session = { guarded(&app.session).clone() };
     if let Some(session) = session {
         session.close().await;
     }
     // A warm child nobody claimed — the window opened, and closed, without ever opening a folder. It deserves
     // the same ask; an np still running after Jott quits holds its index open on Windows.
-    let warm = { app.warm.lock().unwrap().take() };
+    let warm = { guarded(&app.warm).take() };
     if let Some(client) = warm {
         let _ = client.shutdown_within(std::time::Duration::from_millis(500)).await;
     }
