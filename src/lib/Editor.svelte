@@ -23,6 +23,7 @@
     rel,
     note,
     external,
+    saveSignal = 0,
     kept = false,
     highlight = '',
     onphase,
@@ -38,6 +39,11 @@
     note: NoteContent | null
     /** Bumped by the parent to put text in from outside: a reload, or an accepted mirror (§14, §18.13). */
     external: { text: string; token: number } | null
+    /** Bumped by the parent when someone presses Ctrl+S with focus outside the editor. The editor itself binds
+     *  Mod-s while it has focus; a window-level binding cannot reach into the buffer from out there, and copying
+     *  the text up "so the app can save it" would put a second copy of somebody's words in memory. So the parent
+     *  asks, and this saves what is actually on screen. */
+    saveSignal?: number
     /** "Keep typing" was pressed for this note: the banner has been answered, so it stands down. */
     kept?: boolean
     /** The words that made this note show up in a search, marked in the text and scrolled to. Empty means
@@ -189,6 +195,11 @@
       saving = false
     }
   }
+
+  // Ctrl+S from the window. `> 0` so mounting an editor does not save a note nobody touched.
+  $effect(() => {
+    if (saveSignal > 0) void saveNow()
+  })
 
   function schedule() {
     clearTimeout(mirrorTimer)

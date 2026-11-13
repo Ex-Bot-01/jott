@@ -88,3 +88,48 @@ export function notesAwaitingIndex(nodes: NodeEntry[]): number {
 export function notesAwaitingEmbedding(nodes: NodeEntry[]): number {
   return nodes.filter((node) => node.kind === 'Note' && node.state === 'Indexed').length
 }
+
+/** What a row's menu offers. Decided here rather than in the component so "you cannot delete np's own catalogue"
+ *  is a fact with a test on it, not an `if` inside markup. */
+export type TreeAction = 'new-note' | 'new-folder' | 'rename' | 'move' | 'delete'
+
+export function actionsFor(row: Row | null): TreeAction[] {
+  if (row === null) return ['new-note', 'new-folder']
+  if (row.greyed) return [] // np wrote this file; Jott neither edits nor deletes it
+  if (row.kind === 'Folder') return ['new-note', 'new-folder', 'rename', 'move', 'delete']
+  return ['rename', 'move', 'delete']
+}
+
+/** The folder a new note or folder belongs to: inside the selected folder, beside the selected note, or at the
+ *  root when nothing is selected. Root is `''` because that is what the backend's `rel`s are relative to. */
+export function targetFolder(row: Row | null): string {
+  if (row === null) return ''
+  if (row.kind === 'Folder') return row.rel.endsWith('/') ? row.rel : `${row.rel}/`
+  const cut = row.rel.lastIndexOf('/')
+  return cut < 0 ? '' : row.rel.slice(0, cut + 1)
+}
+
+/** Where a row could be moved to.
+ *
+ * Excluded: its current parent (that is not a move), the folder itself and anything inside it (a folder cannot be
+ * put inside its own child — the backend refuses it, and a menu that offers a refusal is a bug with extra steps).
+ * Root is always a candidate, spelled `''`.
+ */
+export function moveTargets(rows: Row[], rel: string): string[] {
+  const here = targetFolder(rows.find((row) => row.rel === rel) ?? null)
+  const prefix = rel.endsWith('/') ? rel : `${rel}/`
+  const folders = new Set<string>([''])
+  for (const row of rows) {
+    if (row.kind !== 'Folder') continue
+    if (row.rel === rel || row.rel.startsWith(prefix)) continue
+    folders.add(row.rel.endsWith('/') ? row.rel : `${row.rel}/`)
+  }
+  folders.delete(here)
+  return [...folders].sort()
+}
+
+/** Join a `rel` onto a destination folder, keeping it a `rel`. */
+export function moveTo(rel: string, folder: string): string {
+  const name = rel.slice(rel.lastIndexOf('/') + 1)
+  return `${folder}${name}`
+}

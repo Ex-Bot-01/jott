@@ -114,6 +114,29 @@ Two things worth checking while you are in there:
   with every occurrence marked. A hit that came from meaning rather than words has nothing marked and does not
   jump — that is correct, not broken.
 
+## 2b-ii. Since 0.0.12: the sidebar does what the keyboard says
+
+Things that were always meant to be there and never were:
+
+| Press | Expect |
+| --- | --- |
+| **Ctrl+N** | New note, in the folder you had selected |
+| **Ctrl+Shift+N** | New folder — this is the first release where you can make one at all |
+| **Ctrl+R** or **F2** | Rename the selected note or folder |
+| **Delete** | Ask, then move it to trash. Neither key does anything while you are typing in a note. |
+| **Ctrl+F** | Focus the search box |
+| **Ctrl+S** | Save now. Autosave still runs two seconds after you stop; this answers the key instead of quietly covering for it. |
+
+Right-click a row (or empty ground) for the same list as a menu: *New note here*, *New folder here*, *Rename*,
+*Move to…*, *Move to trash*. Right-clicking `INDEX.md` offers nothing, because that file belongs to np.
+
+Two more things to report on:
+
+- **The title bar** now says `Jott — <folder>`. It should name the folder you are actually in, after switching
+  folders too.
+- **Recent folders** appear next to *Open…*. Picking one should reopen that vault. If a folder you deleted or moved
+  is listed, opening it should fall back quietly to asking for a folder rather than showing an error.
+
 ## 2c. Since 0.0.11: press **Ctrl+Shift+D** when something is odd
 
 A drawer opens at the bottom of the window with what this run has actually been doing:

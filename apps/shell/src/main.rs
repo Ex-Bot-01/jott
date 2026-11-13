@@ -9,6 +9,9 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        // Restores size/position and saves them on exit, in its own state file. Kept out of the registry:
+        // this is window decoration, not a fact about somebody notes.
+        .plugin(tauri_plugin_window_state::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             ipc::registry_info,
             ipc::np_status,

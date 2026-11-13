@@ -2,7 +2,17 @@
 // of Tree.svelte so the marker legend — the part most likely to be quietly wrong — has tests.
 
 import { describe, expect, it } from 'vitest'
-import { GENERATED_TITLE, flattenTree, notesAwaitingEmbedding, notesAwaitingIndex } from './tree'
+import {
+  GENERATED_TITLE,
+  actionsFor,
+  flattenTree,
+  moveTargets,
+  moveTo,
+  notesAwaitingEmbedding,
+  notesAwaitingIndex,
+  targetFolder,
+} from './tree'
+import type { Row } from './tree'
 import type { NodeEntry } from './ipc'
 
 function entry(rel: string, over: Partial<NodeEntry> = {}): NodeEntry {
@@ -166,5 +176,64 @@ describe('notesAwaitingEmbedding', () => {
 
   it('says nothing when every note is embedded', () => {
     expect(notesAwaitingEmbedding([entry('a.md', { state: 'Embedded' })])).toBe(0)
+  })
+})
+
+describe('a row\'s menu', () => {
+  const row = (over: Partial<Row>): Row => ({
+    rel: 'notes/a.md',
+    name: 'a.md',
+    kind: 'Note',
+    depth: 1,
+    hasChildren: false,
+    marker: '',
+    title: '',
+    greyed: false,
+    ...over,
+  })
+
+  it('offers creating on empty ground', () => {
+    expect(actionsFor(null)).toEqual(['new-note', 'new-folder'])
+  })
+
+  it('never offers to delete or rename what np wrote', () => {
+    expect(actionsFor(row({ kind: 'Generated', greyed: true, rel: 'INDEX.md', name: 'INDEX.md' }))).toEqual([])
+  })
+
+  it('offers creating inside a folder as well as the row itself', () => {
+    expect(actionsFor(row({ kind: 'Folder', rel: 'notes', name: 'notes' }))).toEqual([
+      'new-note',
+      'new-folder',
+      'rename',
+      'move',
+      'delete',
+    ])
+    expect(actionsFor(row({}))).toEqual(['rename', 'move', 'delete'])
+  })
+
+  it('knows which folder a new note belongs to', () => {
+    expect(targetFolder(null)).toBe('')
+    expect(targetFolder(row({ kind: 'Folder', rel: 'notes', name: 'notes' }))).toBe('notes/')
+    expect(targetFolder(row({ rel: 'inbox.md', name: 'inbox.md', depth: 0 }))).toBe('')
+    expect(targetFolder(row({ rel: 'notes/deep/a.md', name: 'a.md', depth: 2 }))).toBe('notes/deep/')
+  })
+
+  it('offers only moves that are moves', () => {
+    const rows = [
+      row({ rel: 'inbox.md', name: 'inbox.md', depth: 0 }),
+      row({ rel: 'notes', name: 'notes', kind: 'Folder', depth: 0, hasChildren: true }),
+      row({ rel: 'notes/deep', name: 'deep', kind: 'Folder', depth: 1, hasChildren: true }),
+      row({ rel: 'notes/deep/a.md', name: 'a.md', depth: 2 }),
+    ]
+    // From notes/deep/: root and notes/ — never itself, never its own child, never the parent it already sits in.
+    expect(moveTargets(rows, 'notes/deep')).toEqual(['', 'notes/'])
+    // A note's own parent is excluded for the same reason: moving it there is not a move.
+    expect(moveTargets(rows, 'notes/deep/a.md')).toEqual(['', 'notes/'])
+    expect(moveTargets(rows, 'inbox.md')).toEqual(['notes/', 'notes/deep/'])
+  })
+
+  it('joins a destination without doubling separators or losing the root', () => {
+    expect(moveTo('notes/deep/a.md', '')).toBe('a.md')
+    expect(moveTo('notes/deep/a.md', 'inbox/')).toBe('inbox/a.md')
   })
 })

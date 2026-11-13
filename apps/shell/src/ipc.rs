@@ -158,6 +158,7 @@ impl App {
         // installing np mid-session is what `np_problem` and a reopen are for.
         if let Some(current) = guarded(&self.session).clone() {
             if to_abs(current.vault()) == to_abs(path) {
+                set_window_title(handle, path);
                 return Ok(with_nested_warning(current.listing()?, nested));
             }
         }
@@ -176,7 +177,21 @@ impl App {
         }
 
         // §8.2: a vault inside a vault is legal, and worth one sentence about the second index it means.
+        set_window_title(handle, path);
         Ok(with_nested_warning(session.listing()?, nested))
+    }
+}
+
+/// The title says which folder is open.
+///
+/// A window titled "Jott" is fine until there are two of them, or until the same person works in `work-notes` and
+/// `holiday-notes` on alternate days and types a paragraph into the wrong one. The folder name costs nothing and is
+/// the only fact that tells those windows apart — in the taskbar too.
+fn set_window_title(handle: &AppHandle, path: &Path) {
+    use tauri::Manager;
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string());
+    if let Some(window) = handle.get_webview_window("main") {
+        let _ = window.set_title(&format!("Jott — {name}"));
     }
 }
 

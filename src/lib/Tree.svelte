@@ -10,6 +10,7 @@
     selected,
     ontoggle,
     onselect,
+    onmenu,
   }: {
     rows: Row[]
     /** Open folders. A `Set` the parent replaces, because Svelte 5 notices reassignment, not mutation. */
@@ -17,6 +18,9 @@
     selected: string | null
     ontoggle: (rel: string) => void
     onselect: (rel: string) => void
+    /** Right-click, on a row or on empty ground (`null`). The menu itself lives in the parent: it has to outlive
+     *  the row it was opened from, and it needs the actions `tree.ts` decides. */
+    onmenu?: (rel: string | null, x: number, y: number) => void
   } = $props()
 
   /** Folders are chosen by clicking the row; a note opens in the editor. Greyed rows are np's own files,
@@ -27,7 +31,15 @@
   }
 </script>
 
-<ul class="tree">
+<ul
+  class="tree"
+  oncontextmenu={(event) => {
+    // Empty ground: only creating is on offer there, which is `actionsFor(null)`'s business, not this file's.
+    event.preventDefault()
+    onmenu?.(null, event.clientX, event.clientY)
+    return false
+  }}
+>
   {#each rows as row (row.rel)}
     <li>
       <button
@@ -39,6 +51,12 @@
         title={row.title || row.rel}
         disabled={row.greyed}
         onclick={() => click(row)}
+        oncontextmenu={(event) => {
+          event.stopPropagation()
+          event.preventDefault()
+          onmenu?.(row.rel, event.clientX, event.clientY)
+          return false
+        }}
       >
         <span class="twisty" aria-hidden="true">
           {row.hasChildren ? (open.has(row.rel) ? '▾' : '▸') : ''}
