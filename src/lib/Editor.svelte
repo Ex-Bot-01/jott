@@ -3,11 +3,13 @@
   // save-or-not decision taken by `saveState()` rather than by anything in this file (§11, §14).
 
   import { onDestroy, untrack } from 'svelte'
-  import { EditorView, keymap, type ViewUpdate } from '@codemirror/view'
-  import { EditorState } from '@codemirror/state'
+  import { Decoration, EditorView, keymap, type ViewUpdate } from '@codemirror/view'
+  import { Compartment, EditorState, RangeSet, StateField, type Extension } from '@codemirror/state'
   import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
   import { markdown } from '@codemirror/lang-markdown'
   import { bracketMatching, syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language'
+  import { markdownStyle } from './markdownStyle'
+  import { matchRanges } from './highlight'
   import { saveState, wantsSave, type SavePhase } from './saveState'
   import { hashText } from './hashText'
   import type { NoteContent, WriteResult } from './ipc'
@@ -22,6 +24,7 @@
     note,
     external,
     kept = false,
+    highlight = '',
     onphase,
     onsave,
     onmirror,
@@ -37,6 +40,9 @@
     external: { text: string; token: number } | null
     /** "Keep typing" was pressed for this note: the banner has been answered, so it stands down. */
     kept?: boolean
+    /** The words that made this note show up in a search, marked in the text and scrolled to. Empty means
+     * nobody searched, or this note was opened from the tree rather than from a hit. */
+    highlight?: string
     /** The parent needs the phase to decide what an outside change means (§14): a clean buffer reloads,
      * a dirty one asks. It is reported, never recomputed there. */
     onphase?: (phase: SavePhase) => void
@@ -47,6 +53,28 @@
     onreload: () => void
     onkeep: () => void
   } = $props()
+
+  /** Search marks live in their own compartment: changing the query reconfigures the highlighting and nothing
+   * else, so it cannot disturb the buffer, the caret or the undo history (§4's rule about Ctrl+S applies
+   * equally to a keystroke in the search box). */
+  const highlighter = new Compartment()
+
+  /** Where the query's words are in this text, marked. Offsets come from `highlight.ts`, which is also what
+   * the result list marks with — the row and the note it opens cannot disagree about what matched (§18.11). */
+  function highlightExtension(query: string): Extension {
+    if (!query) return []
+    const mark = Decoration.mark({ class: 'cm-jott-match' })
+    const build = (state: EditorState) =>
+      RangeSet.of(
+        matchRanges(state.doc.toString(), query).map((range) => mark.range(range.from, range.to)),
+        true,
+      )
+    return StateField.define<ReturnType<typeof build>>({
+      create: build,
+      update: (value, transaction) => (transaction.docChanged ? build(transaction.state) : value),
+      provide: (field) => EditorView.decorations.from(field),
+    })
+  }
 
   let host: HTMLDivElement | undefined = $state()
   let view: EditorView | undefined
@@ -82,6 +110,9 @@
       // `fallback: true` tints headings and emphasis even before the parser has caught up with typing,
       // which is what the Windows hand-off is asked to look at (§9).
       syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+      // Markdown that reads like its own rendering: headings sized, emphasis real, markers faded. Listed after
+      // the default style so its rules win for the tokens markdown actually produces (§9's "readable first").
+      syntaxHighlighting(markdownStyle, { fallback: true }),
       EditorView.lineWrapping,
       keymap.of([
         // Mod-s is CodeMirror's "jump to line" by default. Here it means save, and nothing else (§9).
@@ -91,8 +122,28 @@
         indentWithTab,
       ]),
       EditorView.domEventHandlers({ blur: () => (void saveNow(), true) }),
+      // Read untracked on purpose: this runs inside the effect that opens a note, and a keystroke in the
+      // search box must not re-run that effect — it would rebuild the buffer under someone typing (§4).
+      highlighter.of(highlightExtension(untrack(() => highlight))),
     ]
   }
+
+  /** The query changed while this note is open: swap the marks, and land the reader on the first one. Only
+   * the highlighting is reconfigured — the text, the caret's history and any unsaved typing are untouched. */
+  $effect(() => {
+    const query = highlight
+    const viewNow = view
+    if (!viewNow) return
+    untrack(() => {
+      viewNow.dispatch({ effects: highlighter.reconfigure(highlightExtension(query)) })
+      if (!query) return
+      const [first] = matchRanges(viewNow.state.doc.toString(), query)
+      if (!first) return
+      // Vector-only hits have no words to land on, and jumping to the top of a note nobody matched is worse
+      // than not moving at all.
+      viewNow.dispatch({ selection: { anchor: first.to }, effects: EditorView.scrollIntoView(first.from, { y: 'center' }) })
+    })
+  })
 
   function open(text: string) {
     view?.destroy()
@@ -272,6 +323,80 @@
        follow `color` from there. */
     background: var(--paper);
     color: var(--ink);
+  }
+  .cm :global(.cm-editor) {
+    /* CodeMirror draws its own caret element and takes its colour from this variable; unset, it is a grey of
+       CodeMirror's choosing that disappears on a scaled Windows display. */
+    --cm-cursor: var(--ink);
+  }
+  .cm :global(.cm-editor .cm-cursor),
+  .cm :global(.cm-editor.cm-focused .cm-cursor),
+  .cm :global(.cm-editor .cm-dropCursor) {
+    /* Two pixels of ink, spelled in one rule so the focus selector cannot win by arriving later: CodeMirror
+       injects its theme at runtime, after this stylesheet. */
+    border-left: 2px solid var(--ink);
+  }
+  /* ---- markdown, styled. The classes come from `markdownStyle.ts`; a class named there and not here renders
+        as plain text, which a test refuses. ------------------------------------------------------------- */
+  .cm :global(.md-h1) {
+    font-size: 1.5em;
+    font-weight: 700;
+    line-height: 1.25;
+  }
+  .cm :global(.md-h2) {
+    font-size: 1.3em;
+    font-weight: 700;
+    line-height: 1.3;
+  }
+  .cm :global(.md-h3) {
+    font-size: 1.15em;
+    font-weight: 600;
+  }
+  .cm :global(.md-h4) {
+    font-weight: 600;
+  }
+  .cm :global(.md-h5) {
+    font-weight: 600;
+    font-style: italic;
+  }
+  .cm :global(.md-h6) {
+    font-weight: 600;
+    /* A level-six heading in a note is usually a label, not a title. */
+    color: color-mix(in srgb, currentColor 72%, transparent);
+  }
+  .cm :global(.md-strong) {
+    font-weight: 700;
+  }
+  .cm :global(.md-em) {
+    font-style: italic;
+  }
+  .cm :global(.md-strike) {
+    text-decoration: line-through;
+  }
+  .cm :global(.md-code) {
+    background: color-mix(in srgb, currentColor 10%, transparent);
+    border-radius: 3px;
+  }
+  .cm :global(.md-link) {
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  .cm :global(.md-quote) {
+    color: color-mix(in srgb, currentColor 78%, transparent);
+    font-style: italic;
+  }
+  .cm :global(.md-list) {
+    /* The bullet or number itself. Ink enough to see, quiet enough not to shout over the item. */
+    color: color-mix(in srgb, currentColor 65%, transparent);
+  }
+  .cm :global(.md-meta) {
+    /* `#`, `**`, `` ` ``, `>`: present, faded. See `markdownStyle.ts` for why not hidden. */
+    color: color-mix(in srgb, currentColor 42%, transparent);
+  }
+  .cm :global(.cm-jott-match) {
+    /* A tint of the ink rather than a fixed yellow, so it reads on both papers (see the palette tests). */
+    background: color-mix(in srgb, currentColor 24%, transparent);
+    border-radius: 2px;
   }
   .cm :global(.cm-gutters) {
     background: var(--paper);

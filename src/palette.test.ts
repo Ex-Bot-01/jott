@@ -59,3 +59,23 @@ describe('the palette names both colours', () => {
     }
   })
 })
+
+/**
+ * A caret you cannot find is not a small thing in a text editor: it is the one pixel that says where your
+ * typing will land. CodeMirror draws its own default — 1px, its own grey, and `transparent` until a focus
+ * selector matches — which on a scaled Windows display reads as no caret at all. The palette owns ink, so the
+ * palette has to name the caret too.
+ */
+describe('the caret is named, not inherited', () => {
+  const editor = readFileSync(fileURLToPath(new URL('./lib/Editor.svelte', import.meta.url)), 'utf8')
+
+  it('draws the editor caret in ink, wide enough to see', () => {
+    const rule = editor.slice(editor.indexOf('.cm-cursor'))
+    expect(rule, 'the editor never mentions .cm-cursor').not.toBe('')
+    expect(rule).toMatch(/border-left:\s*2px solid var\(--ink\)/)
+  })
+
+  it('keeps the native carets in the window on the same ruler', () => {
+    expect(appCss).toMatch(/caret-color:\s*var\(--ink\)/)
+  })
+})
