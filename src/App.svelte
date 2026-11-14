@@ -17,6 +17,9 @@
   import { consentSentence, modelReadySentence, statusFor, type Status } from './lib/statusLine'
   import { cardClipboard, cardSentences, NP_ISSUE } from './lib/consentHelp'
   import { openUrl } from '@tauri-apps/plugin-opener'
+  import { getCurrentWindow } from '@tauri-apps/api/window'
+  import { isPermissionGranted, requestPermission, sendNotification } from '@tauri-apps/plugin-notification'
+  import { notifyBody, shouldNotify, type Permission } from './lib/notify'
   import type { SavePhase } from './lib/saveState'
   import * as ipc from './lib/ipc'
   import type { DiagnosticsSnapshot, TraceEvent } from './lib/diagnostics'
@@ -192,6 +195,25 @@
       // The webview can refuse a clipboard write. The text is worth having either way, so it goes on screen
       // selected rather than being lost.
       cardClipFailed = true
+    }
+  }
+
+  /** The banner is up; this is only for the window nobody is looking at.
+   *
+   * Permission is asked for once, here, at the moment it is first useful — not at startup, where a dialog would
+   * stand between a person and their notes. Anything that goes wrong (no notifier, a denied permission, a webview
+   * without the plugin) leaves the banner as the announcement, which was always the primary one (§4).
+   */
+  async function announceModelReady(fetched: FetchedRecord) {
+    try {
+      let permission: Permission = (await isPermissionGranted()) ? 'granted' : 'not-determined'
+      if (permission === 'not-determined') {
+        permission = (await requestPermission()) === 'granted' ? 'granted' : 'denied'
+      }
+      if (!shouldNotify(await getCurrentWindow().isFocused(), permission)) return
+      sendNotification({ title: 'Jott', body: notifyBody(fetched.id) })
+    } catch {
+      // No notifier, or the webview refused to answer. The banner stays; nothing else changes.
     }
   }
 
@@ -523,6 +545,7 @@
         if (fetched) {
           modelReady = fetched
           lastRefusal = null
+          void announceModelReady(fetched)
         } else {
           // A pass that downloaded nothing supersedes the announcement: it is about a finished download, not a
           // permanent property of the vault.
