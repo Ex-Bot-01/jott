@@ -14,11 +14,13 @@
   import { bareKeyFor, isTypingTarget, shortcutFor } from './lib/shortcuts'
   import { emptySearchSentence, resultsHeadline, searchCaveat, searchIsCurrent } from './lib/searchState'
   import { markTerms } from './lib/highlight'
-  import { consentSentence, statusFor, type Status } from './lib/statusLine'
+  import { consentSentence, modelReadySentence, statusFor, type Status } from './lib/statusLine'
+  import { cardClipboard, cardSentences, NP_ISSUE } from './lib/consentHelp'
+  import { openUrl } from '@tauri-apps/plugin-opener'
   import type { SavePhase } from './lib/saveState'
   import * as ipc from './lib/ipc'
   import type { DiagnosticsSnapshot, TraceEvent } from './lib/diagnostics'
-  import type { AboutInfo, IngestEvent, NoteContent, RegistryInfo, SearchResults, VaultListing } from './lib/ipc'
+  import type { AboutInfo, ConsentHelp, FetchedRecord, IngestEvent, NoteContent, RegistryInfo, SearchResults, VaultListing } from './lib/ipc'
 
   let registry = $state<RegistryInfo | null>(null)
   let listing = $state<VaultListing | null>(null)
@@ -54,6 +56,14 @@
       `null` means either "nothing to offer" or "not asked yet for this vault", and `offerAskedFor` says which. */
   let embeddingsOffer = $state<ipc.ConsentOffer | null>(null)
   let offerAskedFor: string | null = null
+  /** What np's settings actually say, read after a pass that could not embed. `null` means "not asked yet". */
+  let consentHelp = $state<ConsentHelp | null>(null)
+  /** The last sentence np sent as a refusal, kept word for word for the card to quote (§4). */
+  let lastRefusal = $state<string | null>(null)
+  /** A model that this run's embed pass downloaded. The announcement outlives the status line and goes when the
+      next pass supersedes it or the person moves on to another note. */
+  let modelReady = $state<FetchedRecord | null>(null)
+  let cardClipFailed = $state(false)
   let showAbout = $state(false)
   let aboutLoading = $state(false)
 
@@ -164,11 +174,41 @@
     }
   }
 
+  /** The card's sentences. Empty means np is ready to embed, and the card stays out of the way — emptiness is
+      decided in `consentHelp.ts`, where it is tested, rather than in markup. */
+  const cardFacts = $derived(consentHelp ? { help: consentHelp, refusal: lastRefusal } : null)
+  const cardLines = $derived(cardFacts ? cardSentences(cardFacts) : [])
+  const cardText = $derived(cardFacts ? cardClipboard(cardFacts) : '')
+
+  async function readConsentHelp() {
+    consentHelp = await call(ipc.embeddingsHelp)
+  }
+
+  async function copyCardSettings() {
+    try {
+      await navigator.clipboard.writeText(cardText)
+      cardClipFailed = false
+    } catch {
+      // The webview can refuse a clipboard write. The text is worth having either way, so it goes on screen
+      // selected rather than being lost.
+      cardClipFailed = true
+    }
+  }
+
+  /** "Try again" after editing np's settings in another window: re-run the pass, then read the settings again. */
+  async function retryEmbeddings() {
+    await call(ipc.ingestAll)
+    await readConsentHelp()
+    await refresh()
+  }
+
   async function openNote(rel: string, fromQuery = '') {
     const content = await call(() => ipc.readNote(rel))
     if (!content) return
     note = content
     selected = rel
+    // The announcement did its job once the person moved on to working again (§4: say it, then get out of the way).
+    modelReady = null
     // The marks follow the hit that was clicked. Clicking a row in the tree clears them, even though the
     // search box still holds what was typed — those are different notes with different reasons to be open.
     hitQuery = fromQuery
@@ -476,6 +516,19 @@
 
     void ipc.onIngestEvent((event) => {
       if ('needsConsent' in event) consent = event.needsConsent
+      if ('refused' in event) lastRefusal = event.refused.message
+      if ('disabled' in event) void readConsentHelp()
+      if ('embedded' in event) {
+        const fetched = event.embedded.fetched
+        if (fetched) {
+          modelReady = fetched
+          lastRefusal = null
+        } else {
+          // A pass that downloaded nothing supersedes the announcement: it is about a finished download, not a
+          // permanent property of the vault.
+          modelReady = null
+        }
+      }
       status = statusFor(event)
       // A finished pass changes every marker in the tree, and the tree is a snapshot of the stamps as they
       // were when it was listed. Without this re-list the status line says "completed" over dots that still
@@ -609,7 +662,39 @@
       />
     {/if}
 
-    {#if listing && awaitingIndex > 0 && !selected}
+    {#if modelReady}
+      <div class="first-pass" data-testid="model-ready">
+        <span>{modelReadySentence(modelReady)}</span>
+        <button type="button" onclick={() => (modelReady = null)}>Dismiss</button>
+      </div>
+    {:else if cardLines.length > 0 && listing}
+      <!-- Consent was answered and note-processor still cannot embed. The old window said
+           `keyword-only: embeddings.provider is not set` and left it there; this says what Jott recorded, which
+           settings are missing, and where to say so (§4). -->
+      <div class="first-pass consent-card" data-testid="consent-card">
+        <div class="card-lines">
+          {#each cardLines as line (line)}
+            <p>{line}</p>
+          {/each}
+        </div>
+        {#if consentHelp && consentHelp.linesToAdd.length > 0}
+          <!-- The lines np needs, as copyable text rather than as a sentence to retype (§4). -->
+          <pre class="settings">{consentHelp.linesToAdd.join('\n')}</pre>
+        {/if}
+        <span class="buttons">
+          <button type="button" onclick={() => void copyCardSettings()}>Copy these settings</button>
+          <button type="button" data-testid="consent-retry" onclick={() => void retryEmbeddings()}>Try again</button>
+          <button type="button" onclick={() => void openUrl(NP_ISSUE).catch(() => undefined)}>
+            Read the note-processor request
+          </button>
+        </span>
+        {#if cardClipFailed}
+          <!-- The clipboard refused. The text still has to leave this window somehow. -->
+          <textarea readonly rows="6" aria-label="Settings to copy" onfocus={(e) => e.currentTarget.select()}>{cardText}</textarea>
+        {/if}
+        <span class="hint">{NP_ISSUE}</span>
+      </div>
+    {:else if listing && awaitingIndex > 0 && !selected}
       <div class="first-pass">
         <span>
           {awaitingIndex === 1 ? '1 note is' : `${awaitingIndex} notes are`} not indexed yet, so search will
@@ -898,6 +983,26 @@
     font: inherit;
     padding: 0.05rem 0.45rem;
     cursor: default;
+  }
+  /* The consent card is taller than the one-line notices around it: sentences, then the settings as text. */
+  .consent-card {
+    display: grid;
+    gap: 0.4rem;
+    align-items: start;
+  }
+  .card-lines p {
+    margin: 0 0 0.25rem;
+  }
+  .settings {
+    margin: 0;
+    padding: 0.35rem 0.5rem;
+    font-family: var(--mono, ui-monospace, monospace);
+    font-size: 0.75rem;
+    white-space: pre-wrap;
+    background: color-mix(in srgb, currentColor 7%, transparent);
+    border: 1px solid color-mix(in srgb, currentColor 15%, transparent);
+    /* Selectable by hand even when the clipboard refuses a write. */
+    user-select: text;
   }
   .warnings {
     margin-top: auto;
