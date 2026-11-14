@@ -4,8 +4,8 @@
 //! Everything else in that file is somebody's own configuration, so it has to come back unchanged.
 
 use jott_core::ingest::consent::{
-    auto_fetch_allowed, builtin_default_model, consent_file_is_unreadable, embedding_model_named, np_config_path,
-    set_auto_fetch,
+    auto_fetch_allowed, builtin_default_model, consent_file_is_unreadable, embedding_model_named, gap_lines,
+    np_config_path, settings_gap, set_auto_fetch, SettingsGap,
 };
 
 /// `NP_PATH`-style env games again: one variable, several threads.
@@ -214,4 +214,65 @@ fn the_built_in_model_is_a_fallback_and_never_the_authority() {
     let path = dir.path().join("config.toml");
     std::fs::write(&path, "[log]\nlevel = \"info\"\n").expect("write config");
     assert_eq!(embedding_model_named(&path), None);
+}
+
+/// The sentence a tester saw — `keyword-only: embeddings.provider is not set` — is true and useless on its own.
+/// These four shapes are what makes it actionable, and all four were measured against np 0.4.0 rather than reasoned
+/// out: no `[embeddings]` at all means np embeds nothing and reports success doing it; `provider` without `model`
+/// makes np fault; both set means nothing stands in the way. A provider somebody chose by hand is the fourth case,
+/// and Jott has no advice about it — separation says we ask np for a method (note-processor#7) rather than editing a
+/// decision that is not ours.
+#[test]
+fn a_config_with_no_embeddings_section_is_missing_the_provider() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    std::fs::write(&path, "[models]\nauto_fetch = true\n").unwrap();
+    assert_eq!(settings_gap(Some(&path), Some("embeddinggemma-2")), SettingsGap::ProviderMissing);
+    assert_eq!(
+        gap_lines(&SettingsGap::ProviderMissing, Some("embeddinggemma-2")),
+        vec!["[embeddings]", "provider = \"local-model\"", "model = \"embeddinggemma-2\""]
+    );
+}
+
+#[test]
+fn a_missing_config_is_the_same_gap_as_an_empty_one() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(settings_gap(Some(&dir.path().join("absent.toml")), None), SettingsGap::ProviderMissing);
+    assert_eq!(settings_gap(None, None), SettingsGap::ProviderMissing, "no config path is still no provider");
+    // Nothing was quoted in the consent offer (a fresh np names no model): the line has to name the model this np
+    // build would fetch, from `builtin_default_model`, rather than a placeholder nobody can paste.
+    assert!(gap_lines(&SettingsGap::ProviderMissing, None).iter().any(|line| line.contains("embeddinggemma-2")));
+}
+
+#[test]
+fn a_provider_without_a_model_names_the_model_line_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    std::fs::write(&path, "[embeddings]\nprovider = \"local-model\"\n").unwrap();
+    assert_eq!(settings_gap(Some(&path), Some("bge-m3")), SettingsGap::ModelMissing);
+    // The provider line is already there. Adding a second `[embeddings]` would be a broken file, and repeating
+    // `provider` would be advice about something that is not wrong.
+    assert_eq!(gap_lines(&SettingsGap::ModelMissing, Some("bge-m3")), vec!["model = \"bge-m3\""]);
+}
+
+#[test]
+fn a_provider_someone_else_chose_gets_no_advice() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    // `"none"` is np's explicit off switch and a future spelling is somebody's deliberate choice; both are the same
+    // case from here: quote np, suggest nothing.
+    for provider in ["none", "something-new"] {
+        std::fs::write(&path, format!("[embeddings]\nprovider = \"{provider}\"\nmodel = \"x\"\n")).unwrap();
+        assert_eq!(settings_gap(Some(&path), Some("embeddinggemma-2")), SettingsGap::ProviderOther { provider: provider.into() });
+        assert!(gap_lines(&SettingsGap::ProviderOther { provider: provider.into() }, Some("embeddinggemma-2")).is_empty(), "{provider} is not ours to change");
+    }
+}
+
+#[test]
+fn provider_and_model_together_leave_nothing_to_say() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    std::fs::write(&path, "[embeddings]\nprovider = \"local-model\"\nmodel = \"bge-m3\"\n").unwrap();
+    assert_eq!(settings_gap(Some(&path), Some("embeddinggemma-2")), SettingsGap::Ready);
+    assert!(gap_lines(&SettingsGap::Ready, Some("embeddinggemma-2")).is_empty());
 }
