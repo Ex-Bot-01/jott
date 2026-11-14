@@ -45,6 +45,12 @@ const extraRecent = vi.hoisted(() => ({ current: null as string | null }))
 /** Whether note-processor's settings name an engine and a model. False is the state behind the consent card:
     consent was given, and nothing was fetched. */
 const incompleteSettings = vi.hoisted(() => ({ current: false }))
+/** Every path the window asked the file manager to reveal, in order. */
+const revealed = vi.hoisted(() => ({ current: [] as string[] }))
+/** External links the window asked the browser to open. */
+const opened = vi.hoisted(() => ({ current: [] as string[] }))
+/** Whether the journal opened a file this run. False is what a broken state folder looks like. */
+const noLog = vi.hoisted(() => ({ current: false }))
 /** The window's event listeners, so a test can be the backend: fire `ingest://event` and watch what the tree
  *  does about it. */
 const handlers = vi.hoisted(() => new Map<string, (payload: unknown) => void>())
@@ -175,7 +181,9 @@ vi.mock('@tauri-apps/api/core', () => ({
             writer: 'up',
             reader: 'idle',
             dataDir: 'C:\\Users\\chris\\AppData\\Roaming\\note-processor',
-            logPath: 'C:\\Users\\chris\\AppData\\Roaming\\jott\\logs\\jott.jsonl',
+            logPath: noLog.current
+              ? null
+              : 'C:\\Users\\chris\\AppData\\Roaming\\jott\\logs\\jott.jsonl',
             logBytes: 4096,
             consent: 'undecided',
             autoFetch: false,
@@ -212,6 +220,19 @@ vi.mock('@tauri-apps/api/core', () => ({
   },
 }))
 
+vi.mock('@tauri-apps/plugin-opener', () => ({
+  // The window may open links externally and reveal one file in the folder it lives in — that is the whole surface
+  // the capability set grants, and a call outside it fails at runtime rather than here.
+  openUrl: (url: string) => {
+    opened.current.push(url)
+    return Promise.resolve()
+  },
+  revealItemInDir: (path: string) => {
+    revealed.current.push(path)
+    return Promise.resolve()
+  },
+}))
+
 vi.mock('@tauri-apps/api/event', () => ({
   listen: async (event: string, handler: (envelope: { payload: unknown }) => void) => {
     handlers.set(event, (payload) => handler({ payload }))
@@ -243,6 +264,9 @@ describe('the window mounts', () => {
     commands.length = 0
     scenario.current = 'empty'
     incompleteSettings.current = false
+    revealed.current = []
+    opened.current = []
+    noLog.current = false
     handlers.clear()
   })
 
@@ -695,4 +719,38 @@ describe('the window mounts', () => {
       expect(document.querySelector('footer.status [role="progressbar"]')).toBeNull()
     }, { timeout: 2000 })
   })
+  it('reveals the log file itself, not a box of text', async () => {
+    // The report: "Open log folder" opened a small window full of copied diagnostics text. It was `openPath` being
+    // refused by the capability set, and the failure fallback showing what had been copied for "Copy details".
+    scenario.current = 'vault'
+    await start()
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'd', ctrlKey: true, shiftKey: true, bubbles: true }))
+    await vi.waitFor(() => expect(document.body.textContent ?? '').toContain('What Jott is doing'))
+
+    const button = document.querySelector('[data-testid="show-log"]') as HTMLButtonElement
+    expect(button, 'the drawer offers one way to the log').not.toBeNull()
+    expect(button.textContent).toContain('Show log file')
+    expect(button.disabled).toBe(false)
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+
+    // The file, named in full, so Explorer opens with it selected rather than loose in a folder of stamps.
+    await vi.waitFor(() =>
+      expect(revealed.current).toEqual(['C:\\Users\\chris\\AppData\\Roaming\\jott\\logs\\jott.jsonl']),
+    )
+  })
+
+  it('will not offer to reveal a log that was never opened', async () => {
+    scenario.current = 'vault'
+    noLog.current = true
+    await start()
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'd', ctrlKey: true, shiftKey: true, bubbles: true }))
+    await vi.waitFor(() => expect(document.body.textContent ?? '').toContain('What Jott is doing'))
+
+    const button = document.querySelector('[data-testid="show-log"]') as HTMLButtonElement
+    expect(button.disabled, 'nothing to reveal means a disabled button, not a reveal of nothing').toBe(true)
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    expect(revealed.current).toEqual([])
+  })
+
 })

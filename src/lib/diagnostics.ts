@@ -178,14 +178,13 @@ export function mergeRows(history: TraceEvent[], live: TraceEvent[]): TraceEvent
   return merged
 }
 
-/** The folder a log file sits in, for "open the folder" — without asking a filesystem, because this module runs
- *  in a webview that has no business touching one. Both separators, because the Windows build is the one where
- *  anybody clicks this button. */
-export function folderOf(path: string | null): string | null {
-  if (path === null) return null
-  const trimmed = path.replace(/[\\/]+$/, '')
-  const cut = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'))
-  return cut <= 0 ? null : trimmed.slice(0, cut)
+/** What "Show log file" asks the file manager to reveal: the log itself, so it arrives selected — not its folder,
+ *  which is a window full of unrelated files, and not a path string pasted into a box.
+ *
+ *  `null` means there is no log to show: the journal could not be opened, so the button stays disabled rather than
+ *  revealing nothing (§18.12). */
+export function revealTarget(runtime: RuntimeInfo | null): string | null {
+  return runtime?.logPath ?? null
 }
 
 function notes(count: number, singular: string, plural: string): string {
