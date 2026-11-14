@@ -84,7 +84,18 @@ export interface SearchResults {
 
 /** np's `models.list` cannot report an artifact size in 0.3.1, so `bytes` is null until something does. */
 export type IngestEvent =
-  | { working: { phase: string; done: number; total: number | null } }
+  | {
+      working: {
+        phase: string
+        /** Bytes while np is fetching, chunks while it embeds or writes — the same counter np puts in the line. */
+        done: number
+        total: number | null
+        /** Which of several model files is arriving. Both null when np sent no member keys, and when it says the
+            model has one file: `1 of 1` would be a fact nobody needed. */
+        memberIndex: number | null
+        memberCount: number | null
+      }
+    }
   | { indexed: ScanReport }
   | { embedded: EmbedReport }
   | { behind: { reason: StateReason; retryInMs: number } }

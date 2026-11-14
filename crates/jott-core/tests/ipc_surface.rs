@@ -427,8 +427,11 @@ async fn what_the_window_receives_is_named_exactly_as_ipc_ts_says() {
     assert_eq!(keys, vec!["diskHash", "diskMtimeMs", "hash", "mirrored", "rel", "text"]);
 
     // The status line's events, which `src/lib/statusLine.ts` pattern-matches on.
-    let working = IngestEvent::Working { phase: "embedding".into(), done: 3, total: Some(7) };
-    assert_eq!(serde_json::to_value(working).expect("working"), json!({ "working": { "phase": "embedding", "done": 3, "total": 7 } }));
+    let working = IngestEvent::Working { phase: "embedding".into(), done: 3, total: Some(7), member_index: None, member_count: None };
+    assert_eq!(
+        serde_json::to_value(working).expect("working"),
+        json!({ "working": { "phase": "embedding", "done": 3, "total": 7, "memberIndex": null, "memberCount": null } })
+    );
 
     let behind = IngestEvent::Behind { reason: StateReason::Locked { waited_ms: 5000 }, retry_in_ms: 5000 };
     assert_eq!(serde_json::to_value(behind).expect("behind"), json!({ "behind": { "reason": { "locked": { "waitedMs": 5000 } }, "retryInMs": 5000 } }));

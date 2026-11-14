@@ -8,18 +8,18 @@ import type { IngestEvent } from './ipc'
 
 describe('statusFor', () => {
   it('says what is embedding with np\'s counters', () => {
-    const event: IngestEvent = { working: { phase: 'embedding', done: 3, total: 7 } }
+    const event: IngestEvent = { working: { phase: 'embedding', done: 3, total: 7, memberIndex: null, memberCount: null } }
     expect(statusFor(event)).toMatchObject({ text: 'embedding 3/7 chunks', tone: 'busy' })
   })
 
   it('names a counterless phase without pretending it is at zero', () => {
     // §18.12: no counters means unknown. "indexing 0/0" would be a made-up measurement.
-    const event: IngestEvent = { working: { phase: 'indexing', done: 0, total: null } }
+    const event: IngestEvent = { working: { phase: 'indexing', done: 0, total: null, memberIndex: null, memberCount: null } }
     expect(statusFor(event)).toMatchObject({ text: 'indexing…', tone: 'busy' })
   })
 
   it('shows a download in megabytes from np\'s byte counters', () => {
-    const event: IngestEvent = { working: { phase: 'fetching', done: 87_000_000, total: 309_366_528 } }
+    const event: IngestEvent = { working: { phase: 'fetching', done: 87_000_000, total: 309_366_528, memberIndex: null, memberCount: null } }
     expect(statusFor(event)?.text).toBe('fetching 83 MiB / 295 MiB')
   })
 
