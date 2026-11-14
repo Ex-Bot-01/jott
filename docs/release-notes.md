@@ -1,77 +1,67 @@
-# Jott 0.0.12 — the whole app was inspected; here is what it could not do yet
+# Jott 0.0.13 — built against np 0.4.0
 
-This release came out of reading every part of Jott — the vault code, the np client, the window, the log, the CI —
-and asking what a person would find missing or misleading. It turned out to be mostly about *accuracy*: what the
-window says when np refuses something, what the log knows about a run, and which keys actually do what they look
-like they should.
+The backend inside this installer is now **np 0.4.0**. That is the release where the two bugs filed against it last
+month got fixed, and one more thing that Jott had been guessing at became a number np hands over.
 
-Two bugs were found in np itself while checking this, and filed: [note-processor#4](https://github.com/Ex-Bot-01/note-processor/issues/4)
-(a workspace is keyed by the exact path string, so `D:\Notes\` and `D:\Notes` can re-index a vault once) and
-[#5](https://github.com/Ex-Bot-01/note-processor/issues/5) (a search cannot tell "never indexed" from "no matches",
-and reports `hybrid` when only keywords ran). Jott now works around both without pretending the words mean more
-than they do.
+- [#4](https://github.com/Ex-Bot-01/note-processor/issues/4) — a workspace was keyed by the exact path string, so
+  `D:\Notes\` and `D:\Notes` could look like two vaults and re-index one folder twice. Measured against 0.4.0 here:
+  scanning the same folder with and without a trailing separator now answers `unchanged`, not `added`.
+- [#5](https://github.com/Ex-Bot-01/note-processor/issues/5) — a search could not tell *"this folder was never
+  indexed"* from *"nothing matched"*, and answered `mode: hybrid` for searches where only keywords ran. It now
+  answers `indexed`, `keyword_used`, `semantic_used`, and a sentence of its own (`note`) when something notable
+  happened.
+- [#3](https://github.com/Ex-Bot-01/note-processor/issues/3) — `models.list` now carries `pinned`: the model this np
+  build would fetch, with its byte size taken from the table compiled into that binary.
 
-## Saying what actually happened
+Jott's floor moved to **0.4.0**. If you set `NP_PATH` at an older np you will be told so, with the exact asset name
+and hash check for your platform; unsetting it gets you the copy in the installer. Jott still *reads* an older
+answer — every 0.4.0 key is optional on the wire — but a backend that cannot answer those questions is not one to
+keep pointing people at.
 
-- **A refusal is no longer reported as a missing np.** When np answered `-32000 workspace … is not a directory that
-  exists`, Jott told you to go install something that was running fine and had just refused you. Refusals now say
-  *np said this*, in np's own words; only genuine silence or a dead child says np is gone; `-32601` says the build
-  is too old and names the version Jott needs (0.3.1).
-- **An empty search says which kind of empty it is.** A folder that has never been indexed gets *"This folder is not
-  indexed yet (7 notes are waiting) — use Index now"*, not *"Nothing matched"*, because retyping a search that
-  could never answer is nobody's idea of feedback.
-- **The results header stopped claiming a mode.** np 0.3.1 answers `hybrid` for searches where only keywords ran, so
-  the word on screen promised vectors that did not exist. It shows a count now: counts cannot lie.
-- **Search answers in the order you typed.** Overlapping requests used to land whenever np felt like it, and the
-  slowest one won — which read as the box ignoring what you had just typed.
+## What that changes on screen
 
-## The log knows which run it is
+- **An empty search says which kind of empty it is, from np's own answer.** A folder nobody has indexed gets *"This
+  folder is not indexed yet … use Index now"*; a folder that was searched and did not match gets *"Nothing matched
+  `q`"*. Until now the first of those was Jott's inference from the tree's markers — which is still the fallback
+  when np does not say, because silence is not an answer.
+- **The results list admits what it skipped.** When only the keyword half ran, the header adds
+  *words only · meanings not searched — this folder has no embeddings yet*. The `mode` word used to promise a hybrid
+  search that never happened; these two flags are the facts behind it.
+- **np's own sentence appears when it sends one** — kept byte for byte, not paraphrased into Jott's words.
+- **The download prompt quotes np's number.** The consent dialog said *"a model"* with no size because np 0.3.1
+  reported none anywhere (that gap is what issue #3 was filed for). It now says the size np itself would fetch —
+  309,855,456 bytes for the built-in text model — and if a future build quotes a vision model at 865 MB, the prompt
+  will say 865 MB rather than a number Jott compiled in last autumn. Jott's own pin is only used when np names
+  nothing at all.
 
-`jott.jsonl` used to hold one line per np request and nothing else, so the two reports that actually arrive had no
-answer in it. There are now three shapes of line, each with its own fixed keys:
+## One protocol change worth knowing about
 
-- **a request** (`method`) — as before, plus timing and np's sentence on a fault;
-- **the start of a run** (`jott`) — Jott's version, the exact `np.exe` this run talked to and how it was found, your
-  platform, and where Jott keeps its own files. So "it worked yesterday" can be located in the log: each day's run
-  names its own build and its own np;
-- **file work** (`event`) — `save`, `created`, `write-failed`, `renamed`, `moved`, `deleted` (with where the note went
-  and what the system trash said), `mirror-replayed`, `mirror-discarded`, `consent`, `index-now`,
-  `watcher-unavailable`, `state-root-fallback`.
+np 0.4.0 stopped sending progress notifications to clients that did not ask: support is advertised by the
+`progress` key, and only on a connection whose `initialize` sent `"notifications": true`. That is right for a
+script reading one line per request — and it would have silently muted Jott's status bar, because the child started
+at startup is the same child that does the indexing. Jott asks now; measured against the released binary, a 400-note
+scan sends five progress lines with the flag and zero without it.
 
-Still no note contents anywhere: a file line records *which* file and how many bytes, never what they spell. The
-diagnostics drawer shows these as live rows too, and now names Jott's own folder beside np's — saying out loud when
-that folder is a temporary fallback, which is the case where unsaved drafts are quietly landing in `%TEMP%`.
+## Not user-visible, but it caught two things
 
-## Things that were always meant to work
+- The np stand-in used in tests emulates 0.4.0 by default — including that opt-in rule — so a client that forgot to
+  ask can no longer pass 250 green tests.
+- The front-end suite could fail on an unhandled rejection with every test passing: the stub had no `mirror_buffer`,
+  and the editor mirrors a dirty buffer on a timer that can fire after a test ends. Every command the window can
+  legitimately send is stubbed now.
 
-- **You can make a folder.** `create_folder` and `move_entry` have had commands and tests since the first milestone
-  and nothing in the window ever called them. Right-click a row (or empty ground) for *New note here · New folder
-  here · Rename · Move to… · Move to trash*, or use the header buttons. Right-clicking `INDEX.md` offers nothing,
-  because that file belongs to np.
-- **The keyboard means what it says:** `Ctrl+N` new note, `Ctrl+Shift+N` new folder, `Ctrl+R`/`F2` rename, `Delete`
-  trash (after asking), `Ctrl+F` search, `Ctrl+S` save now. F2 and Delete stand down while you are typing in a note —
-  the difference between a shortcut and a way to lose a file.
-- **The window remembers itself:** size and position come back, the title says `Jott — <folder>`, and the recent
-  folders the registry has kept all along are now a menu beside *Open…*.
-- **np's own files stopped waking the window.** `INDEX.md` changes on every indexing pass; the watcher reported that
-  as an outside edit, which re-listed the tree once per pass — the flicker. It is np's file, and Jott treats it as
-  one.
+Tests: **249** Rust, **138** front-end. The CI job prints whether np was on `PATH` (some tests are about np being
+absent) and fails if the Rust count drops below its floor.
 
-## Under the hood, where a stall used to be forever
+## What to look at, if you tested 0.0.12
 
-- **A wedged np can no longer hang the window.** `initialize`, `models.list` and `status.get` wait 30 s, a search
-  60 s, and then Jott stops waiting and says so. Indexing and embedding deliberately keep *no* deadline: embedding a
-  large vault legitimately runs for minutes, and killing it mid-flight would throw away real work to guard against a
-  stall that the quit path already bounds.
-- **One bug no longer breaks every later save.** A panicked worker used to poison the journal's lock, and the next
-  save would panic on it — a log that can stop your work contradicts the rule the log is built on. Logging, the trace
-  ring and the stamp map now carry on, and report what failed where it happened.
-- **A committed index brings the retry wait back down.** With embeddings switched off, a two-second lock climbed the
-  ladder to 60 s and never came back down, because only a finished embed used to reset it.
-- **One folder, one spelling** in everything sent to np (see note-processor#4), so alternating spellings cannot cost
-  a full re-add of your vault.
+1. About → the np line should read **0.4.0**.
+2. Search in a folder you have never indexed: it should say so, not *"Nothing matched"*. Then *Index now* and search
+   again: the second empty answer should be *"Nothing matched"*.
+3. Search for something that only matches by word, in a folder without embeddings: expect the *words only* note.
+4. If you set `NP_PATH` at an np you built months ago, Jott should refuse it by name and version — and work with the
+   variable unset.
 
-## For whoever tests this
-
-`docs/testing-on-windows.md` has the new section (§2b-ii) for the menu and shortcuts, plus what to watch for with the
-window title and recents. §5 now describes all three log shapes so a report can name the right one.
+Previous releases are listed at <https://github.com/Ex-Bot-01/jott/releases>. Docs:
+[testing on Windows](https://github.com/Ex-Bot-01/jott/blob/main/docs/testing-on-windows.md) ·
+[building from source](https://github.com/Ex-Bot-01/jott/blob/main/docs/building-on-windows.md).

@@ -44,8 +44,8 @@ jobs:
           echo "Rust tests passing: $passed"
           # A floor, not a target. A scripted edit once deleted five tests from a file and the suite stayed green;
           # only the count noticed, and only on someone's laptop. In CI the count has to notice out loud.
-          if [ "$passed" -lt 230 ]; then
-            echo "::error title=Tests disappeared::expected at least 230 passing Rust tests, got $passed"
+          if [ "$passed" -lt 245 ]; then
+            echo "::error title=Tests disappeared::expected at least 245 passing Rust tests, got $passed"
             exit 1
           fi
       - name: clippy
