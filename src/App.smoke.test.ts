@@ -29,6 +29,14 @@ const scenario = vi.hoisted(() => ({ current: 'empty' as unknown as Scene }))
 /** What the native confirm dialog answers. Tests set it before pressing a button that asks. */
 const confirmed = vi.hoisted(() => ({ current: false }))
 const commands = vi.hoisted(() => [] as string[])
+/** The backend version every stub reports. One place, because the About assertions below check that this exact
+    string travels from `app_info` through the panel to the screen — a second copy of it would pass either way. */
+const NP_STUB_VERSION = '0.4.0'
+
+/** Set by one test to say what np claims about the folder: `false` = never scanned, `true` = indexed and searched.
+    The fixture's tree markers deliberately disagree with both, so whichever way the window resolves it is a choice. */
+const searchSays: { indexed: boolean | null } = { indexed: null }
+
 /** Set by one test to make `search_vault` answer a slow query *later* than the query typed after it — the order np
  *  is free to hand back in, and the reason the window has to know which answer belongs on screen. */
 const slowSearch = vi.hoisted(() => ({ on: false }))
@@ -65,13 +73,13 @@ vi.mock('@tauri-apps/api/core', () => ({
       case 'app_info':
         return Promise.resolve({
           jottVersion: '0.0.5',
-          np: { found: true, version: '0.3.1', source: 'bundled', path: 'C:\\Program Files\\Jott\\np\\np.exe' },
+          np: { found: true, version: NP_STUB_VERSION, source: 'bundled', path: 'C:\\Program Files\\Jott\\np\\np.exe' },
           dataDir: 'C:\\Users\\you\\AppData\\Roaming\\jott',
           logPath: 'C:\\Users\\you\\AppData\\Roaming\\jott\\logs\\jott.jsonl',
           repoUrl: 'https://github.com/Ex-Bot-01/jott',
           releasesUrl: 'https://github.com/Ex-Bot-01/jott/releases',
           docsUrl: 'https://github.com/Ex-Bot-01/jott/blob/main/docs/testing-on-windows.md',
-          diagnostics: 'Jott 0.0.5 · https://github.com/Ex-Bot-01/jott\nnp 0.3.1 from bundled (C:\\Program Files\\Jott\\np\\np.exe)',
+          diagnostics: `Jott 0.0.5 · https://github.com/Ex-Bot-01/jott\nnp ${NP_STUB_VERSION} from bundled (C:\\Program Files\\Jott\\np\\np.exe)`,
         })
       case 'search_vault': {
         const query = String((args as { query?: string } | undefined)?.query ?? '')
@@ -90,12 +98,29 @@ vi.mock('@tauri-apps/api/core', () => ({
           vectors: false,
           offline: false,
           reason: null,
+          // np 0.4.0's four extra keys. `indexed: true` here even though the fixture's tree shows a note still
+          // waiting to be indexed — which is exactly the disagreement the window has to settle in np's favour.
+          indexed: searchSays.indexed,
+          keywordUsed: true,
+          semanticUsed: false,
+          notice: null,
         })
         if (slowSearch.on && query === 'kumquat') {
           return new Promise((resolve) => setTimeout(() => resolve(hit('stale.md', '…an old kumquat page…')), 400))
         }
         if (/zzz/.test(query)) {
-          return Promise.resolve({ hits: [], mode: 'keyword', vectors: false, offline: false, reason: null })
+          // An empty list carries the same four keys as a full one — that is rather the point of note-processor#5.
+          return Promise.resolve({
+            hits: [],
+            mode: 'hybrid',
+            vectors: false,
+            offline: false,
+            reason: null,
+            indexed: searchSays.indexed,
+            keywordUsed: true,
+            semanticUsed: false,
+            notice: null,
+          })
         }
         return Promise.resolve(hit('inbox.md', '…a kumquat tree in the corner…'))
       }
@@ -108,6 +133,12 @@ vi.mock('@tauri-apps/api/core', () => ({
           diskMtimeMs: 1_700_000_000_000,
           mirrored: null,
         })
+      case 'mirror_buffer':
+      case 'discard_mirror':
+        // The editor mirrors a dirty buffer on a timer. A test that ends before that timer fires would otherwise
+        // reject into the void, and Vitest reads one unhandled rejection as a failed run even when every assertion
+        // passed — so every command the window can legitimately send gets a stub, not just the ones a test waits on.
+        return Promise.resolve()
       case 'embeddings_offer':
         // What core says about setting semantic search up. `null` means "nothing to offer", which is the arm
         // every other scenario takes: a vault with no notes waiting, or bytes already on disk.
@@ -120,7 +151,7 @@ vi.mock('@tauri-apps/api/core', () => ({
         // The drawer's snapshot: what this run is talking to, and what it has been asked so far.
         return Promise.resolve({
           runtime: {
-            npVersion: '0.3.1',
+            npVersion: NP_STUB_VERSION,
             npPath: 'D:\\Jott\\np\\np.exe',
             protocol: 1,
             writer: 'up',
@@ -348,7 +379,7 @@ describe('the window mounts', () => {
     expect(button, 'the header has no way to open the About panel').not.toBeNull()
     button!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
 
-    await vi.waitFor(() => expect(document.body.textContent ?? '').toContain('0.3.1'))
+    await vi.waitFor(() => expect(document.body.textContent ?? '').toContain(NP_STUB_VERSION))
     const text = document.body.textContent ?? ''
     expect(text).toContain('C:\\Program Files\\Jott\\np\\np.exe')
     expect(text).toContain('bundled')
@@ -499,3 +530,37 @@ describe('the window mounts', () => {
     await vi.waitFor(() => expect(document.body.textContent ?? '').toContain('to the trash?'))
   })
 })
+
+  it('takes np’s word over its own guess about the index', async () => {
+    // note-processor#5, fixed in 0.4.0: `indexed` settles which kind of empty list this is. The fixture's tree has a
+    // note still waiting — Jott's old inference would have said "not indexed yet" — while np answers that the folder
+    // *is* indexed and simply did not match. np's fact wins, because it looked.
+    scenario.current = 'vault'
+    searchSays.indexed = true
+    try {
+      await start()
+      const box = document.querySelector('input[type="search"]') as HTMLInputElement
+      box.value = 'zzznothing'
+      box.dispatchEvent(new Event('input', { bubbles: true }))
+
+      await vi.waitFor(() => expect(document.querySelector('.results .none')).not.toBeNull(), { timeout: 2000 })
+      const sentence = document.querySelector('.results .none')!.textContent ?? ''
+      expect(sentence).toContain('Nothing matched')
+      expect(sentence).not.toContain('not indexed yet')
+    } finally {
+      searchSays.indexed = null
+    }
+  })
+
+  it('says which half of the search ran', async () => {
+    // The stub answers with keywords only. Until 0.4.0 the only word available was `mode`, and it said `hybrid`
+    // for exactly this answer, so the header would have promised meanings that were never looked for.
+    scenario.current = 'vault'
+    await start()
+    const box = document.querySelector('input[type="search"]') as HTMLInputElement
+    box.value = 'kestrel'
+    box.dispatchEvent(new Event('input', { bubbles: true }))
+
+    await vi.waitFor(() => expect(document.querySelector('.hit-path')).not.toBeNull(), { timeout: 2000 })
+    expect(document.querySelector('.results')!.textContent).toContain('words only')
+  })

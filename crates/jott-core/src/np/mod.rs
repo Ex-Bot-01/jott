@@ -10,7 +10,7 @@ pub mod resolve;
 
 pub use handshake::{check_version, NpFeatures, NpInfo};
 pub use outcomes::{
-    EmbedOutcome, EmbedReport, Hit, ImageRefusal, ModelListing, ModelRow, ModelState, Mode,
+    EmbedOutcome, EmbedReport, Hit, ImageRefusal, ModelListing, PinnedModel, ModelRow, ModelState, Mode,
     ScanOutcome, ScanReport, SearchAnswer, Unindexable,
 };
 pub use pool::{Connection, NpPool, PoolNote};

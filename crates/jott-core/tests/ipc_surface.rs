@@ -376,7 +376,10 @@ async fn missing_np_arrives_with_instructions_for_this_platform() {
     );
 
     let macos = ipc::np_missing_payload(&NpMissing::TooOld { found: "0.2.0".into() }, Os::Macos);
-    assert!(macos.message.contains("0.2.0") && macos.message.contains("0.3.1"), "{}", macos.message);
+    // The floor is quoted from the one place it is written down, so these tests prove a number is named without
+    // becoming a second copy of it.
+    let floor = jott_core::np::resolve::min_version_text();
+    assert!(macos.message.contains("0.2.0") && macos.message.contains(&floor), "{}", macos.message);
     assert!(!macos.install_hint.is_empty());
 }
 
@@ -399,10 +402,15 @@ async fn what_the_window_receives_is_named_exactly_as_ipc_ts_says() {
         vectors: false,
         offline: false,
         reason: None,
+        indexed: None,
+        keyword_used: None,
+        semantic_used: None,
+        notice: None,
     })
     .expect("search");
     assert_eq!(search, json!({ "hits": [{"path": "a.md", "snippet": null, "kind": "note", "score": 1.0, "bm25": null, "cosine": null}],
-                                 "mode": "keyword", "vectors": false, "offline": false, "reason": null }));
+                                 "mode": "keyword", "vectors": false, "offline": false, "reason": null,
+                                 "indexed": null, "keywordUsed": null, "semanticUsed": null, "notice": null }));
 
     let note = serde_json::to_value(NoteContent {
         rel: "a.md".into(),
@@ -513,7 +521,11 @@ async fn a_startup_handshake_that_fails_is_a_value_the_window_can_show() {
         ipc::NpGone::Missing(missing) => ipc::np_missing_payload(missing, Os::Windows),
     };
     assert!(!payload.message.is_empty());
-    assert!(payload.install_hint.contains("0.3.1"), "the hint states the floor: {}", payload.install_hint);
+    assert!(
+        payload.install_hint.contains(&jott_core::np::resolve::min_version_text()),
+        "the hint states the floor: {}",
+        payload.install_hint
+    );
 
     // A fault sentence from np is kept whole rather than paraphrased (§4).
     let fault = ipc::NpGone::Fault("np said: workspace is locked".into());
@@ -1171,7 +1183,11 @@ async fn a_method_this_np_does_not_answer_says_which_floor_jott_needs() {
 
     let err = session.search("anything", 8).await.expect_err("too old");
     assert_eq!(err.kind, ErrorKind::NpTooOld);
-    assert!(err.message.contains("0.3.1"), "the floor is named: {}", err.message);
+    assert!(
+        err.message.contains(&jott_core::np::resolve::min_version_text()),
+        "the floor is named: {}",
+        err.message
+    );
 
     session.close().await;
     drop(dir);
@@ -1335,4 +1351,46 @@ async fn the_snapshot_says_where_jott_keeps_its_own_files() {
     assert!(!snapshot.runtime.state_fallback, "somebody named this one, so it is not a fallback");
     drop(sentinel);
     session.close().await;
+}
+
+/// np 0.4.0 answers a search with what actually ran and whether there was an index to run against
+/// (note-processor#5). Those four keys reach the window as-is — including `notice`, which is np's own sentence and
+/// must not be paraphrased into "no results" or dressed up as Jott's words (§4).
+#[tokio::test]
+async fn the_window_is_told_what_ran_and_whether_there_was_an_index() {
+    let _turn = SERIAL.lock().await;
+    let harness = Harness::new();
+    harness.write("a.md", b"# A\n");
+    let (dir, client) = common::spawn(json!({"replies": {"search": {
+        "hits": [],
+        "indexed": false,
+        "keyword_used": true,
+        "semantic_used": false,
+        "mode": "hybrid",
+        "vectors": false,
+        "offline": false,
+        "reason": "no-index",
+        "note": "this workspace has never been scanned — run `np scan …`"
+    }}}))
+    .await;
+
+    let (_sentinel, info) = ipc::np_absent();
+    let session = VaultSession::open_in_with(
+        NpSource::Env(common::repo_root().join("tests/fake-np/np.py")),
+        info,
+        Some(Arc::new(client)),
+        harness.vault.path(),
+        Consent::Undecided,
+        None,
+        harness.data.path().to_path_buf(),
+    );
+
+    let answer = session.search("kumquat", 8).await.expect("the stand-in answered");
+    assert_eq!(answer.indexed, Some(false));
+    assert_eq!(answer.keyword_used, Some(true));
+    assert_eq!(answer.semantic_used, Some(false), "whatever `mode` claims, the vector half did not run");
+    assert_eq!(answer.notice.as_deref(), Some("this workspace has never been scanned — run `np scan …`"));
+
+    session.close().await;
+    drop(dir);
 }

@@ -294,8 +294,19 @@ pub struct SearchAnswer {
     pub mode: Mode,
     pub vectors: bool,
     pub offline: bool,
-    /// np's token for why a half was missing (`provider-disabled`, `artifact-fetched`, …).
+    /// np's token for why a half was missing (`provider-disabled`, `no-vectors`, …).
     pub reason: Option<String>,
+    /// 0.4.0 (note-processor#5): has this folder ever been scanned? `None` on 0.3.1, which cannot say — and an
+    /// unknown answer must not become `false`, because "not indexed" is a diagnosis someone will act on.
+    pub indexed: Option<bool>,
+    /// Did the keyword half actually run? np's `mode` word alone was the bug: 0.3.1 answered `hybrid` for searches
+    /// where only keywords ran, and Jott printed it.
+    pub keyword_used: Option<bool>,
+    /// …and the vector half. Together with `keyword_used` these are what the window may claim about a result.
+    pub semantic_used: Option<bool>,
+    /// np's own sentence about what happened to this answer — e.g. "this workspace has never been scanned", or that
+    /// it fetched a model while searching. Kept verbatim (§4); shown as Jott's words around it, never rewritten.
+    pub note: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -305,6 +316,14 @@ struct RawSearchAnswer {
     vectors: bool,
     offline: bool,
     reason: Option<String>,
+    #[serde(default)]
+    indexed: Option<bool>,
+    #[serde(default)]
+    keyword_used: Option<bool>,
+    #[serde(default)]
+    semantic_used: Option<bool>,
+    #[serde(default)]
+    note: Option<String>,
 }
 
 pub fn search_answer(value: &Value) -> Result<SearchAnswer, NpFault> {
@@ -315,6 +334,10 @@ pub fn search_answer(value: &Value) -> Result<SearchAnswer, NpFault> {
             vectors: r.vectors,
             offline: r.offline,
             reason: r.reason,
+            indexed: r.indexed,
+            keyword_used: r.keyword_used,
+            semantic_used: r.semantic_used,
+            note: r.note,
         })
         .map_err(|e| shape_fault("search", e))
 }
@@ -375,6 +398,17 @@ pub struct ModelRow {
 pub struct ModelListing {
     pub rows: Vec<ModelRow>,
     pub models_dir_error: Option<String>,
+    /// What this np build would fetch, and what it costs (note-processor#3): `pinned` is priced from the sha256
+    /// table compiled into the binary, so a GUI can name a download's size before any transport is asked. Empty on
+    /// 0.3.1, which quoted nothing — that is *unknown*, and the prompt says "a model" instead of a number.
+    pub pinned: Vec<PinnedModel>,
+}
+
+/// One entry of np's `pinned` table: an id, the members it needs, and their total bytes when np knew them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PinnedModel {
+    pub id: String,
+    pub bytes_total: Option<u64>,
 }
 
 impl ModelListing {
@@ -386,16 +420,50 @@ impl ModelListing {
             .iter()
             .any(|row| row.id == id && row.state == ModelState::Present)
     }
+
+    /// Bytes a download of `id` would take, from np's own table. `None` means no price is known — never 0.
+    pub fn price_of(&self, id: &str) -> Option<u64> {
+        self.pinned.iter().find(|p| p.id == id).and_then(|p| p.bytes_total)
+    }
+
+    /// The price of what a fresh np would fetch on its own: the built-in default, quoted as the table's one entry.
+    /// Deliberately refuses to guess when np quoted several and none was named — picking one at random is how a
+    /// consent prompt ends up promising 310 MB for an 865 MB download.
+    pub fn only_price(&self) -> Option<u64> {
+        match self.pinned.as_slice() {
+            [one] => one.bytes_total,
+            _ => None,
+        }
+    }
 }
 
 #[derive(Deserialize)]
 struct RawListing {
     models: Vec<ModelRow>,
     models_dir_error: Option<String>,
+    #[serde(default)]
+    pinned: Option<Vec<RawPinned>>,
+}
+
+#[derive(Deserialize)]
+struct RawPinned {
+    id: String,
+    /// np spells it `bytes_total`; a build that quotes a model without knowing its size omits it.
+    #[serde(default)]
+    bytes_total: Option<u64>,
 }
 
 pub fn model_listing(value: &Value) -> Result<ModelListing, NpFault> {
     serde_json::from_value::<RawListing>(value.clone())
-        .map(|r| ModelListing { rows: r.models, models_dir_error: r.models_dir_error })
+        .map(|r| ModelListing {
+            rows: r.models,
+            models_dir_error: r.models_dir_error,
+            pinned: r
+                .pinned
+                .unwrap_or_default()
+                .into_iter()
+                .map(|p| PinnedModel { id: p.id, bytes_total: p.bytes_total })
+                .collect(),
+        })
         .map_err(|e| shape_fault("models.list", e))
 }

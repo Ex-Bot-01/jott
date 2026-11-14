@@ -91,3 +91,21 @@ async fn the_real_np_answers_when_told_to_serve() {
     check_version(&info.version).unwrap_or_else(|why| panic!("np {} refused: {why}", info.version));
     assert!(info.methods.contains(&"search".to_string()), "methods: {:?}", info.methods);
 }
+
+/// np 0.4.0 changed one thing about the handshake that Jott's status line depends on: progress is now a favour the
+/// client asked for — support is advertised by the `progress` key, and only on a connection whose `initialize` sent
+/// `"notifications": true`. The child this handshake returns becomes the pool's writer, so a first `initialize` that
+/// did not ask would leave Jott's own scanner mute for the life of the run: no counters, no phase words, a status
+/// line that says nothing while 400 notes are being indexed. Measured against the released binary: with the flag,
+/// five `np/progress` lines for a 400-note scan; without it, zero.
+#[tokio::test]
+async fn the_startup_handshake_asks_for_the_progress_it_means_to_show() {
+    let _scenario = common::scenario(json!({})).await;
+
+    let (client, info) = jott_core::ipc::read_np_info_warm(&jott_core::np::NpSource::Env(common::fake_np_path()))
+        .await
+        .expect("the stand-in answers");
+    assert!(info.progress, "the writer connection asked for progress and np said no: {info:?}");
+
+    client.shutdown().await.expect("and shuts down again");
+}

@@ -863,7 +863,15 @@ impl Worker {
             // An unreadable models directory (`models_dir_error`) is not "no artifact", but it is "we
             // cannot promise a download we may already have" — so the gate holds and asks rather than
             // embedding blind (§18.6). A failed `models.list` holds for the same reason.
-            Ok(_) => Gate::Blocked { bytes: default_bytes_for(&model_id), model_id: Some(model_id) },
+            // np 0.4.0 quotes the price of the model it would fetch (`pinned`, note-processor#3). Its number wins:
+            // a vision build quotes 865 MB where Jott's own pin knows only the 310 MB text default, and a prompt
+            // that promises one size while fetching the other is a consent answer nobody gave.
+            Ok(listing) => Gate::Blocked {
+                bytes: listing.price_of(&model_id).or_else(|| listing.only_price()).or_else(|| default_bytes_for(&model_id)),
+                model_id: Some(model_id),
+            },
+            // No listing, no quote: Jott's compiled-in pin is the only number there is, and a model it has never
+            // heard of gets no number at all rather than a guessed one (§4).
             Err(_) => Gate::Blocked { bytes: default_bytes_for(&model_id), model_id: Some(model_id) },
         }
     }

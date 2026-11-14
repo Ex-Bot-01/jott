@@ -187,6 +187,16 @@ pub struct SearchResults {
     pub vectors: bool,
     pub offline: bool,
     pub reason: Option<String>,
+    /// 0.4.0+: has this folder ever been scanned? `None` from an older np, which cannot say — the window must not
+    /// read that as "no", because it is the difference between two different sentences to a person (§4).
+    pub indexed: Option<bool>,
+    /// Did the keyword half run? …and the vector half. np's `mode` word said `hybrid` for keyword-only searches
+    /// until 0.4.0 fixed it (#5), so these are what the window is allowed to claim about a result.
+    pub keyword_used: Option<bool>,
+    pub semantic_used: Option<bool>,
+    /// np's own sentence about this answer ("never been scanned", "the model was fetched by this search"). Named
+    /// `notice` rather than `note` because everywhere else in Jott a note is somebody's file.
+    pub notice: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -763,6 +773,10 @@ impl VaultSession {
             vectors: answer.vectors,
             offline: answer.offline,
             reason: answer.reason,
+            indexed: answer.indexed,
+            keyword_used: answer.keyword_used,
+            semantic_used: answer.semantic_used,
+            notice: answer.note,
         })
     }
 
@@ -959,8 +973,12 @@ pub async fn read_np_info_warm(source: &NpSource) -> Result<(Arc<crate::np::clie
     // No workspace is named: the version floor is a property of the binary, and every method that works
     // names its own vault (§18.6). Asking here with one would make the startup check depend on which
     // folder was open last time.
+    //
+    // Progress is asked for because this child does not go away: it becomes the pool's writer, and np 0.4.0 only
+    // streams `np/progress` to a connection whose `initialize` sent the flag. Asking with `false` here would leave
+    // the one connection that indexes everything silent for the whole run.
     let answer = client
-        .request("initialize", serde_json::json!({ "notifications": false }))
+        .request("initialize", serde_json::json!({ "notifications": true }))
         .await
         .map_err(|fault| NpGone::Fault(fault.message))?;
     let info = crate::np::handshake::parse_initialize(&answer).map_err(NpGone::Missing)?;
@@ -1028,10 +1046,10 @@ pub struct RegistryInfo {
 
 
 /// The payload for `np://missing`: what is wrong, and how to fix it on this platform (§2).
-/// The floor as a person reads it, spelled once: `0.3.1`.
+/// The floor as a person reads it — the same function an install hint quotes, so a refusal and its fix cannot name
+/// different versions.
 fn version_text() -> String {
-    let (major, minor, patch) = crate::np::resolve::MIN_NP_VERSION;
-    format!("{major}.{minor}.{patch}")
+    crate::np::resolve::min_version_text()
 }
 
 pub fn np_missing_payload(missing: &NpMissing, os: Os) -> NpMissingPayload {

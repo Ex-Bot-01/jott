@@ -6,8 +6,9 @@ FAKE_NP_SCENARIO (JSON):
 
   initialize            the result object for `initialize`
   initialize_requires   param keys `initialize` must carry, else -32602
-  initialize_progress_by_param  answer with `progress: true` only when the request
-                                asked for notifications — what real np does
+  (default) progress is opt-in: `initialize` answers with `progress: true` and streams
+                              `np/progress` only on a connection that sent `"notifications": true`
+  initialize_always_progress    answer with `progress: true` and stream regardless, as np 0.3.1 did
   replies               result object per method
   faults                {method: {code, message}} — an error object instead of a result
   sleep_ms              delay before answering a method
@@ -36,11 +37,19 @@ if path := os.environ.get("FAKE_NP_SCENARIO"):
 INITIALIZE = SCENARIO.get("initialize", {
     "data_dir": "/fake/data",
     "features": {"fetch": True, "local_model": True, "vision": False},
-    "methods": ["status.get", "initialize", "search", "scan", "embed", "models.list", "shutdown"],
-    "np": "0.3.1",
-    "progress": True,
+    "methods": ["status.get", "initialize", "search", "scan", "embed", "models.list", "links.list", "shutdown"],
+    # What this stand-in emulates. Bump it with `packaging/np-pin.json`, and read the release notes before you do:
+    # 0.4.0 changed when `progress` appears (below) and added keys to `search` and `models.list`.
+    "np": "0.4.0",
     "protocol": 1,
 })
+
+# Progress is a favour the client asked for. np 0.4.0 answers an `initialize` that did not send
+# `"notifications": true` with no `progress` key and sends no notification at all on that connection — a client
+# reading a fixed number of lines per request must not be surprised by one. So the flag is per connection here,
+# as it is in the real thing, rather than a scenario switch: Jott's writer asks, and a writer that forgot to ask
+# goes mute for the life of the run, which is precisely the bug this used to hide.
+PROGRESS = False
 
 
 def record(method, params):
@@ -59,6 +68,8 @@ def write(obj):
 
 
 def note(req_id, command, phase, extra=None):
+    if not PROGRESS:
+        return
     params = {"command": command, "phase": phase, "since_ms": 0}
     if req_id is not None:
         params["request"] = req_id
@@ -105,13 +116,14 @@ for line in sys.stdin:
             note(req_id, method, "refused", {"code": -32602})
             continue
         result = dict(INITIALIZE)
-        if SCENARIO.get("initialize_progress_by_param"):
-            # np advertises progress support by the key's presence, and only on a connection
-            # that asked for it — so a client that hardcodes the flag cannot pass for one.
-            if params.get("notifications") is True:
-                result["progress"] = True
-            else:
-                result.pop("progress", None)
+        if SCENARIO.get("initialize_always_progress"):
+            # For a test that wants the 0.3.1 manners on purpose — advertising and streaming regardless.
+            result["progress"] = True
+            PROGRESS = True
+        elif params.get("notifications") is True:
+            # Advertised by the key's presence, and only to the connection that asked for it.
+            result["progress"] = True
+            PROGRESS = True
         write({"id": req_id, "jsonrpc": "2.0", "result": result})
         note(req_id, method, "completed")
         continue

@@ -366,13 +366,15 @@ async fn initialize_names_the_workspace_and_asks_for_progress() {
     // The stand-in refuses unless both params arrive (§18.6: workspace is a request param,
     // never config) and reports progress support only when asked for it, as real np does.
     let (_d, client) = spawn(json!({
-        "initialize_requires": ["workspace", "notifications"],
-        "initialize_progress_by_param": true
+        // No scenario keys: progress is opt-in on every connection now, which is the default behaviour.
+        "initialize_requires": ["workspace", "notifications"]
     }))
     .await;
 
     let info = initialize(&client, Path::new("/fake/vault"), true).await.unwrap();
-    assert_eq!(info.version, "0.3.1");
+    // The stand-in emulates the np this repo pins; if it ever answers with something Jott would refuse, every
+    // protocol test here would be testing a backend nobody ships.
+    jott_core::np::handshake::check_version(&info.version).unwrap_or_else(|why| panic!("stand-in np {} refused: {why}", info.version));
     assert_eq!(info.protocol, 1);
     assert!(info.progress, "the connection asked for notifications and np said yes");
     assert_eq!(info.data_dir, "/fake/data", "the path the consent prompt names");
@@ -383,8 +385,8 @@ async fn initialize_names_the_workspace_and_asks_for_progress() {
 #[tokio::test]
 async fn initialize_without_notifications_promises_no_progress() {
     let (_d, client) = spawn(json!({
-        "initialize_requires": ["workspace", "notifications"],
-        "initialize_progress_by_param": true
+        // No scenario keys: progress is opt-in on every connection now, which is the default behaviour.
+        "initialize_requires": ["workspace", "notifications"]
     }))
     .await;
 
@@ -406,5 +408,96 @@ async fn initialize_refuses_a_build_below_the_floor() {
         Err(NpError::Missing(NpMissing::TooOld { found })) => assert_eq!(found, "0.2.3"),
         other => panic!("0.2.3 is below the floor, got {other:?}"),
     }
+    client.shutdown().await.unwrap();
+}
+
+// ---- np 0.4.0: an answer says what ran, whether there was anything to run against, and what a download costs ----
+
+/// Filed as note-processor#5 and fixed in 0.4.0: `indexed`, `keyword_used` and `semantic_used` turn "no matches"
+/// into three different facts. Measured off the released binary — a never-scanned folder answers `indexed: false`
+/// with np's own sentence in `note`.
+#[tokio::test]
+async fn a_search_answer_says_whether_the_folder_was_ever_indexed() {
+    let (_d, client) = spawn(json!({"replies": {"search": {
+        "hits": [],
+        "indexed": false,
+        "keyword_used": true,
+        "semantic_used": false,
+        "mode": "hybrid",
+        "vectors": false,
+        "offline": false,
+        "reason": "no-index",
+        "note": "this workspace has never been scanned — run `np scan …`"
+    }}}))
+    .await;
+
+    let answer = search(&client, &vault(), "kumquat", 8, Mode::Hybrid).await.unwrap();
+    assert_eq!(answer.indexed, Some(false), "nothing matched and nothing *could* have: different sentences");
+    assert_eq!(answer.keyword_used, Some(true));
+    assert_eq!(answer.semantic_used, Some(false), "the meaning half did not run, whatever `mode` says");
+    assert_eq!(answer.note.as_deref(), Some("this workspace has never been scanned — run `np scan …`"));
+    client.shutdown().await.unwrap();
+}
+
+/// The same code still talks to 0.3.1, which sends none of those keys. Absent stays absent rather than becoming
+/// `false`: a search box that claimed "not indexed" because a field was missing would be inventing a diagnosis (§4).
+#[tokio::test]
+async fn an_older_np_leaves_the_new_keys_absent_rather_than_false() {
+    let (_d, client) = spawn(json!({"replies": {"search": fixture_result(3)}})).await;
+
+    let answer = search(&client, &vault(), "hash", 8, Mode::Hybrid).await.unwrap();
+    assert_eq!(answer.indexed, None);
+    assert_eq!(answer.keyword_used, None);
+    assert_eq!(answer.semantic_used, None);
+    assert_eq!(answer.note, None);
+    client.shutdown().await.unwrap();
+}
+
+/// note-processor#3: `models.list` carries `pinned`, priced from the sha256 table compiled into *this* build — so a
+/// GUI can name the download before it exists without keeping a copy of the number in its own source.
+#[tokio::test]
+async fn models_list_prices_the_model_this_build_would_fetch() {
+    // Both halves are what np 0.4.0 actually answered here: the row is a present model's, and `pinned` quotes the
+    // configured model at the size compiled into that build.
+    let (_d, client) = spawn(json!({"replies": {"models.list": {
+        "models": [{
+            "id": "embeddinggemma-2", "dim": 768,
+            "sha256": "2188ac1deca4b77dffefd603c2776a9d76d9d74ec01841392982ebb840b09135",
+            "installed_at": 1_794_647_641, "state": "present",
+            "prefix_doc": "", "prefix_query": "", "members": []
+        }],
+        "pinned": [{ "id": "embeddinggemma-2", "bytes_total": 309_855_456, "members": ["main"] }],
+        "fetching": [],
+        "unclaimed": [],
+        "models_dir_error": null
+    }}}))
+    .await;
+
+    let listing = models_list(&client, &vault()).await.unwrap();
+    let pinned = listing.pinned.first().unwrap_or_else(|| panic!("0.4.0 names a price: {:?}", listing.pinned));
+    assert_eq!(pinned.id, "embeddinggemma-2");
+    assert_eq!(pinned.bytes_total, Some(309_855_456), "the number the consent prompt should quote");
+    assert_eq!(listing.price_of("embeddinggemma-2"), Some(309_855_456));
+    assert_eq!(listing.price_of("some-other-model"), None, "a model np did not quote has no price, not a zero");
+    client.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn an_np_that_prices_nothing_leaves_the_price_unnamed() {
+    // Measured against 0.4.0 with no config file and an empty data folder: np names nothing and quotes nothing.
+    // Jott's own pin is then the only number a prompt can quote — see `builtin_default_model`.
+    let (_d, client) = spawn(json!({"replies": {"models.list": {
+        "models": [],
+        "fetching": [],
+        "unclaimed": [],
+        "pinned": [],
+        "models_dir_error": null
+    }}}))
+    .await;
+
+    let listing = models_list(&client, &vault()).await.unwrap();
+    assert!(listing.pinned.is_empty(), "an np that quotes nothing has no price — which is not the same as 0 bytes");
+    assert_eq!(listing.price_of("embeddinggemma-2"), None);
+    assert_eq!(listing.only_price(), None, "and there is no single entry to guess from");
     client.shutdown().await.unwrap();
 }
