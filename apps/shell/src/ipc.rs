@@ -13,8 +13,8 @@ use jott_core::diagnostics::{Journal, RunRecord};
 use jott_core::ingest::consent::np_config_path;
 use jott_core::ingest::queue::ConsentOffer;
 use jott_core::ipc::{
-    self, Diagnostics, IpcError, NpMissingPayload, NoteContent, RegistryInfo, RenameOutcome, SearchResults, VaultListing,
-    VaultSession, WriteResult,
+    self, ConsentHelp, Diagnostics, IpcError, NpMissingPayload, NoteContent, RegistryInfo, RenameOutcome, SearchResults,
+    VaultListing, VaultSession, WriteResult,
 };
 use jott_core::np::client::NpClient;
 use jott_core::np::resolve::{current_os, resolve_np, NpSource};
@@ -371,6 +371,14 @@ pub fn ingest_all(app: State<'_, App>) -> Result<(), IpcError> {
 #[tauri::command]
 pub async fn embeddings_offer(app: State<'_, App>) -> Result<Option<ConsentOffer>, IpcError> {
     Ok(Some(app.current()?.embeddings_offer().await).flatten())
+}
+
+/// What the consent card should say: which np setting is still short of vectors, and the lines that would close
+/// it. Read from np's config here rather than reasoned about in the webview — the file is the fact, and a second
+/// copy of the rule in TypeScript is a second place to be wrong.
+#[tauri::command]
+pub fn embeddings_help(app: State<'_, App>) -> Result<ConsentHelp, IpcError> {
+    Ok(app.current()?.embeddings_help())
 }
 
 /// The consent prompt's two buttons. The queue writes np's config; the registry remembers the answer for

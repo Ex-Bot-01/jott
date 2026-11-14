@@ -9,7 +9,7 @@ use common::repo_root;
 use jott_core::diagnostics::{TraceEvent, TraceKind};
 use jott_core::ingest::consent::auto_fetch_allowed;
 use jott_core::ingest::queue::{IngestEvent, StateReason};
-use jott_core::ipc::{self, ConnectionState, ErrorKind, HitDto, NoteContent, RenameOutcome, SearchResults, VaultListing, WriteResult};
+use jott_core::ipc::{self, ConnectionState, ConsentHelp, ErrorKind, HitDto, NoteContent, RenameOutcome, SearchResults, VaultListing, WriteResult};
 use jott_core::np::outcomes::ScanReport;
 use jott_core::np::resolve::{NpMissing, NpSource, Os};
 use jott_core::np::{NpFeatures, NpInfo};
@@ -1393,4 +1393,80 @@ async fn the_window_is_told_what_ran_and_whether_there_was_an_index() {
 
     session.close().await;
     drop(dir);
+}
+
+/// The card that replaces the tester's mystery sentence (`keyword-only: embeddings.provider is not set`) gets its
+/// facts from core: which gap np's config shows, the lines that would close it, and what np's file says about
+/// `auto_fetch` today. Note what is *not* here — a claim that Jott wrote that key. Presence in someone's config
+/// proves only that it is there, and §4 does not let us take credit for a line we cannot trace.
+#[tokio::test]
+async fn the_card_names_the_provider_line_and_quotes_np_s_config_back() {
+    let harness = Harness::new();
+    let np_config = harness.data.path().join("config.toml");
+    std::fs::write(&np_config, "[models]\nauto_fetch = true\n").unwrap();
+
+    let (source, info) = ipc::np_absent();
+    let session = VaultSession::open_in(
+        source,
+        info,
+        harness.vault.path(),
+        Consent::Granted,
+        Some(np_config.clone()),
+        harness.data.path().to_path_buf(),
+    );
+
+    let help = session.embeddings_help();
+    assert_eq!(help.gap, "providerMissing");
+    assert_eq!(help.provider, None, "np's config names no provider, so there is nothing to quote");
+    assert_eq!(
+        help.lines_to_add,
+        vec!["[embeddings]", "provider = \"local-model\"", "model = \"embeddinggemma-2\""]
+    );
+    assert_eq!(help.auto_fetch, Some(true), "the card quotes the file rather than assuming");
+    assert_eq!(help.config_path.as_deref(), Some(np_config.as_path()), "and says which file it read");
+
+    session.close().await;
+}
+
+/// A provider somebody chose is not ours to change: no lines, and the provider quoted so the card can say what np
+/// already says. (Separation ruling; note-processor#7 is the ask.)
+#[tokio::test]
+async fn a_provider_of_someones_own_gets_no_lines_from_jott() {
+    let harness = Harness::new();
+    let np_config = harness.data.path().join("config.toml");
+    std::fs::write(&np_config, "[embeddings]\nprovider = \"none\"\nmodel = \"x\"\n").unwrap();
+
+    let (source, info) = ipc::np_absent();
+    let session = VaultSession::open_in(
+        source,
+        info,
+        harness.vault.path(),
+        Consent::Declined,
+        Some(np_config),
+        harness.data.path().to_path_buf(),
+    );
+
+    let help = session.embeddings_help();
+    assert_eq!(help.gap, "providerOther");
+    assert_eq!(help.provider.as_deref(), Some("none"));
+    assert!(help.lines_to_add.is_empty(), "we do not advise overwriting a deliberate choice: {help:?}");
+
+    session.close().await;
+}
+
+#[test]
+fn consent_help_keys_are_pinned() {
+    let help = ConsentHelp {
+        gap: "ready".into(),
+        provider: Some("local-model".into()),
+        model_id: Some("embeddinggemma-2".into()),
+        lines_to_add: vec![],
+        config_path: Some("/home/you/.config/note-processor/config.toml".into()),
+        auto_fetch: Some(true),
+    };
+    assert_eq!(
+        serde_json::to_value(help).expect("serialises"),
+        json!({ "gap": "ready", "provider": "local-model", "modelId": "embeddinggemma-2", "linesToAdd": [],
+                "configPath": "/home/you/.config/note-processor/config.toml", "autoFetch": true })
+    );
 }

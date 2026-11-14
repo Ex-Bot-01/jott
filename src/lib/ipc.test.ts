@@ -72,3 +72,19 @@ describe('the search answer', () => {
     expect(interfaceKeys(ipcTs, 'SearchResults').sort()).toEqual(rustFields(ipcRust, 'SearchResults').sort())
   })
 })
+
+describe('the consent card payload', () => {
+  it('carries every key Rust sends about np’s configuration', () => {
+    // The card is the only thing standing between "Allow download" and a person editing np's config by guesswork.
+    // A dropped key would quietly turn "np says auto_fetch is false" into `undefined`, and the card would say
+    // nothing about the one setting that decides whether anything gets fetched.
+    expect(interfaceKeys(ipcTs, 'ConsentHelp').sort()).toEqual(rustFields(ipcRust, 'ConsentHelp').sort())
+  })
+
+  it('names all four gaps Rust can report', () => {
+    const block = ipcTs.slice(ipcTs.indexOf('export interface ConsentHelp'), ipcTs.indexOf('}', ipcTs.indexOf('export interface ConsentHelp')))
+    for (const gap of ['providerMissing', 'modelMissing', 'providerOther', 'ready']) {
+      expect(block, `gap ${gap} is missing from the union`).toContain(`'${gap}'`)
+    }
+  })
+})

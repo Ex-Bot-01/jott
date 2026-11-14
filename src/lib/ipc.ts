@@ -228,6 +228,19 @@ export const setConsent = (granted: boolean) => invoke<void>('set_consent', { gr
 export type ConsentOffer = { modelId: string | null; bytes: number | null; dataDir: string }
 export const embeddingsOffer = () => invoke<ConsentOffer | null>('embeddings_offer')
 
+/** Why vectors still do not exist, in np's own terms. Everything here is read back out of np's config: which
+    setting is short, the lines that would close it, and what `auto_fetch` says today. Note what is missing —
+    there is no field claiming Jott wrote any of it, because presence in someone's file proves only presence. */
+export interface ConsentHelp {
+  gap: 'providerMissing' | 'modelMissing' | 'providerOther' | 'ready'
+  provider: string | null
+  modelId: string | null
+  linesToAdd: string[]
+  configPath: string | null
+  autoFetch: boolean | null
+}
+export const embeddingsHelp = () => invoke<ConsentHelp>('embeddings_help')
+
 /** A question with two answers, asked outside the status line. False when nobody answered. */
 export const askConfirm = (message: string, title: string) => confirm(message, { title })
 // §14's two answers are not one command: *reload* re-reads the file (`readNote`), and *keep* is a

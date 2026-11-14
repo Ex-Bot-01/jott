@@ -31,6 +31,7 @@ fn main() {
             ipc::ingest_all,
             ipc::set_consent,
             ipc::embeddings_offer,
+            ipc::embeddings_help,
             ipc::diagnostics,
             ipc::flush_on_close
         ])

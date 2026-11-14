@@ -72,6 +72,13 @@ pub fn auto_fetch_allowed(path: &Path) -> bool {
 ///
 /// This is how the consent prompt gets a model id without asking np to try a download first (§11:
 /// decide from what is configured and on disk, not by attempting).
+/// The provider np's config names, when it names one. Kept separate from `settings_gap` because the consent card
+/// quotes this back verbatim — a person should see their own word for it, not Jott's category.
+pub fn embedding_provider_named(path: &Path) -> Option<String> {
+    let document = load(path).ok()??;
+    document.get("embeddings")?.get("provider")?.as_str().map(str::to_string)
+}
+
 pub fn embedding_model_named(path: &Path) -> Option<String> {
     let document = load(path).ok()??;
     let embeddings = document.get("embeddings")?;
