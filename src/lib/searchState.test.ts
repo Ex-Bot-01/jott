@@ -3,7 +3,13 @@
 
 import { describe, expect, it } from 'vitest'
 
-import { noResultsSentence, resultsHeadline, searchIsCurrent } from './searchState'
+import {
+  emptySearchSentence,
+  noResultsSentence,
+  resultsHeadline,
+  searchCaveat,
+  searchIsCurrent,
+} from './searchState'
 
 describe('which answer is still current', () => {
   it('lets only the newest request write', () => {
@@ -34,5 +40,56 @@ describe('the results header', () => {
     expect(resultsHeadline(2)).toBe('2 results')
     expect(resultsHeadline(1)).toBe('1 result')
     expect(resultsHeadline(0)).toBeNull()
+  })
+})
+
+describe('what np itself said about the answer (0.4.0)', () => {
+  it('believes np over its own guess when np says the folder was never indexed', () => {
+    // note-processor#5, fixed in 0.4.0: `indexed` distinguishes the two empties. When np answers, Jott quotes that
+    // rather than reasoning from tree markers — and still says what to do next, because np's own sentence names a
+    // command line nobody is holding.
+    const sentence = emptySearchSentence({ indexed: false }, 'kumquat', 0)
+    expect(sentence).toContain('not indexed yet')
+    expect(sentence).toContain('Index now')
+    expect(sentence).not.toContain('Nothing matched')
+  })
+
+  it('says nothing matched when np knew there was an index to search', () => {
+    // The same words from a folder with 4,000 notes and a folder with none used to be indistinguishable. Now the
+    // difference is np's answer, not our inference — and the local guess must not override it.
+    expect(emptySearchSentence({ indexed: true }, 'kumquat', 12)).toBe('Nothing matched “kumquat”.')
+  })
+
+  it('falls back to what the tree knows when an older np says nothing', () => {
+    // `undefined` is not `false`: a 0.3.x answer has no such key, and claiming "not indexed" from silence would be
+    // inventing a diagnosis. Jott falls back to its own markers instead.
+    expect(emptySearchSentence({}, 'kumquat', 2)).toContain('not indexed yet')
+    expect(emptySearchSentence({}, 'kumquat', 0)).toBe('Nothing matched “kumquat”.')
+    expect(emptySearchSentence({ indexed: null }, 'kumquat', 3)).toContain('not indexed yet')
+  })
+})
+
+describe('the quiet line about what ran', () => {
+  it('says so when only the words were searched', () => {
+    // np's `mode` word said `hybrid` here. These two flags are the fact: keywords ran, vectors did not.
+    expect(searchCaveat({ keywordUsed: true, semanticUsed: false })).toContain('words only')
+  })
+
+  it('stays quiet when both halves answered, and when np did not say', () => {
+    expect(searchCaveat({ keywordUsed: true, semanticUsed: true })).toBeNull()
+    expect(searchCaveat({ keywordUsed: null, semanticUsed: null })).toBeNull()
+    // A 0.3.x answer is not a claim that something went wrong.
+    expect(searchCaveat({})).toBeNull()
+  })
+
+  it('prefers np’s own sentence when it sent one', () => {
+    // e.g. "fetched embeddinggemma-2 while searching": somebody's model download, said in np's words (§4).
+    expect(searchCaveat({ notice: 'the local model was fetched during this search' })).toBe(
+      'the local model was fetched during this search',
+    )
+  })
+
+  it('is not shown for an empty list, where the sentence above already explains', () => {
+    expect(searchCaveat({ keywordUsed: true, semanticUsed: false }, 0)).toBeNull()
   })
 })

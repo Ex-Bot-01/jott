@@ -137,6 +137,25 @@ Two more things to report on:
 - **Recent folders** appear next to *Open…*. Picking one should reopen that vault. If a folder you deleted or moved
   is listed, opening it should fall back quietly to asking for a folder rather than showing an error.
 
+## 2b-iii. Since 0.0.13: the np inside is 0.4.0, and search stopped guessing
+
+Four things to check, all of them about what the window claims:
+
+- **About → the np line should read `0.4.0`.** So should the bottom-left of the window.
+- **An empty search now says which kind of empty it is.** In a folder nobody has indexed: *"This folder is not
+  indexed yet … use Index now"*. After Index now, searching for something genuinely absent: *"Nothing matched
+  `q`"*. Getting these two the same was [note-processor#5](https://github.com/Ex-Bot-01/note-processor/issues/5);
+  0.4.0 answers the question, so the sentence is no longer Jott's inference from the tree's markers.
+- **A word-only result admits it.** In a folder without embeddings, the results header adds
+  *words only · meanings not searched*. It used to print np's `mode` word, which said `hybrid` here and promised a
+  half of the search that never ran.
+- **A download prompt quotes a size.** If Jott asks about setting embeddings up, the number it names comes from np
+  (0.4.0 reports what its own build would fetch). No number at all, when np quotes nothing — which is different from
+  zero and should read that way.
+
+If you set `NP_PATH` at an np you built months ago, Jott now refuses it and names the asset to download instead.
+Unset the variable to get the copy in the installer; that is the normal case.
+
 ## 2c. Since 0.0.11: press **Ctrl+Shift+D** when something is odd
 
 A drawer opens at the bottom of the window with what this run has actually been doing:

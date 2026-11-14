@@ -42,3 +42,33 @@ describe('the error vocabulary', () => {
     expect(camelVariants(ipcRust, 'ErrorKind').length).toBeGreaterThan(5)
   })
 })
+
+/** The field names of a `#[serde(rename_all = "camelCase")]` struct, spelled the way the wire spells them. */
+function rustFields(source: string, structName: string): string[] {
+  const start = source.indexOf(`pub struct ${structName} {`)
+  expect(start, `${structName} is not in ipc.rs any more — update this test rather than deleting it`).toBeGreaterThan(-1)
+  const body = source.slice(start, source.indexOf('\n}', start))
+  const fields = [...body.matchAll(/^\s{4}(?:pub )?[a-z_][a-z0-9_]*:/gm)].map((m) => {
+    const name = m[0].trim().replace(/^pub /, '').replace(/:$/, '')
+    return name.replace(/_([a-z0-9])/g, (_all, c: string) => c.toUpperCase())
+  })
+  // The same guard as above: a struct whose fields the regex missed would compare empty against empty.
+  expect(fields.length, `${structName} has no readable fields`).toBeGreaterThan(1)
+  return fields
+}
+
+function interfaceKeys(source: string, name: string): string[] {
+  const start = source.indexOf(`export interface ${name} {`)
+  expect(start, `${name} is not in ipc.ts any more`).toBeGreaterThan(-1)
+  const body = source.slice(start, source.indexOf('\n}', start))
+  return [...body.matchAll(/^\s{2}([A-Za-z0-9]+)\??:/gm)].map((m) => m[1])
+}
+
+describe('the search answer', () => {
+  it('carries every key Rust sends, including what np said about the run', () => {
+    // `indexed`, `keywordUsed`, `semanticUsed` and `notice` are the difference between "Nothing matched" and "this
+    // folder has never been indexed". A field dropped on this side silently becomes `undefined`, and `undefined` is
+    // what an older np sends — so the window would lose the fact and keep the doubt.
+    expect(interfaceKeys(ipcTs, 'SearchResults').sort()).toEqual(rustFields(ipcRust, 'SearchResults').sort())
+  })
+})

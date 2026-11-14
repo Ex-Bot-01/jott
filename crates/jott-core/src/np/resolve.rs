@@ -12,7 +12,35 @@ use thiserror::Error;
 
 /// The lowest np this app speaks to. Protocol 1 arrived in 0.3.0; `progress` notifications
 /// and `status.get` — both of which the ingest queue uses — arrived in 0.3.1.
-pub const MIN_NP_VERSION: (u64, u64, u64) = (0, 3, 1);
+///
+/// 0.4.0 is the floor now, for three measured reasons rather than tidiness: it says whether a workspace was ever
+/// indexed and which half of a search ran (note-processor#5), it stops re-indexing a whole vault over one trailing
+/// separator (#4), and it prices the model a consent prompt has to name before downloading it (#3). Jott still
+/// *reads* an older answer — every 0.4.0 key is optional on the wire — but a backend that cannot answer those
+/// questions is not one to keep pointing people at.
+pub const MIN_NP_VERSION: (u64, u64, u64) = (0, 4, 0);
+
+/// The np release Jott puts inside its installer, and the one an older install is pointed at. CI downloads the one
+/// named in `packaging/np-pin.json`; `the_hint_names_the_np_the_installer_ships` fails if the two disagree, because
+/// a hint that sends someone to fetch a build Jott then refuses is worse than no hint.
+pub const NP_RELEASE_VERSION: &str = "0.4.0";
+
+/// The floor as a sentence fragment: `0.4.0`. Spelled once so a refusal and an install hint cannot quote different
+/// numbers at the same person.
+pub fn min_version_text() -> String {
+    let (major, minor, patch) = MIN_NP_VERSION;
+    format!("{major}.{minor}.{patch}")
+}
+
+/// The exact filename of this release's asset for a platform — what appears on the release page and in
+/// `SHA256SUMS.txt`. macOS has none: np is built from source there.
+pub fn asset_for(os: Os) -> Option<String> {
+    match os {
+        Os::Windows => Some(format!("np-{NP_RELEASE_VERSION}-x86_64-pc-windows-gnu-cross.zip")),
+        Os::Linux => Some(format!("np-{NP_RELEASE_VERSION}-x86_64-unknown-linux-gnu.tar.gz")),
+        Os::Macos => None,
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Os {
@@ -47,7 +75,7 @@ pub enum NpMissing {
     NotFound,
     #[error("NP_PATH points at {0}, which is not an executable file")]
     OverrideMissing(PathBuf),
-    #[error("np {found} is too old; Jott needs 0.3.1 or newer")]
+    #[error("np {found} is too old; Jott needs {} or newer", min_version_text())]
     TooOld { found: String },
     #[error("np did not report a usable version")]
     NoProtocol,
@@ -130,25 +158,32 @@ fn version_of(missing: &NpMissing) -> &str {
 pub fn install_hint(missing: &NpMissing, os: Os) -> String {
     let release = "https://github.com/Ex-Bot-01/note-processor/releases/latest";
     let too_old = matches!(missing, NpMissing::TooOld { .. });
+    let min = min_version_text();
     match (os, too_old) {
         (Os::Windows, true) => format!(
-            "np is too old for Jott. Download np-0.3.1-x86_64-pc-windows-gnu-cross.zip from {release}, \
-             compare its hash against SHA256SUMS.txt, and replace np.exe where it is installed."
+            "np is too old for Jott. Download {} from {release}, \
+             compare its hash against SHA256SUMS.txt, and replace np.exe where it is installed.",
+            asset_for(os).expect("windows has an asset")
         ),
         (Os::Windows, false) => format!(
-            "Jott needs the np command (0.3.1 or newer). Download np-0.3.1-x86_64-pc-windows-gnu-cross.zip \
-             from {release}, check it with `(Get-FileHash .\\np-0.3.1-x86_64-pc-windows-gnu-cross.zip).Hash.ToLower()` \
-             against SHA256SUMS.txt, put np.exe somewhere on PATH — or set NP_PATH to it."
+            "Jott needs the np command ({min} or newer). Download {} from {release}, \
+             check it with `(Get-FileHash .\\{}).Hash.ToLower()` against SHA256SUMS.txt, \
+             put np.exe somewhere on PATH — or set NP_PATH to it.",
+            asset_for(os).expect("windows has an asset"),
+            asset_for(os).expect("windows has an asset")
         ),
         (Os::Linux, true) => format!(
-            "np {} is too old for Jott, which needs 0.3.1 or newer. Get the current asset from \
+            "np {} is too old for Jott, which needs {min} or newer. Download {} from \
              {release}, verify it with `sha256sum -c SHA256SUMS.txt`, and install it with \
-             `install -m 0755 np ~/.local/bin/np`.", version_of(missing)
+             `install -m 0755 np ~/.local/bin/np`.",
+            version_of(missing),
+            asset_for(os).expect("linux has an asset")
         ),
         (Os::Linux, false) => format!(
-            "Jott needs the np command (0.3.1 or newer). Download np-0.3.1-x86_64-unknown-linux-gnu.tar.gz \
-             from {release}, verify it with `sha256sum -c SHA256SUMS.txt`, then \
-             `install -m 0755 np ~/.local/bin/np` — or set NP_PATH to a build you already have."
+            "Jott needs the np command ({min} or newer). Download {} from {release}, \
+             verify it with `sha256sum -c SHA256SUMS.txt`, then \
+             `install -m 0755 np ~/.local/bin/np` — or set NP_PATH to a build you already have.",
+            asset_for(os).expect("linux has an asset")
         ),
         // No `format!`: nothing is interpolated, and a literal states that in one character.
         (Os::Macos, _) => "There is no macOS asset for np: it has to be built from source with \

@@ -68,10 +68,18 @@ export interface SearchHit {
 
 export interface SearchResults {
   hits: SearchHit[]
+  /** np's own word for which half answered. Kept for the log and the drawer, never printed on its own: until
+      0.4.0 it said `hybrid` for searches where only keywords ran (note-processor#5). */
   mode: string
   vectors: boolean
   offline: boolean
   reason: string | null
+  /** The four keys np 0.4.0 added, all `null` from an older backend — "did not say", never "said no". */
+  indexed: boolean | null
+  keywordUsed: boolean | null
+  semanticUsed: boolean | null
+  /** np's sentence about this answer, byte for byte (§4): a refusal, a fetch, a workspace it never scanned. */
+  notice: string | null
 }
 
 /** np's `models.list` cannot report an artifact size in 0.3.1, so `bytes` is null until something does. */

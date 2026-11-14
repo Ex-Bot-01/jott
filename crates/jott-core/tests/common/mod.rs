@@ -54,6 +54,27 @@ pub async fn spawn(scenario: Value) -> (TempDir, NpClient) {
     (dir, client)
 }
 
+/// Configure the stand-in and hold both the scenario file and the spawn lock for as long as the caller needs
+/// them — for code that spawns a child itself (`ipc::read_np_info_warm`) rather than through [`spawn`].
+pub struct Scenario {
+    _dir: TempDir,
+    _turn: tokio::sync::MutexGuard<'static, ()>,
+}
+
+pub async fn scenario(scenario: Value) -> Scenario {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("scenario.json");
+    std::fs::write(&path, scenario.to_string()).expect("write scenario");
+    let turn = SPAWN.lock().await;
+    std::env::set_var("FAKE_NP_SCENARIO", &path);
+    Scenario { _dir: dir, _turn: turn }
+}
+
+/// The stand-in itself, for a caller that spawns its own child.
+pub fn fake_np_path() -> PathBuf {
+    repo_root().join("tests/fake-np/np.py")
+}
+
 /// A source that cannot start, for tests whose whole subject is "np is not here".
 ///
 /// Do not use `ipc::np_absent()`'s source for that: it names the program `np` and lets PATH answer, which is

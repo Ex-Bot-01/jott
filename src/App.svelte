@@ -12,7 +12,7 @@
   import { actionsFor, flattenTree, moveTargets, moveTo, notesAwaitingEmbedding, notesAwaitingIndex, targetFolder } from './lib/tree'
   import type { TreeAction } from './lib/tree'
   import { bareKeyFor, isTypingTarget, shortcutFor } from './lib/shortcuts'
-  import { noResultsSentence, resultsHeadline, searchIsCurrent } from './lib/searchState'
+  import { emptySearchSentence, resultsHeadline, searchCaveat, searchIsCurrent } from './lib/searchState'
   import { markTerms } from './lib/highlight'
   import { consentSentence, statusFor, type Status } from './lib/statusLine'
   import type { SavePhase } from './lib/saveState'
@@ -563,13 +563,14 @@
     </div>
 
     {#if results}
+      {@const caveat = searchCaveat(results, results.hits.length)}
       <ul class="results">
         {#if results.hits.length === 0}
-          <!-- An empty list is two different facts and only one of them is about the words: np cannot tell an
-               unindexed folder from a vault with no matches (note-processor#5), so the sentence comes from what
-               the tree knows locally. -->
+          <!-- An empty list is two different facts and only one of them is about the words. np 0.4.0 answers
+               `indexed` and settles it (note-processor#5); behind that, the sentence comes from what the tree's own
+               markers know — never from silence. -->
           <li class="none">
-            {noResultsSentence(searchQuery.trim(), awaitingIndex)}
+            {emptySearchSentence(results, searchQuery.trim(), awaitingIndex)}
             {#if results.offline}(np is offline — keyword search only){/if}
           </li>
         {/if}
@@ -586,10 +587,15 @@
           </li>
         {/each}
         {#if resultsHeadline(results.hits.length)}
-          <!-- A count, not np's `mode` word: 0.3.1 answers "hybrid" for searches where only keywords ran. -->
-          <li class="mode">{resultsHeadline(results.hits.length)}{searching ? ' · searching…' : ''}</li>
-        {:else if searching}
-          <li class="mode quiet">searching…</li>
+          <!-- A count, not np's `mode` word: 0.3.1 answers "hybrid" for searches where only keywords ran. What
+               actually ran goes on its own line, in `searchCaveat`'s words or np's own sentence. -->
+          <li class="mode">
+            {resultsHeadline(results.hits.length)}{searching ? ' · searching…' : ''}
+            {#if caveat}<span class="caveat">· {caveat}</span>{/if}
+          </li>
+        {:else}
+          {#if caveat}<li class="mode quiet">{caveat}</li>{/if}
+          {#if searching}<li class="mode quiet">searching…</li>{/if}
         {/if}
       </ul>
     {:else}

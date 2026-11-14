@@ -523,6 +523,44 @@ async fn an_artifact_already_on_disk_needs_no_consent() {
     assert_eq!(h.calls(), vec!["scan".to_string(), "models.list".to_string(), "embed".to_string()]);
 }
 
+/// note-processor#3, fixed in 0.4.0: `models.list` carries `pinned`, priced from the table compiled into *that*
+/// build — so a vision-enabled build quoting 865 MB gets a prompt that says 865 MB instead of Jott's own idea of a
+/// number. np's quote wins; Jott's pin is what a nameless, unquoted model falls back to.
+#[tokio::test]
+async fn the_prompt_quotes_the_price_np_gave_and_not_jotts_own_number() {
+    let _turn = SERIAL.lock().await;
+    let quoted = 864_676_512u64;
+    let h = Harness::new(json!({
+        "replies": {
+            "scan": fixture_result(2),
+            "models.list": {
+                "models": [], "fetching": [], "unclaimed": [], "models_dir_error": null,
+                "pinned": [{ "id": "embeddinggemma-2-vision", "bytes_total": quoted, "members": ["main", "mmproj"] }]
+            },
+            "embed": embed_current()
+        }
+    }))
+    .await;
+    // np's config names a model this build has no pin for at all: without `pinned` the prompt would have to say
+    // nothing about size. With it, the number on screen is np's.
+    std::fs::write(&h.np_config, config_naming("embeddinggemma-2-vision")).unwrap();
+    let queue = h.queue();
+    let mut rx = queue.events();
+
+    queue.note_saved("notes/a.md");
+    let events = collect(&mut rx, Duration::from_millis(900)).await;
+
+    let ask = events
+        .iter()
+        .find_map(|e| match e {
+            IngestEvent::NeedsConsent { model_id, bytes, .. } => Some((model_id.clone(), *bytes)),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("an uninstalled model is a question: {events:?}"));
+    assert_eq!(ask.0.as_deref(), Some("embeddinggemma-2-vision"));
+    assert_eq!(ask.1, Some(quoted), "np priced it; Jott repeats rather than competes");
+}
+
 #[tokio::test]
 async fn a_fresh_np_that_names_no_model_is_still_asked_before_any_download() {
     let _turn = SERIAL.lock().await;

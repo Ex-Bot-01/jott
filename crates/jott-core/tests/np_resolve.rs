@@ -90,19 +90,52 @@ fn a_named_binary_beats_the_one_we_shipped() {
 #[test]
 fn hints_name_the_asset_for_that_platform() {
     let win = install_hint(&NpMissing::NotFound, Os::Windows);
-    assert!(win.contains("np-0.3.1-x86_64-pc-windows-gnu-cross.zip"), "{win}");
+    assert!(win.contains("x86_64-pc-windows-gnu-cross.zip"), "{win}");
     let linux = install_hint(&NpMissing::NotFound, Os::Linux);
     assert!(linux.contains("sha256sum -c SHA256SUMS.txt"), "{linux}");
     let old = install_hint(&NpMissing::TooOld { found: "0.2.3".into() }, Os::Linux);
-    assert!(old.contains("0.2.3") && old.contains("0.3.1"), "{old}");
+    assert!(old.contains("0.2.3") && old.contains("0.4.0"), "{old}");
+}
+
+/// Two files state which np Jott wants and nothing but this test makes them agree: `packaging/np-pin.json` is what
+/// the installer downloads, `install_hint` is what a person with an ambient np is told to fetch. A hint naming an
+/// older asset than the one in the installer sends someone to install a build Jott then refuses.
+#[test]
+fn the_hint_names_the_np_the_installer_ships() {
+    let pin_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../packaging/np-pin.json");
+    let raw = std::fs::read_to_string(&pin_path).unwrap_or_else(|e| panic!("{}: {e}", pin_path.display()));
+    let pin: serde_json::Value = serde_json::from_str(&raw).expect("the pin file is JSON");
+    let version = pin["version"].as_str().expect("the pin names a version");
+
+    for (os, key) in [(Os::Windows, "x86_64-pc-windows-msvc"), (Os::Linux, "x86_64-unknown-linux-gnu")] {
+        let asset = pin["assets"][key]["archive"].as_str().unwrap_or_else(|| panic!("no pinned {key} asset"));
+        let hint = install_hint(&NpMissing::NotFound, os);
+        assert!(hint.contains(version), "the installer ships np {version}, the hint says otherwise: {hint}");
+        assert!(hint.contains(asset), "the hint names an asset other than the shipped {asset}: {hint}");
+    }
+
+    // And the floor a refusal quotes is that same release, so "too old" points at something that will be accepted.
+    let too_old = install_hint(&NpMissing::TooOld { found: "0.3.1".into() }, Os::Windows);
+    assert!(too_old.contains(version), "{too_old}");
 }
 
 #[test]
 fn version_floor_is_compared_numerically() {
     use jott_core::np::handshake::{check_version, MIN_NP};
-    assert_eq!(MIN_NP, (0, 3, 1));
-    assert!(check_version("0.3.1").is_ok());
+    assert_eq!(MIN_NP, (0, 4, 0));
+    assert!(check_version("0.4.0").is_ok());
     assert!(check_version("0.10.0").is_ok(), "string compare would reject this");
     assert!(matches!(check_version("0.2.9"), Err(NpMissing::TooOld { .. })));
     assert!(matches!(check_version("nightly-2026"), Err(NpMissing::NoProtocol)));
+}
+
+/// 0.3.1 is behind now, and not for tidiness. It could not say whether a folder had ever been indexed or which half
+/// of a search ran (note-processor#5), it re-indexed a whole vault over a trailing backslash (#4), and it quoted no
+/// price for the download a consent prompt has to name (#3). Jott still *reads* its older answers — every 0.4.0 key
+/// is optional on the wire — but a build that cannot answer those questions is not one to install by default.
+#[test]
+fn np_0_3_1_is_now_below_the_floor() {
+    use jott_core::np::handshake::check_version;
+    assert!(matches!(check_version("0.3.1"), Err(NpMissing::TooOld { .. })));
+    assert!(check_version("0.4.0").is_ok());
 }
