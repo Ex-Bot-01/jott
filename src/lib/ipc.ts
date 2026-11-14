@@ -84,7 +84,18 @@ export interface SearchResults {
 
 /** np's `models.list` cannot report an artifact size in 0.3.1, so `bytes` is null until something does. */
 export type IngestEvent =
-  | { working: { phase: string; done: number; total: number | null } }
+  | {
+      working: {
+        phase: string
+        /** Bytes while np is fetching, chunks while it embeds or writes — the same counter np puts in the line. */
+        done: number
+        total: number | null
+        /** Which of several model files is arriving. Both null when np sent no member keys, and when it says the
+            model has one file: `1 of 1` would be a fact nobody needed. */
+        memberIndex: number | null
+        memberCount: number | null
+      }
+    }
   | { indexed: ScanReport }
   | { embedded: EmbedReport }
   | { behind: { reason: StateReason; retryInMs: number } }
@@ -93,6 +104,14 @@ export type IngestEvent =
   | { disabled: { key: string | null; modelId: string | null; hint: string | null } }
 
 export type StateReason = 'offline' | { locked: { waitedMs: number } }
+
+/** np's own record of a model it downloaded: which one, and how big in total — `null` when any member announced no
+    size, because half a total is not a total. What np also reports (per-member digests, origin) stays unread: nothing
+    on screen uses it, and a field nobody reads is a field nobody checks. */
+export interface FetchedRecord {
+  id: string
+  bytesTotal: number | null
+}
 
 export interface ScanReport {
   added: number
@@ -130,7 +149,10 @@ export interface EmbedReport {
   image_refusals: { path: string; class: string }[]
   verification: string
   offline: boolean
+  /** The model this run downloaded, when it downloaded one. `null` is the ordinary case. */
+  fetched: FetchedRecord | null
 }
+
 
 /** What the shell emits when np cannot be found or is too old, with np's install instructions attached. */
 export interface NpMissingPayload {
@@ -227,6 +249,19 @@ export const setConsent = (granted: boolean) => invoke<void>('set_consent', { gr
     `null` when there is nothing to offer (`ConsentOffer` mirrors `jott_core::ingest::queue::ConsentOffer`). */
 export type ConsentOffer = { modelId: string | null; bytes: number | null; dataDir: string }
 export const embeddingsOffer = () => invoke<ConsentOffer | null>('embeddings_offer')
+
+/** Why vectors still do not exist, in np's own terms. Everything here is read back out of np's config: which
+    setting is short, the lines that would close it, and what `auto_fetch` says today. Note what is missing —
+    there is no field claiming Jott wrote any of it, because presence in someone's file proves only presence. */
+export interface ConsentHelp {
+  gap: 'providerMissing' | 'modelMissing' | 'providerOther' | 'configUnreadable' | 'ready'
+  provider: string | null
+  modelId: string | null
+  linesToAdd: string[]
+  configPath: string | null
+  autoFetch: boolean | null
+}
+export const embeddingsHelp = () => invoke<ConsentHelp>('embeddings_help')
 
 /** A question with two answers, asked outside the status line. False when nobody answered. */
 export const askConfirm = (message: string, title: string) => confirm(message, { title })

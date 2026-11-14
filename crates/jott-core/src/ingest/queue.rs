@@ -87,7 +87,17 @@ pub enum IngestEvent {
     /// A line from np's own progress stream. Phases that carry no counters (`locking`, `indexing`, and
     /// any build with no progress at all, §18.12) arrive as `done: 0, total: None`, which the status
     /// line renders as its label alone — never as a bar sitting at zero.
-    Working { phase: String, done: u64, total: Option<u64> },
+    Working {
+        phase: String,
+        /// Phase-appropriate counters, as always: bytes while fetching, chunks while embedding or writing.
+        done: u64,
+        total: Option<u64>,
+        /// Which of several model files is arriving — np's `members_done + 1` of `members_total`. Both `None` when
+        /// np sent neither key *and* when it says there is only one: "part 1 of 1" is noise, and a single-file model
+        /// is the common case.
+        #[serde(rename = "memberIndex")] member_index: Option<u64>,
+        #[serde(rename = "memberCount")] member_count: Option<u64>,
+    },
     /// A scan committed. The report is np's, aggregates and all (§18.2).
     Indexed(ScanReport),
     /// An embed run finished. Its `errors` count travels with it, so the window can say "3 chunks
@@ -982,5 +992,14 @@ fn working(note: &ProgressNote) -> IngestEvent {
     } else {
         note.extra.get(total_key).and_then(Value::as_u64)
     };
-    IngestEvent::Working { phase: note.phase.clone(), done, total }
+    // np sends both member keys or neither. A count of one is withheld on purpose: the window would otherwise say
+    // "model part 1 of 1" about the ordinary single-file download, which is a fact nobody needed.
+    let (member_index, member_count) = match (
+        note.extra.get("members_done").and_then(Value::as_u64),
+        note.extra.get("members_total").and_then(Value::as_u64),
+    ) {
+        (Some(index), Some(total)) if total > 1 => (Some(index + 1), Some(total)),
+        _ => (None, None),
+    };
+    IngestEvent::Working { phase: note.phase.clone(), done, total, member_index, member_count }
 }

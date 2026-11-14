@@ -436,3 +436,47 @@ fn the_shapes_share_one_file_and_one_rotation() {
     assert!(lines[1].get("method").is_some(), "then the request");
     assert!(lines[2].get("event").is_some(), "then the local event");
 }
+
+/// Answering the consent question writes a key into np's own config, so the log says which key and which file —
+/// "Jott touched my configuration" is exactly the thing a person should be able to check afterwards. Keys and a
+/// destination only: values are quoted as `true`/`false` for that one key, never anything a note contains.
+#[tokio::test]
+async fn answering_consent_records_the_key_and_where_it_went() {
+    let _turn = SERIAL.lock().await;
+    let app_data = tempfile::tempdir().expect("app data");
+    let vault = tempfile::tempdir().expect("vault");
+    std::fs::write(vault.path().join("a.md"), b"# A\n").expect("note");
+    let np_config = app_data.path().join("config.toml");
+
+    let journal = Arc::new(Journal::open(app_data.path()));
+    let session = VaultSession::open_in(
+        fake_np(),
+        info(),
+        vault.path(),
+        Consent::Undecided,
+        Some(np_config.clone()),
+        app_data.path().to_path_buf(),
+    )
+    .with_journal(journal.clone());
+
+    session.set_consent(true);
+
+    let lines = journal.read_lines().expect("log reads back");
+    let consent = lines
+        .iter()
+        .find(|line| line["event"] == "consent")
+        .unwrap_or_else(|| panic!("a consent answer is file work worth logging: {lines:?}"));
+    let detail = consent["detail"].as_str().unwrap_or_default();
+    assert!(detail.contains("granted"), "what was answered: {detail}");
+    assert!(detail.contains("models.auto_fetch"), "which key Jott writes: {detail}");
+    assert!(detail.contains("config.toml"), "and which file it goes to: {detail}");
+
+    let raw = std::fs::read_to_string(app_data.path().join("logs").join("jott.jsonl")).expect("log file");
+    // "kumquat" and "# A" are the note's own words; the model id is the other thing this line must not carry — a
+    // settings decision is auditable from the key and the file, and the plan asked for exactly this guard.
+    for forbidden in ["kumquat", "# A", "embeddinggemma"] {
+        assert!(!raw.contains(forbidden), "note text reached the log: {forbidden}");
+    }
+
+    session.close().await;
+}

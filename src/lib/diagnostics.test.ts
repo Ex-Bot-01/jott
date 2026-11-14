@@ -15,10 +15,10 @@ import {
   consentSentence,
   countsSentence,
   copyText,
+  revealTarget,
   formatAgo,
   formatBytes,
   formatElapsed,
-  folderOf,
   MAX_DETAIL_CHARS,
   newestFirst,
   queueSentence,
@@ -186,15 +186,6 @@ describe('sentences', () => {
     expect(consentSentence('declined')).toBe('keyword search only')
   })
 
-  it('names the folder a log sits in, on both separators', () => {
-    expect(folderOf('C:\\Users\\chris\\AppData\\Roaming\\jott\\logs\\jott.jsonl')).toBe(
-      'C:\\Users\\chris\\AppData\\Roaming\\jott\\logs',
-    )
-    expect(folderOf('/home/you/.local/share/jott/logs/jott.jsonl')).toBe('/home/you/.local/share/jott/logs')
-    // Nothing to open when there was never a log, rather than a button that opens the desktop.
-    expect(folderOf(null)).toBeNull()
-  })
-
   it('says what a connection is doing in words a person can read once', () => {
     expect(connectionLabel('up')).toBe('connected')
     expect(connectionLabel('idle')).toBe('not started')
@@ -336,5 +327,21 @@ describe("where a run keeps its files", () => {
   it('shows a file row, because “my note vanished” is a file question', () => {
     expect(rowLabel({ atMs: 1, kind: 'file', method: null, outcome: null, elapsedMs: null, detail: 'save notes/a.md' })).toBe('file')
     expect(rowDetail({ atMs: 1, kind: 'file', method: null, outcome: null, elapsedMs: null, detail: 'save notes/a.md' })).toBe('save notes/a.md')
+  })
+})
+
+describe('what the reveal button points at', () => {
+  it('names the log file itself, so the file manager selects it', () => {
+    // The report this answers: "Open log folder" opened something small and full of text. Revealing the *file* is
+    // both the fix and a better ask — Explorer opens with jott.jsonl selected.
+    expect(revealTarget(snapshot().runtime)).toBe('C:\\Users\\chris\\AppData\\Roaming\\jott\\logs\\jott.jsonl')
+  })
+
+  it('has nothing to reveal when no log was opened', () => {
+    // `logPath` is null when the journal could not be written at all. A button that reveals "null" is the same
+    // class of bug as a bar parked at zero (§18.12).
+    const withoutLog = { ...snapshot().runtime, logPath: null }
+    expect(revealTarget(withoutLog)).toBeNull()
+    expect(revealTarget(null)).toBeNull()
   })
 })

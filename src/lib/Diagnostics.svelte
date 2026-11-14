@@ -10,19 +10,19 @@
   // sentence, never a file's text.
 
   import { onDestroy } from 'svelte'
-  import { openPath } from '@tauri-apps/plugin-opener'
+  import { revealItemInDir } from '@tauri-apps/plugin-opener'
   import {
     clip,
     connectionLabel,
     consentSentence,
     copyText,
     countsSentence,
-    folderOf,
     formatAgo,
     formatBytes,
     mergeRows,
     newestFirst,
     queueSentence,
+    revealTarget,
     rowDetail,
     rowLabel,
     type DiagnosticsSnapshot,
@@ -54,7 +54,11 @@
 
   const runtime = $derived(snapshot?.runtime ?? null)
   const rows = $derived(newestFirst(mergeRows(snapshot?.recent ?? [], live)))
-  const logFolder = $derived(folderOf(runtime?.logPath ?? null))
+  /** The file to reveal, or `null` when the journal never opened. */
+  const logFile = $derived(revealTarget(runtime))
+  /** Set when the file manager refused. The path is already on screen above, so the fallback points at it rather
+      than opening another box of text — which is exactly what this button used to do by accident. */
+  let revealFailed = $state(false)
 
   $effect(() => {
     drawer?.focus()
@@ -73,10 +77,23 @@
   }
 
   function reveal() {
-    const folder = logFolder
-    if (!folder) return
-    // A refused open is not worth a dialog: the path is on screen and selectable either way.
-    void openPath(folder).catch(() => (manual = true))
+    const file = logFile
+    if (!file) return
+    // `revealItemInDir` asks Explorer (or the desktop's equivalent) to open the folder *with this file selected*.
+    // The old call was `openPath(folder)`, which the capability set does not grant: the promise rejected, and the
+    // rejection handler showed the clipboard box — a small window of text where a file manager should have been.
+    revealFailed = false
+    void revealItemInDir(file).catch(() => (revealFailed = true))
+  }
+
+  async function copyLogPath() {
+    const file = logFile
+    if (!file) return
+    try {
+      await navigator.clipboard.writeText(file)
+    } catch {
+      // The path stays on screen as text either way; a second failure needs no second message.
+    }
   }
 </script>
 
@@ -162,9 +179,23 @@
 
   <footer>
     <button type="button" onclick={() => void copy()}>Copy details</button>
-    <button type="button" onclick={reveal} disabled={logFolder === null}>Open log folder</button>
+    <button
+      type="button"
+      data-testid="show-log"
+      onclick={reveal}
+      disabled={logFile === null}
+      title={logFile ?? 'No log file was opened this run'}>Show log file</button>
     <span class="quiet">Ctrl+Shift+D closes this</span>
   </footer>
+
+  {#if revealFailed && logFile}
+    <!-- The file manager said no. Nothing new to show, so the line says where to look and offers the path. -->
+    <p class="quiet reveal-fallback">
+      The file manager would not open. The log is at
+      <code>{logFile}</code>
+      <button type="button" onclick={() => void copyLogPath()}>Copy path</button>
+    </p>
+  {/if}
 
   {#if manual}
     <textarea bind:this={clipBox} readonly rows="6" aria-label="Diagnostics text to copy">{snapshot ? copyText(snapshot, jottVersion) : ''}</textarea>

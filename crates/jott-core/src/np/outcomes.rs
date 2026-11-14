@@ -151,8 +151,9 @@ where
         .collect())
 }
 
-/// What one embed run did. `artifact_check`, `workers` and `fetched` are np's too and are left
-/// out on purpose: nothing in M1 reads them, and a field nobody uses is a field nobody checks.
+/// What one embed run did. `artifact_check` and `workers` are np's too and stay out on purpose: nothing reads
+/// them, and a field nobody uses is a field nobody checks. `fetched` was added when the window gained a "model ready"
+/// banner — a download notice has to quote the bytes np fetched, not a size Jott guessed from its own pin.
 /// Serialize is for the window's payload; the two directions are not mirrors. np sends
 /// `image_refusals` as pairs and this writes objects, because a webview wants named fields while §18.5
 /// keeps np's spelling on np's wire.
@@ -177,6 +178,58 @@ pub struct EmbedReport {
     /// np's own caveat string, kept as it wrote it — never promoted to "verified" here.
     pub verification: String,
     pub offline: bool,
+    /// The model this run downloaded, when it downloaded one. `None` is the ordinary case — including an embed that
+    /// embedded plenty — and must never render as "0 bytes".
+    #[serde(default, deserialize_with = "fetched_record")]
+    pub fetched: Option<FetchedRecord>,
+}
+
+/// np's own record of a fetch: which model arrived, and how big it was in total.
+///
+/// np also reports `digest-verified` per member and an `origin`; both stay unparsed. Nothing on screen can use them —
+/// the banner says which model and how many bytes — and a field nobody reads is a field nobody checks (the same rule
+/// that keeps `artifact_check` and `workers` out of `EmbedReport`).
+///
+/// `bytes_total` is the sum of the members' sizes **only when every member names one**. A model whose second file has
+/// no announced size has an unknown total, and a banner that promises "412 MiB" for an 865 MB download is worse than
+/// one that says nothing about size at all.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FetchedRecord {
+    pub id: String,
+    pub bytes_total: Option<u64>,
+}
+
+#[derive(Deserialize)]
+struct RawFetched {
+    id: String,
+    #[serde(default)]
+    members: Vec<RawMember>,
+}
+
+#[derive(Deserialize)]
+struct RawMember {
+    #[serde(default)]
+    bytes: Option<u64>,
+}
+
+fn fetched_record<'de, D>(d: D) -> Result<Option<FetchedRecord>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw = Option::<RawFetched>::deserialize(d)?;
+    Ok(raw.map(|fetched| {
+        let bytes_total = fetched
+            .members
+            .iter()
+            .map(|member| member.bytes)
+            .try_fold(0u64, |sum, bytes| Some(sum + bytes?));
+        FetchedRecord {
+            id: fetched.id,
+            // An empty member list is "np told us nothing about size", not "zero bytes".
+            bytes_total: if fetched.members.is_empty() { None } else { bytes_total },
+        }
+    }))
 }
 
 /// Why an embed run stopped where it did. Six arms because np has six, and the seventh is for

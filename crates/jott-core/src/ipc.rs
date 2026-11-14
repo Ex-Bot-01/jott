@@ -807,8 +807,48 @@ impl VaultSession {
 
     /// The consent prompt's two buttons. Writing the decision into np's config is the queue's job (§11);
     /// remembering it across launches is the registry's, and the shell does that beside this call.
+    /// The consent card's facts, read from np's config at the moment the window asks. Synchronous on purpose: a
+    /// card that needs a round trip to np would be a card that can fail while np is busy indexing.
+    pub fn embeddings_help(&self) -> ConsentHelp {
+        use crate::ingest::consent::{builtin_default_model, embedding_provider_named, gap_lines, settings_gap, SettingsGap};
+        let path = self.np_config.as_deref();
+        // The id the lines will name: whatever np's config already points at, else this build's built-in default —
+        // never a placeholder a person cannot paste. `embedding_model_named` only answers when a provider is named
+        // too, which is exactly np's own rule about reading the key.
+        let quoted = path.and_then(crate::ingest::consent::embedding_model_named);
+        let model_id = quoted.clone().or_else(|| Some(builtin_default_model().id.to_string()));
+        let gap = settings_gap(path, quoted.as_deref());
+        ConsentHelp {
+            gap: match gap {
+                SettingsGap::ProviderMissing => "providerMissing",
+                SettingsGap::ModelMissing => "modelMissing",
+                SettingsGap::ProviderOther { .. } => "providerOther",
+                SettingsGap::ConfigUnreadable => "configUnreadable",
+                SettingsGap::Ready => "ready",
+            }
+            .to_string(),
+            provider: path.and_then(embedding_provider_named),
+            lines_to_add: gap_lines(&gap, quoted.as_deref()),
+            model_id,
+            config_path: self.np_config.clone(),
+            // `false` here would be a statement about someone's file. A file that will not parse makes no statement at
+            // all, so the wire says nothing (`null`) and the card says it cannot read the file — which is also what
+            // np itself answers, in its own words, with a line number.
+            auto_fetch: path
+                .filter(|path| path.exists() && !crate::ingest::consent::consent_file_is_unreadable(path))
+                .map(crate::ingest::consent::auto_fetch_allowed),
+        }
+    }
+
     pub fn set_consent(&self, granted: bool) {
-        self.local(LocalRecord::new("consent").with_detail(if granted { "granted" } else { "declined" }));
+        // The answer is written into np's own config, so the log names the key and the destination. Someone
+        // auditing their machine later should be able to see that a window changed their configuration, and where.
+        let answer = if granted { "granted" } else { "declined" };
+        let detail = match &self.np_config {
+            Some(path) => format!("{answer} · writes models.auto_fetch = {granted} → {}", path.display()),
+            None => format!("{answer} · nothing written: no np config path was found"),
+        };
+        self.local(LocalRecord::new("consent").with_detail(detail));
         self.queue.set_consent(if granted { Consent::Granted } else { Consent::Declined });
     }
 
@@ -1044,6 +1084,30 @@ pub struct RegistryInfo {
     pub consent: Consent,
 }
 
+
+/// What the consent card shows when an answer is on record and vectors still do not exist.
+///
+/// Everything here is np's own state read back: which setting is short, the lines that would close it, what
+/// `auto_fetch` says today, and which file all of that lives in. Deliberately absent: a claim that *Jott* wrote
+/// `auto_fetch`. Presence in someone's config proves only presence, and §4 is about the difference.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ConsentHelp {
+    /// `"providerMissing" | "modelMissing" | "providerOther" | "configUnreadable" | "ready"` — `SettingsGap`
+    /// spelled for the wire, and pinned word for word against the TypeScript union by `src/lib/ipc.test.ts`.
+    pub gap: String,
+    /// The provider np's config names today, quoted as written. A setting name, never note content.
+    pub provider: Option<String>,
+    /// The model Jott would name in the lines below: np's configured one, or this build's built-in default.
+    pub model_id: Option<String>,
+    /// TOML that would close the gap. Empty when it is not Jott's place to say (`providerOther`, `ready`).
+    pub lines_to_add: Vec<String>,
+    /// The np config file those lines belong in.
+    pub config_path: Option<PathBuf>,
+    /// What np's file says about `[models] auto_fetch` right now — the key Jott writes when it records an answer.
+    /// `None` means the file is unreadable or absent, which the card words as "np's default", not as "no".
+    pub auto_fetch: Option<bool>,
+}
 
 /// The payload for `np://missing`: what is wrong, and how to fix it on this platform (§2).
 /// The floor as a person reads it — the same function an install hint quotes, so a refusal and its fix cannot name

@@ -72,6 +72,13 @@ pub fn auto_fetch_allowed(path: &Path) -> bool {
 ///
 /// This is how the consent prompt gets a model id without asking np to try a download first (§11:
 /// decide from what is configured and on disk, not by attempting).
+/// The provider np's config names, when it names one. Kept separate from `settings_gap` because the consent card
+/// quotes this back verbatim — a person should see their own word for it, not Jott's category.
+pub fn embedding_provider_named(path: &Path) -> Option<String> {
+    let document = load(path).ok()??;
+    document.get("embeddings")?.get("provider")?.as_str().map(str::to_string)
+}
+
 pub fn embedding_model_named(path: &Path) -> Option<String> {
     let document = load(path).ok()??;
     let embeddings = document.get("embeddings")?;
@@ -111,6 +118,76 @@ pub fn default_bytes_for(model_id: &str) -> Option<u64> {
 
 /// Write `[models] auto_fetch`, leaving the rest of the file as it was — comments, other sections,
 /// unknown keys, blank lines and the spacing around this very key.
+/// Which setting stands between "consent given" and vectors existing, read out of np's own config.
+///
+/// This exists because a tester clicked **Allow download**, and the window's only report was np's true and
+/// unactionable sentence `keyword-only: embeddings.provider is not set`. The four states below are the four config
+/// shapes measured against np 0.4.0 — including the nastiest, where an absent `[embeddings]` makes `embed` *succeed*
+/// while embedding nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SettingsGap {
+    /// No `[embeddings] provider` at all — np reads that as `provider = "none"` and embeds nothing, happily.
+    ProviderMissing,
+    /// Provider is `local-model`, but no model is named, so np faults rather than guesses.
+    ModelMissing,
+    /// Someone chose a provider deliberately. Jott has no advice about it: the separation ruling says we ask np for
+    /// a method (note-processor#7) instead of editing a decision that is not ours.
+    ProviderOther { provider: String },
+    /// The file exists and will not parse — the state a person walks into by editing it themselves, which np answers
+    /// with its own `config parse error in <path>: TOML parse error at line …`. Nothing about this file can be quoted
+    /// back as a setting, so nothing is: no lines to paste, no claim about what `auto_fetch` says.
+    ConfigUnreadable,
+    /// Nothing missing: consent and configuration agree.
+    Ready,
+}
+
+/// What np's config is short of.
+///
+/// An absent file is `ProviderMissing` — there is nothing to read, and np's defaults are a readable state. A file that
+/// exists and will not parse is `ConfigUnreadable`, which used to answer `ProviderMissing` as well; that conflation
+/// told someone with a half-edited `config.toml` that three lines were missing from it, when the one true sentence was
+/// that nobody could read the file. np says so itself, in those words, and Jott must not contradict it.
+///
+/// `quoted_model` is unused here on purpose: whether the *artifact* is present is `models.list`'s question, and
+/// asking a TOML file it cannot answer is how a consent prompt ends up promising a download somebody already has.
+pub fn settings_gap(np_config: Option<&Path>, _quoted_model: Option<&str>) -> SettingsGap {
+    let Some(path) = np_config else { return SettingsGap::ProviderMissing };
+    if consent_file_is_unreadable(path) {
+        return SettingsGap::ConfigUnreadable;
+    }
+    let Ok(Some(document)) = load(path) else { return SettingsGap::ProviderMissing };
+    let provider = document.get("embeddings").and_then(|e| e.get("provider")).and_then(|v| v.as_str());
+    match provider {
+        None => SettingsGap::ProviderMissing,
+        Some("local-model") if embedding_model_named(path).is_some() => SettingsGap::Ready,
+        Some("local-model") => SettingsGap::ModelMissing,
+        Some(other) => SettingsGap::ProviderOther { provider: other.to_string() },
+    }
+}
+
+/// The lines that would close a gap, in the order they belong in the file.
+///
+/// Empty for `ProviderOther` and `Ready`: Jott does not tell someone to overwrite a provider they chose, and it has
+/// no business writing np's config itself while np#7 is open — these lines are for a person to paste deliberately.
+pub fn gap_lines(gap: &SettingsGap, quoted_model: Option<&str>) -> Vec<String> {
+    // A fresh np names no model in its config and still has a built-in pin, so "no id quoted" gets that id rather
+    // than a placeholder nobody can paste into a file.
+    let model = quoted_model.unwrap_or_else(|| builtin_default_model().id);
+    match gap {
+        SettingsGap::ProviderMissing => vec![
+            "[embeddings]".to_string(),
+            "provider = \"local-model\"".to_string(),
+            format!("model = \"{model}\""),
+        ],
+        // The section and the provider already exist; repeating them would either break the file or "fix" something
+        // that is not wrong.
+        SettingsGap::ModelMissing => vec![format!("model = \"{model}\"")],
+        // Nothing to paste: not over a deliberate choice, not once the settings agree, and not into a file that does
+        // not parse — those lines would land somewhere np has already refused to read.
+        SettingsGap::ProviderOther { .. } | SettingsGap::Ready | SettingsGap::ConfigUnreadable => Vec::new(),
+    }
+}
+
 pub fn set_auto_fetch(path: &Path, allow: bool) -> Result<(), ConsentError> {
     let existed = path.exists();
     let mut document = match load(path)? {

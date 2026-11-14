@@ -9,8 +9,8 @@ use common::repo_root;
 use jott_core::diagnostics::{TraceEvent, TraceKind};
 use jott_core::ingest::consent::auto_fetch_allowed;
 use jott_core::ingest::queue::{IngestEvent, StateReason};
-use jott_core::ipc::{self, ConnectionState, ErrorKind, HitDto, NoteContent, RenameOutcome, SearchResults, VaultListing, WriteResult};
-use jott_core::np::outcomes::ScanReport;
+use jott_core::ipc::{self, ConnectionState, ConsentHelp, ErrorKind, HitDto, NoteContent, RenameOutcome, SearchResults, VaultListing, WriteResult};
+use jott_core::np::outcomes::{EmbedReport, ScanReport};
 use jott_core::np::resolve::{NpMissing, NpSource, Os};
 use jott_core::np::{NpFeatures, NpInfo};
 use jott_core::vault::walk::EntryKind;
@@ -427,8 +427,11 @@ async fn what_the_window_receives_is_named_exactly_as_ipc_ts_says() {
     assert_eq!(keys, vec!["diskHash", "diskMtimeMs", "hash", "mirrored", "rel", "text"]);
 
     // The status line's events, which `src/lib/statusLine.ts` pattern-matches on.
-    let working = IngestEvent::Working { phase: "embedding".into(), done: 3, total: Some(7) };
-    assert_eq!(serde_json::to_value(working).expect("working"), json!({ "working": { "phase": "embedding", "done": 3, "total": 7 } }));
+    let working = IngestEvent::Working { phase: "embedding".into(), done: 3, total: Some(7), member_index: None, member_count: None };
+    assert_eq!(
+        serde_json::to_value(working).expect("working"),
+        json!({ "working": { "phase": "embedding", "done": 3, "total": 7, "memberIndex": null, "memberCount": null } })
+    );
 
     let behind = IngestEvent::Behind { reason: StateReason::Locked { waited_ms: 5000 }, retry_in_ms: 5000 };
     assert_eq!(serde_json::to_value(behind).expect("behind"), json!({ "behind": { "reason": { "locked": { "waitedMs": 5000 } }, "retryInMs": 5000 } }));
@@ -1393,4 +1396,130 @@ async fn the_window_is_told_what_ran_and_whether_there_was_an_index() {
 
     session.close().await;
     drop(dir);
+}
+
+/// The card that replaces the tester's mystery sentence (`keyword-only: embeddings.provider is not set`) gets its
+/// facts from core: which gap np's config shows, the lines that would close it, and what np's file says about
+/// `auto_fetch` today. Note what is *not* here — a claim that Jott wrote that key. Presence in someone's config
+/// proves only that it is there, and §4 does not let us take credit for a line we cannot trace.
+#[tokio::test]
+async fn the_card_names_the_provider_line_and_quotes_np_s_config_back() {
+    let harness = Harness::new();
+    let np_config = harness.data.path().join("config.toml");
+    std::fs::write(&np_config, "[models]\nauto_fetch = true\n").unwrap();
+
+    // The card reads a TOML file and never asks np, so PATH must not be allowed to answer for it: on this box that
+    // is a real 0.4.0 binary, and any future assertion here would start it by accident.
+    let (_sentinel, info) = ipc::np_absent();
+    let session = VaultSession::open_in(
+        common::unreachable_np(),
+        info,
+        harness.vault.path(),
+        Consent::Granted,
+        Some(np_config.clone()),
+        harness.data.path().to_path_buf(),
+    );
+
+    let help = session.embeddings_help();
+    assert_eq!(help.gap, "providerMissing");
+    assert_eq!(help.provider, None, "np's config names no provider, so there is nothing to quote");
+    assert_eq!(
+        help.lines_to_add,
+        vec!["[embeddings]", "provider = \"local-model\"", "model = \"embeddinggemma-2\""]
+    );
+    assert_eq!(help.auto_fetch, Some(true), "the card quotes the file rather than assuming");
+    assert_eq!(help.config_path.as_deref(), Some(np_config.as_path()), "and says which file it read");
+
+    session.close().await;
+}
+
+/// A provider somebody chose is not ours to change: no lines, and the provider quoted so the card can say what np
+/// already says. (Separation ruling; note-processor#7 is the ask.)
+#[tokio::test]
+async fn a_provider_of_someones_own_gets_no_lines_from_jott() {
+    let harness = Harness::new();
+    let np_config = harness.data.path().join("config.toml");
+    std::fs::write(&np_config, "[embeddings]\nprovider = \"none\"\nmodel = \"x\"\n").unwrap();
+
+    let (_sentinel, info) = ipc::np_absent();
+    let session = VaultSession::open_in(
+        common::unreachable_np(),
+        info,
+        harness.vault.path(),
+        Consent::Declined,
+        Some(np_config),
+        harness.data.path().to_path_buf(),
+    );
+
+    let help = session.embeddings_help();
+    assert_eq!(help.gap, "providerOther");
+    assert_eq!(help.provider.as_deref(), Some("none"));
+    assert!(help.lines_to_add.is_empty(), "we do not advise overwriting a deliberate choice: {help:?}");
+
+    session.close().await;
+}
+
+#[test]
+fn consent_help_keys_are_pinned() {
+    let help = ConsentHelp {
+        gap: "ready".into(),
+        provider: Some("local-model".into()),
+        model_id: Some("embeddinggemma-2".into()),
+        lines_to_add: vec![],
+        config_path: Some("/home/you/.config/note-processor/config.toml".into()),
+        auto_fetch: Some(true),
+    };
+    assert_eq!(
+        serde_json::to_value(help).expect("serialises"),
+        json!({ "gap": "ready", "provider": "local-model", "modelId": "embeddinggemma-2", "linesToAdd": [],
+                "configPath": "/home/you/.config/note-processor/config.toml", "autoFetch": true })
+    );
+}
+
+/// The state behind note-processor's own sentence *"config parse error in …"*: the file exists and cannot be read.
+/// `auto_fetch` then has no answer at all — reporting `false` would be Jott stating what someone's file says when the
+/// only true sentence is that nobody can read it (§4), and the guardrail's own doc says unreadable must not become "no"
+/// on the wire.
+#[tokio::test]
+async fn an_unreadable_np_config_is_reported_as_unreadable() {
+    let harness = Harness::new();
+    let np_config = harness.data.path().join("config.toml");
+    std::fs::write(&np_config, "[models\nauto_fetch = true\n").unwrap();
+
+    let (_sentinel, info) = ipc::np_absent();
+    let session = VaultSession::open_in(
+        common::unreachable_np(),
+        info,
+        harness.vault.path(),
+        Consent::Granted,
+        Some(np_config),
+        harness.data.path().to_path_buf(),
+    );
+
+    let help = session.embeddings_help();
+    assert_eq!(help.gap, "configUnreadable");
+    assert_eq!(help.auto_fetch, None, "a file that will not parse says nothing about auto_fetch");
+    assert!(help.lines_to_add.is_empty(), "no paste advice for a file np cannot read: {:?}", help.lines_to_add);
+
+    session.close().await;
+}
+
+/// The banner quotes `fetched`, so its wire keys are pinned like every other serialised shape: this is the payload
+/// that turns "np downloaded a model" into bytes on screen, and a rename on one side reads as `NaN MiB`.
+#[test]
+fn an_embed_report_that_fetched_a_model_pins_its_wire_keys() {
+    let report: EmbedReport = serde_json::from_str(
+        r#"{"model":"embeddinggemma-2","chunks_seen":4,"current":4,"embedded":4,"refused_budget":0,"busy_gap":0,
+            "errors":0,"images_seen":0,"images_embedded":0,"images_refused":0,"images_pruned":0,"images_unchecked":0,
+            "images_sweep_ran":false,"image_refusals":[],"verification":"self-consistent, not verified","offline":false,
+            "fetched":{"id":"embeddinggemma-2","members":[{"name":"main","bytes":309855456,"digest-verified":true}],
+                       "origin":"compiled-in-pin"}}"#,
+    )
+    .expect("np's own embed document");
+
+    let value = serde_json::to_value(IngestEvent::Embedded(report)).expect("serialises");
+    assert_eq!(
+        value["embedded"]["fetched"],
+        json!({ "id": "embeddinggemma-2", "bytesTotal": 309_855_456 })
+    );
 }

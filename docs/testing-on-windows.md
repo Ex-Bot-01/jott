@@ -55,7 +55,7 @@ sentence reads oddly, say so.
    to `●` (*indexed · awaiting embedding*) and the sidebar line should disappear — that is the index half, and
    it needs no model and no download. Then the question comes:
 
-   > semantic search needs a model (embeddinggemma-2, about 295 MiB) downloaded into
+   > semantic search needs a model (embeddinggemma-2, about 296 MiB) downloaded into
    > `C:\Users\you\AppData\Roaming\note-processor\models`. Allow?
 
    **Allow the download** fetches it and writes the vectors; markers end at `·` (*embedded*) and search starts
@@ -156,6 +156,36 @@ Four things to check, all of them about what the window claims:
 If you set `NP_PATH` at an np you built months ago, Jott now refuses it and names the asset to download instead.
 Unset the variable to get the copy in the installer; that is the normal case.
 
+## 2b-iv. Since 0.0.14: consent you can see, and a download that moves
+
+Five things, all of them about parts that used to be invisible:
+
+- **"Allow the download" now ends in something you can act on.** If note-processor still cannot embed — no embedding
+  engine turned on, an engine with no model named, or a `config.toml` that will not parse — the window shows a card
+  instead of the old `keyword-only: embeddings.provider is not set`. It says what your click recorded, quotes
+  note-processor's own sentence word for word, and lists the exact lines its settings file is missing as text you can
+  copy. A file that does not parse gets that sentence and nothing else: no advice about which lines to add, because
+  Jott cannot read the file to know where they would go.
+- **Jott writes one key, and says which.** Your answer goes into `models.auto_fetch` in note-processor's `config.toml`
+  and nowhere else. Jott does not pick your embedding engine or model, because there is no way to ask it to over the
+  protocol — that gap is [note-processor#7](https://github.com/Ex-Bot-01/note-processor/issues/7). Until you answer,
+  that key says `false`: a fresh np would otherwise fetch a ~300 MB model by itself, and that is not a decision to
+  make on somebody's behalf.
+- **A download has a bar.** While a model arrives, the line at the bottom counts np's own bytes and adds
+  *model part 1 of 2* when np fetches more than one file. When np does not announce a total you get movement without a
+  percentage — never a bar parked at zero.
+- **"Model ready" is an announcement, not a rumour.** When a model finishes, the window keeps a line saying so and
+  that search matches meanings as well as words now; if the window is in the background and you allow notifications,
+  you get one OS line too. It appears only when np reports it fetched something — an ordinary embed run says nothing.
+- **Diagnostics → Show log file opens Explorer with `jott.jsonl` selected.** It used to be "Open log folder", which
+  the shell is not allowed to do, so its failure path handed you a small box of copied text instead. If the file
+  manager ever refuses again, the line names the path and offers to copy it.
+
+Search still matches whole words: typing *grand* will not find *grandma*. That is note-processor's index working as
+designed, and the request for prefix matching is
+[#6](https://github.com/Ex-Bot-01/note-processor/issues/6) — Jott deliberately does not bolt its own text search in
+front of np's results.
+
 ## 2c. Since 0.0.11: press **Ctrl+Shift+D** when something is odd
 
 A drawer opens at the bottom of the window with what this run has actually been doing:
@@ -168,7 +198,7 @@ A drawer opens at the bottom of the window with what this run has actually been 
   open *during* a long wait, not described to me afterwards;
 - whether anything is queued, whether np has your folder locked, when Jott will retry;
 - how many notes are indexed and embedded, and whether any folder could not be read;
-- where the log file is, how big it is, and buttons to copy all of it or open the folder.
+- where the log file is, how big it is, and buttons to copy all of it or show the file in the file manager.
 
 **Press it while something is happening.** A save that has sat at "saving…" for a minute, or an *Index now* that
 has not moved any dots. The drawer shows this run's history either way, but seeing the request arrive and then not

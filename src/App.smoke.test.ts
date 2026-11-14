@@ -22,6 +22,7 @@ Range.prototype.getBoundingClientRect = () => emptyRect
  * window means when it isn't a missing file.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import type { IngestEvent } from './lib/ipc'
 
 /** Which backend this window believes it is talking to. */
 type Scene = 'empty' | 'vault' | 'indexed' | 'needs-embedding'
@@ -42,6 +43,26 @@ const searchSays: { indexed: boolean | null } = { indexed: null }
 const slowSearch = vi.hoisted(() => ({ on: false }))
 /** A second folder in the registry's recents, for the test about reopening it. */
 const extraRecent = vi.hoisted(() => ({ current: null as string | null }))
+/** Whether note-processor's settings name an engine and a model. False is the state behind the consent card:
+    consent was given, and nothing was fetched. */
+const incompleteSettings = vi.hoisted(() => ({ current: false }))
+/** Every path the window asked the file manager to reveal, in order. */
+const revealed = vi.hoisted(() => ({ current: [] as string[] }))
+/** External links the window asked the browser to open. */
+const opened = vi.hoisted(() => ({ current: [] as string[] }))
+/** The OS notifier: what permission the window was told it had, and what it actually sent. */
+const notified = vi.hoisted(() => ({
+  /** What the OS already said. `not-determined` is what a first run looks like. */
+  permission: 'granted' as 'granted' | 'denied' | 'not-determined',
+  /** What a prompt would answer if the window asked — and, after it asks, what it now believes. */
+  answer: 'granted' as 'granted' | 'denied',
+  asked: 0,
+  sent: [] as { title: string; body: string }[],
+}))
+/** Whether the window believes it has focus — the other half of "should I notify?". */
+const focused = vi.hoisted(() => ({ current: true }))
+/** Whether the journal opened a file this run. False is what a broken state folder looks like. */
+const noLog = vi.hoisted(() => ({ current: false }))
 /** The window's event listeners, so a test can be the backend: fire `ingest://event` and watch what the tree
  *  does about it. */
 const handlers = vi.hoisted(() => new Map<string, (payload: unknown) => void>())
@@ -139,6 +160,21 @@ vi.mock('@tauri-apps/api/core', () => ({
         // reject into the void, and Vitest reads one unhandled rejection as a failed run even when every assertion
         // passed — so every command the window can legitimately send gets a stub, not just the ones a test waits on.
         return Promise.resolve()
+      case 'embeddings_help':
+        // What np's settings actually say. `incompleteSettings` is the state behind a tester's report: consent was
+        // given, and np still has no embedding engine turned on.
+        return Promise.resolve(
+          incompleteSettings.current
+            ? {
+                gap: 'providerMissing' as const,
+                provider: null,
+                modelId: null,
+                autoFetch: true,
+                configPath: 'C:\\Users\\chris\\AppData\\Roaming\\note-processor\\config.toml',
+                linesToAdd: ['[embeddings]', 'provider = "local-model"', 'model = "embeddinggemma-2"'],
+              }
+            : { gap: 'ready' as const, provider: 'local-model', modelId: 'embeddinggemma-2', autoFetch: true, configPath: null, linesToAdd: [] },
+        )
       case 'embeddings_offer':
         // What core says about setting semantic search up. `null` means "nothing to offer", which is the arm
         // every other scenario takes: a vault with no notes waiting, or bytes already on disk.
@@ -157,7 +193,9 @@ vi.mock('@tauri-apps/api/core', () => ({
             writer: 'up',
             reader: 'idle',
             dataDir: 'C:\\Users\\chris\\AppData\\Roaming\\note-processor',
-            logPath: 'C:\\Users\\chris\\AppData\\Roaming\\jott\\logs\\jott.jsonl',
+            logPath: noLog.current
+              ? null
+              : 'C:\\Users\\chris\\AppData\\Roaming\\jott\\logs\\jott.jsonl',
             logBytes: 4096,
             consent: 'undecided',
             autoFetch: false,
@@ -194,6 +232,35 @@ vi.mock('@tauri-apps/api/core', () => ({
   },
 }))
 
+vi.mock('@tauri-apps/plugin-opener', () => ({
+  // The window may open links externally and reveal one file in the folder it lives in — that is the whole surface
+  // the capability set grants, and a call outside it fails at runtime rather than here.
+  openUrl: (url: string) => {
+    opened.current.push(url)
+    return Promise.resolve()
+  },
+  revealItemInDir: (path: string) => {
+    revealed.current.push(path)
+    return Promise.resolve()
+  },
+}))
+
+vi.mock('@tauri-apps/plugin-notification', () => ({
+  isPermissionGranted: () => Promise.resolve(notified.permission === 'granted'),
+  requestPermission: () => {
+    notified.asked += 1
+    notified.permission = notified.answer
+    return Promise.resolve(notified.answer)
+  },
+  sendNotification: (note: { title: string; body: string }) => {
+    notified.sent.push(note)
+  },
+}))
+
+vi.mock('@tauri-apps/api/window', () => ({
+  getCurrentWindow: () => ({ isFocused: () => Promise.resolve(focused.current) }),
+}))
+
 vi.mock('@tauri-apps/api/event', () => ({
   listen: async (event: string, handler: (envelope: { payload: unknown }) => void) => {
     handlers.set(event, (payload) => handler({ payload }))
@@ -206,6 +273,55 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({
 }))
 
 /** Run the app's real entry point against a fresh document, and say what it printed. */
+/** Both reports as core actually sends them — every field. Partial literals used to stand in here, which meant a
+    renamed wire field could be "fixed" by renaming it in the test and nothing downstream would notice. */
+const scanReport = {
+  added: 1,
+  modified: 0,
+  moved: 0,
+  removed: 0,
+  unchanged: 0,
+  skipped: [],
+  notes: 1,
+  unresolved_links: 0,
+  unresolved_targets: [],
+  index_files: ['INDEX.md'],
+  elapsed_ms: 40,
+  upgrade_orphans: null,
+  merged_notes: null,
+  recorded_upgrade_orphans: null,
+  recorded_merged_notes: null,
+  unindexable: null,
+}
+
+const embedReport = {
+  model: 'embeddinggemma-2',
+  chunks_seen: 12,
+  current: 12,
+  embedded: 12,
+  refused_budget: 0,
+  busy_gap: 0,
+  errors: 0,
+  images_seen: 0,
+  images_embedded: 0,
+  images_refused: 0,
+  images_pruned: 0,
+  images_unchecked: 0,
+  images_sweep_ran: false,
+  image_refusals: [],
+  verification: 'self-consistent, not verified',
+  offline: false,
+  fetched: null,
+}
+
+/** Fire an ingest event the way core does. Typed on purpose: a partial literal here used to be legal, which meant a
+    renamed or dropped field on the wire could be renamed in the tests and nothing would notice (§18.5). */
+function ingest(event: IngestEvent) {
+  const fire = handlers.get('ingest://event')
+  expect(fire, 'the window never subscribed to ingest events').toBeDefined()
+  fire!(event)
+}
+
 async function start(): Promise<{ errors: unknown[] }> {
   document.body.innerHTML = '<div id="app"></div><div id="boot"><p>Jott is starting…</p></div>'
   const errors: unknown[] = []
@@ -224,6 +340,16 @@ describe('the window mounts', () => {
   beforeEach(() => {
     commands.length = 0
     scenario.current = 'empty'
+    incompleteSettings.current = false
+    confirmed.current = false
+    revealed.current = []
+    opened.current = []
+    noLog.current = false
+    notified.permission = 'granted'
+    notified.answer = 'granted'
+    notified.asked = 0
+    notified.sent = []
+    focused.current = true
     handlers.clear()
   })
 
@@ -250,7 +376,7 @@ describe('the window mounts', () => {
     expect(document.body.textContent ?? '').toContain('not indexed yet')
 
     scenario.current = 'indexed'
-    handlers.get('ingest://event')!({ indexed: { elapsed_ms: 412 } })
+    ingest({ indexed: { ...scanReport, elapsed_ms: 412 } })
 
     await vi.waitFor(() => expect(document.body.textContent ?? '').not.toContain('not indexed yet'))
     expect(document.querySelector('[title="embedded"]'), 'the marker should say embedded by now').not.toBeNull()
@@ -319,9 +445,9 @@ describe('the window mounts', () => {
     await start()
     const before = commands.filter((c) => c === 'list_vault').length
 
-    handlers.get('ingest://event')!({ indexed: { elapsed_ms: 40 } })
-    handlers.get('ingest://event')!({ working: { phase: 'embedding', done: 1, total: 3 } })
-    handlers.get('ingest://event')!({ embedded: { elapsed_ms: 900 } })
+    ingest({ indexed: { ...scanReport } })
+    ingest({ working: { phase: 'embedding', done: 1, total: 3, memberIndex: null, memberCount: null } })
+    ingest({ embedded: { ...embedReport } })
 
     await vi.waitFor(() => expect(commands.filter((c) => c === 'list_vault').length).toBeGreaterThan(before))
     expect(commands.filter((c) => c === 'list_vault').length).toBe(before + 1)
@@ -529,7 +655,6 @@ describe('the window mounts', () => {
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true }))
     await vi.waitFor(() => expect(document.body.textContent ?? '').toContain('to the trash?'))
   })
-})
 
   it('takes np’s word over its own guess about the index', async () => {
     // note-processor#5, fixed in 0.4.0: `indexed` settles which kind of empty list this is. The fixture's tree has a
@@ -564,3 +689,245 @@ describe('the window mounts', () => {
     await vi.waitFor(() => expect(document.querySelector('.hit-path')).not.toBeNull(), { timeout: 2000 })
     expect(document.querySelector('.results')!.textContent).toContain('words only')
   })
+
+  it('explains a consent answer note-processor could not act on', async () => {
+    // The report this answers: "Allow the download" pressed, then one line — `keyword-only: embeddings.provider is
+    // not set` — that read as if the answer had been refused.
+    incompleteSettings.current = true
+    scenario.current = 'vault'
+    await start()
+
+    ingest({ disabled: { key: 'embeddings.provider', modelId: null, hint: null } })
+    const card = await vi.waitFor(() => {
+      const el = document.querySelector('[data-testid="consent-card"]')
+      expect(el, 'a settings gap after consent gets an explanation, not a state token').not.toBeNull()
+      return el as HTMLElement
+    }, { timeout: 2000 })
+
+    expect(card.textContent).toContain('models.auto_fetch = true')
+    expect(card.textContent).toContain('provider = "local-model"')
+    expect(card.textContent).toContain('Copy these settings')
+
+    // "Try again" runs the pass again — the settings may have been edited in another window by then.
+    commands.length = 0
+    ;(card.querySelector('[data-testid="consent-retry"]') as HTMLButtonElement).click()
+    await vi.waitFor(() => expect(commands).toContain('ingest_all'), { timeout: 2000 })
+  })
+
+  it('shows the card for a refusal alone', async () => {
+    // Measured against np 0.4.0: an engine named with no model is answered with a *fault*
+    // (`-32000 … needs embeddings.model to name an installed model`), which reaches the window as `refused`, not
+    // `disabled`. Reading the settings only on `disabled` left this state with the same one opaque sentence 0.0.13
+    // showed — one of the two states the release notes promise a card for.
+    const sentence = 'configuration error: config io: embeddings.provider = "local-model" needs embeddings.model to name an installed model; none is set'
+    incompleteSettings.current = true
+    scenario.current = 'vault'
+    await start()
+
+    ingest({ refused: { message: sentence } })
+
+    const card = await vi.waitFor(() => {
+      const el = document.querySelector('[data-testid="consent-card"]')
+      expect(el, 'np said embedding cannot run; that is enough to read its settings').not.toBeNull()
+      return el as HTMLElement
+    }, { timeout: 2000 })
+    expect(card.textContent).toContain(sentence)
+    expect(card.textContent).toContain('model = "embeddinggemma-2"')
+  })
+
+  it('quotes note-processor’s own refusal on the card, unchanged', async () => {
+    // The odd quoting is the point: this is np's sentence, so the window shows np's sentence.
+    const sentence = 'configuration error: config io: embeddings.provider = "local-model" needs embeddings.model to name an installed model; none is set'
+    incompleteSettings.current = true
+    scenario.current = 'vault'
+    await start()
+
+    ingest({ refused: { message: sentence } })
+    ingest({ disabled: { key: 'embeddings.model', modelId: null, hint: null } })
+
+    const card = await vi.waitFor(() => {
+      const el = document.querySelector('[data-testid="consent-card"]')
+      expect(el).not.toBeNull()
+      return el as HTMLElement
+    }, { timeout: 2000 })
+    expect(card.textContent).toContain(sentence)
+  })
+
+  it('keeps quiet when note-processor is ready to embed', async () => {
+    scenario.current = 'vault'
+    await start()
+
+    ingest({ disabled: { key: 'embeddings.model', modelId: null, hint: null } })
+    await new Promise((resolve) => setTimeout(resolve, 120))
+    // Ready to embed is not a story worth telling: no card, no lecture about settings nobody asked about.
+    expect(document.querySelector('[data-testid="consent-card"]')).toBeNull()
+  })
+
+  it('announces a model that arrived, and only when one did', async () => {
+    scenario.current = 'vault'
+    await start()
+
+    // An ordinary embed run downloaded nothing, so there is nothing to announce (§18.12: no invented facts).
+    ingest({ embedded: { ...embedReport } })
+    await new Promise((resolve) => setTimeout(resolve, 120))
+    expect(document.querySelector('[data-testid="model-ready"]')).toBeNull()
+
+    ingest({ embedded: { ...embedReport, fetched: { id: 'embeddinggemma-2', bytesTotal: 309_855_456 } } })
+    const banner = await vi.waitFor(() => {
+      const el = document.querySelector('[data-testid="model-ready"]')
+      expect(el, 'a finished download is worth a line that stays').not.toBeNull()
+      return el as HTMLElement
+    }, { timeout: 2000 })
+    expect(banner.textContent).toContain('model ready')
+    expect(banner.textContent).toContain('embeddinggemma-2')
+
+    // It outlives the status line's next change, and goes when the person moves on to another note.
+    ingest({ working: { phase: 'indexing', done: 0, total: null, memberIndex: null, memberCount: null } })
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    expect(document.querySelector('[data-testid="model-ready"]')).not.toBeNull()
+
+    ingest({ embedded: { ...embedReport } })
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    expect(document.querySelector('[data-testid="model-ready"]'), 'the next pass supersedes the announcement').toBeNull()
+  })
+
+  const readyReport = { ...embedReport, chunks_seen: 1, current: 1, embedded: 1, fetched: { id: 'embeddinggemma-2', bytesTotal: 309_855_456 } }
+
+  it('asks once and then uses the answer', async () => {
+    scenario.current = 'vault'
+    focused.current = false
+    notified.permission = 'not-determined'
+    notified.answer = 'granted'
+    await start()
+
+    ingest({ embedded: { ...readyReport } })
+    await vi.waitFor(() => expect(notified.sent.length).toBe(1), { timeout: 2000 })
+    // The prompt is not re-asked for the next model: the answer is on record.
+    ingest({ embedded: { ...readyReport } })
+    await new Promise((resolve) => setTimeout(resolve, 120))
+    expect(notified.asked).toBe(1)
+    expect(notified.sent.length).toBe(2)
+  })
+
+  it('keeps the taskbar out of it while the window is focused', async () => {
+    scenario.current = 'vault'
+    focused.current = true
+    await start()
+    ingest({ embedded: { ...readyReport } })
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="model-ready"]')).not.toBeNull(), { timeout: 2000 })
+    await new Promise((resolve) => setTimeout(resolve, 80))
+    // The banner is the announcement when they are looking at it; a second copy is noise.
+    expect(notified.sent).toEqual([])
+  })
+
+  it('says so in the taskbar when nobody is looking', async () => {
+    scenario.current = 'vault'
+    focused.current = false
+    await start()
+    ingest({ embedded: { ...readyReport } })
+    await vi.waitFor(() => expect(notified.sent.length).toBe(1), { timeout: 2000 })
+    expect(notified.sent[0].body).toContain('embeddinggemma-2')
+    // No permission question when the OS already answered one.
+    expect(notified.asked).toBe(0)
+  })
+
+  it('asks once about notifications, and takes a no for an answer', async () => {
+    scenario.current = 'vault'
+    focused.current = false
+    notified.permission = 'not-determined'
+    notified.answer = 'denied'
+    await start()
+
+    ingest({ embedded: { ...readyReport } })
+    await vi.waitFor(() => expect(notified.asked).toBe(1), { timeout: 2000 })
+    expect(notified.sent, 'a question is not permission').toEqual([])
+
+    // The next finished model must not ask the same question again.
+    ingest({ embedded: { ...readyReport } })
+    await new Promise((resolve) => setTimeout(resolve, 120))
+    expect(notified.asked, 'a refusal is not a question to repeat').toBe(1)
+    expect(notified.sent).toEqual([])
+  })
+
+  it('forgets the announcement when the folder changes', async () => {
+    // "model ready · meanings on now" is a fact about the folder whose notes were embedded. Carried into the next
+    // folder it becomes a claim about a folder where nothing was fetched.
+    scenario.current = 'vault'
+    extraRecent.current = 'D:\\other'
+    await start()
+
+    ingest({ embedded: { ...readyReport } })
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="model-ready"]')).not.toBeNull(), { timeout: 2000 })
+
+    const menu = document.querySelector('select.recents') as HTMLSelectElement
+    menu.value = 'D:\\other'
+    menu.dispatchEvent(new Event('change', { bubbles: true }))
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="model-ready"]')).toBeNull(), { timeout: 2000 })
+    extraRecent.current = null
+  })
+
+  it('draws a download bar out of np’s bytes', async () => {
+    // The bar exists to answer "is anything happening?" during a several-minute download. It is drawn from np's own
+    // counters — and when np does not announce a total, the window shows movement without pretending to know how far.
+    scenario.current = 'vault'
+    await start()
+
+    ingest({ working: { phase: 'fetching', done: 155 * 1024 * 1024, total: 310 * 1024 * 1024, memberIndex: 1, memberCount: 2 } })
+    const bar = await vi.waitFor(() => {
+      const found = document.querySelector('footer.status progress')
+      expect(found, 'a fetch with a known size gets a determinate bar').not.toBeNull()
+      return found as HTMLProgressElement
+    }, { timeout: 2000 })
+    expect(Number(bar.getAttribute('max'))).toBe(310 * 1024 * 1024)
+    expect(Number(bar.value)).toBe(155 * 1024 * 1024)
+    await vi.waitFor(() => expect(document.querySelector('footer.status .text')!.textContent).toContain('model part 1 of 2'))
+
+    ingest({ working: { phase: 'fetching', done: 1024, total: null, memberIndex: null, memberCount: null } })
+    await vi.waitFor(() => {
+      // Unknown size is movement without a number, never a bar parked at zero.
+      expect(document.querySelector('footer.status progress')).toBeNull()
+      expect(document.querySelector('footer.status [role="progressbar"]')).not.toBeNull()
+    }, { timeout: 2000 })
+
+    // And no counters at all means no bar: `indexing` arrives with nothing measurable (§18.12).
+    ingest({ working: { phase: 'indexing', done: 0, total: null, memberIndex: null, memberCount: null } })
+    await vi.waitFor(() => {
+      expect(document.querySelector('footer.status progress')).toBeNull()
+      expect(document.querySelector('footer.status [role="progressbar"]')).toBeNull()
+    }, { timeout: 2000 })
+  })
+  it('reveals the log file itself, not a box of text', async () => {
+    // The report: "Open log folder" opened a small window full of copied diagnostics text. It was `openPath` being
+    // refused by the capability set, and the failure fallback showing what had been copied for "Copy details".
+    scenario.current = 'vault'
+    await start()
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'd', ctrlKey: true, shiftKey: true, bubbles: true }))
+    await vi.waitFor(() => expect(document.body.textContent ?? '').toContain('What Jott is doing'))
+
+    const button = document.querySelector('[data-testid="show-log"]') as HTMLButtonElement
+    expect(button, 'the drawer offers one way to the log').not.toBeNull()
+    expect(button.textContent).toContain('Show log file')
+    expect(button.disabled).toBe(false)
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+
+    // The file, named in full, so Explorer opens with it selected rather than loose in a folder of stamps.
+    await vi.waitFor(() =>
+      expect(revealed.current).toEqual(['C:\\Users\\chris\\AppData\\Roaming\\jott\\logs\\jott.jsonl']),
+    )
+  })
+
+  it('will not offer to reveal a log that was never opened', async () => {
+    scenario.current = 'vault'
+    noLog.current = true
+    await start()
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'd', ctrlKey: true, shiftKey: true, bubbles: true }))
+    await vi.waitFor(() => expect(document.body.textContent ?? '').toContain('What Jott is doing'))
+
+    const button = document.querySelector('[data-testid="show-log"]') as HTMLButtonElement
+    expect(button.disabled, 'nothing to reveal means a disabled button, not a reveal of nothing').toBe(true)
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    expect(revealed.current).toEqual([])
+  })
+
+})

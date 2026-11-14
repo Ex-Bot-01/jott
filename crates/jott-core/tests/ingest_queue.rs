@@ -184,7 +184,7 @@ async fn np_counter_lines_reach_the_status_line_as_they_came() {
     let events = collect(&mut rx, Duration::from_millis(900)).await;
 
     assert!(
-        events.contains(&IngestEvent::Working { phase: "embedding".into(), done: 3, total: Some(7) }),
+        events.contains(&IngestEvent::Working { phase: "embedding".into(), done: 3, total: Some(7), member_index: None, member_count: None }),
         "\"embedding 3/7 chunks\" (§11) is np's numbers, passed through: {events:?}"
     );
 }
@@ -204,7 +204,7 @@ async fn a_phase_without_counters_is_not_reported_as_zero_percent() {
     let events = collect(&mut rx, Duration::from_millis(900)).await;
 
     assert!(
-        events.contains(&IngestEvent::Working { phase: "indexing".into(), done: 0, total: None }),
+        events.contains(&IngestEvent::Working { phase: "indexing".into(), done: 0, total: None, member_index: None, member_count: None }),
         "no counters means \"unknown\", and `total: None` is what the status line renders as a label alone (§18.12): {events:?}"
     );
 }
@@ -1056,4 +1056,65 @@ async fn a_committed_index_brings_the_retry_wait_back_down() {
     let after = collect(&mut rx, Duration::from_millis(1_500)).await;
     let (_, wait) = behind(&after).unwrap_or_else(|| panic!("the third scan is locked again: {after:?}"));
     assert_eq!(wait, backoff_ms(0), "a committed index resets the ladder, so this is rung one again");
+}
+
+/// A model can arrive in more than one file — the vision build is `main` plus an `mmproj`, and np says so with
+/// `members_done`/`members_total`. Someone watching 865 MB crawl by deserves to know it has two parts and which one
+/// is moving; someone watching a single-file model does not need "part 1 of 1".
+#[tokio::test]
+async fn a_multi_member_fetch_says_which_part_is_arriving() {
+    let _turn = SERIAL.lock().await;
+    let h = Harness::new(json!({
+        "replies": {"scan": fixture_result(2), "embed": embed_current()},
+        "progress_counters": {"embed": [{
+            "phase": "fetching", "bytes_done": 1_048_576, "bytes_total": 864_676_512,
+            "member": "main", "members_done": 0, "members_total": 2
+        }]}
+    }))
+    .await;
+    let queue = h.queue();
+    let mut rx = queue.events();
+
+    queue.note_saved("notes/a.md");
+    let events = collect(&mut rx, Duration::from_millis(900)).await;
+
+    let seen = events.iter().find_map(|event| match event {
+        IngestEvent::Working { phase, done, total, member_index, member_count } if phase == "fetching" => {
+            Some((*done, *total, *member_index, *member_count))
+        }
+        _ => None,
+    });
+    assert_eq!(
+        seen,
+        Some((1_048_576, Some(864_676_512), Some(1), Some(2))),
+        "np's `members_done: 0` of 2 is part 1 of 2, and the byte counters stay np's own: {events:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_single_member_fetch_says_nothing_about_parts() {
+    let _turn = SERIAL.lock().await;
+    // Measured against 0.4.0: the built-in text model sends `members_done`/`members_total` with one member, and an
+    // older np sends neither key. Both must leave the event without part wording rather than invent 1-of-1.
+    for counters in [
+        json!({"phase": "fetching", "bytes_done": 1_048_576, "bytes_total": 309_855_456, "member": "main", "members_done": 0, "members_total": 1}),
+        json!({"phase": "fetching", "bytes_done": 1_048_576, "bytes_total": 309_855_456}),
+    ] {
+        let h = Harness::new(json!({
+            "replies": {"scan": fixture_result(2), "embed": embed_current()},
+            "progress_counters": {"embed": [counters]}
+        }))
+        .await;
+        let queue = h.queue();
+        let mut rx = queue.events();
+
+        queue.note_saved("notes/a.md");
+        let events = collect(&mut rx, Duration::from_millis(900)).await;
+
+        let seen = events.iter().find_map(|event| match event {
+            IngestEvent::Working { phase, member_index, member_count, .. } if phase == "fetching" => Some((*member_index, *member_count)),
+            _ => None,
+        });
+        assert_eq!(seen, Some((None, None)), "one file is not a sequence: {events:?}");
+    }
 }

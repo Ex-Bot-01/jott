@@ -3,7 +3,16 @@
 // a refusal shows np's message with nothing added. A formatter you can test is the only way to keep that
 // promise once the window grows.
 
-import type { IngestEvent } from './ipc'
+import type { FetchedRecord, IngestEvent } from './ipc'
+
+/** What a bar should show. `total: null` means np did not announce a size — which the component draws as an
+unquantified moving stripe, never as a bar parked at zero (§18.12). */
+export interface Progress {
+  done: number
+  total: number | null
+  memberIndex: number | null
+  memberCount: number | null
+}
 
 export interface Status {
   text: string
@@ -11,21 +20,33 @@ export interface Status {
   tone: 'neutral' | 'busy' | 'warn'
   /** The affordance to offer beside the text. `[embed]` is always there in the component itself. */
   action?: 'consent'
+  /** Present only for a phase np sent real counters with. No counters, no bar: see `progressFor`. */
+  progress?: Progress
 }
 
 const MIB = 1024 * 1024
 
 export function statusFor(event: IngestEvent): Status | null {
   if ('working' in event) {
-    const { phase, done, total } = event.working
+    const { phase, done, total, memberIndex, memberCount } = event.working
     if (phase === 'embedding' || phase === 'writing') {
       // np's chunk counters (§11's `embedding 3/7 chunks`). No total means np did not know yet, and a
       // bar at zero would be a measurement nobody made (§18.12).
-      return { text: total === null ? `${phase}…` : `${phase} ${done}/${total} chunks`, tone: 'busy' }
+      return total === null
+        ? { text: `${phase}…`, tone: 'busy' }
+        : { text: `${phase} ${done}/${total} chunks`, tone: 'busy', progress: { done, total, memberIndex, memberCount } }
     }
     if (phase === 'fetching') {
       const soFar = `${mebibytes(done)} MiB`
-      return { text: total === null ? `fetching ${soFar}` : `fetching ${soFar} / ${mebibytes(total)} MiB`, tone: 'busy' }
+      // A model can arrive in pieces — the vision build is `main` plus an `mmproj`. np says which one is moving, and
+      // a person watching 865 MB crawl wants to know it has two parts. One part gets no such wording: Task 3 withholds
+      // `1 of 1` on purpose, so there is nothing to say.
+      const part = memberIndex !== null && memberCount !== null ? ` · model part ${memberIndex} of ${memberCount}` : ''
+      return {
+        text: (total === null ? `fetching ${soFar}` : `fetching ${soFar} / ${mebibytes(total)} MiB`) + part,
+        tone: 'busy',
+        progress: { done, total, memberIndex, memberCount },
+      }
     }
     // `locking`, `indexing`, `resolving`, `completed`: np sends no counters with these, so the phase is
     // the whole truth.
@@ -90,4 +111,18 @@ export function consentSentence(offer: { modelId?: string | null; bytes?: number
   // is explicit that a number in the app's own strings has to be a number somebody measured.
   const size = offer.bytes === null || offer.bytes === undefined ? '' : `, about ${mebibytes(offer.bytes)} MiB`
   return `semantic search needs a model (${model}${size}) downloaded into ${offer.dataDir}. Allow?`
+}
+
+/** The line for a download that finished — built from np's own record of fetching it.
+ *
+ * A size appears only when np totalled one: a banner promising 295 MiB for a model whose second file announced no
+ * size would be the kind of sentence this project has already been burned by (§4). "Keyword and meaning search both
+ * on now" is what a fetched model changes, and it is worth saying out loud because the alternative — silently
+ * different search behaviour after a download nobody watched — is how people stop trusting a status line.
+ */
+export function modelReadySentence(fetched: FetchedRecord): string {
+  // `typeof`, not `!== null`: a payload that omits the key entirely (an older core, a renamed field) reads as
+  // `undefined`, and `undefined` through `mebibytes` is "NaN MiB" on a banner about a finished download.
+  const size = typeof fetched.bytesTotal === 'number' ? [`${mebibytes(fetched.bytesTotal)} MiB`] : []
+  return ['model ready', fetched.id, ...size, 'keyword and meaning search both on now'].join(' · ')
 }

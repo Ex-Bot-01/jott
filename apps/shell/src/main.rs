@@ -8,6 +8,9 @@ use tauri::Manager;
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        // Only for one line: a model finished downloading while the window was not focused. The window's
+        // own banner says the same thing, so a refusal or an absent notifier changes nothing (§4).
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
         // Restores size/position and saves them on exit, in its own state file. Kept out of the registry:
         // this is window decoration, not a fact about somebody notes.
@@ -31,6 +34,7 @@ fn main() {
             ipc::ingest_all,
             ipc::set_consent,
             ipc::embeddings_offer,
+            ipc::embeddings_help,
             ipc::diagnostics,
             ipc::flush_on_close
         ])
