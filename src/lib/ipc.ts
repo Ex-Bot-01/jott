@@ -105,6 +105,14 @@ export type IngestEvent =
 
 export type StateReason = 'offline' | { locked: { waitedMs: number } }
 
+/** np's own record of a model it downloaded: which one, how big in total (only when every member announced a
+    size), and whether every member's digest matched. The banner quotes these numbers rather than Jott's pin. */
+export interface FetchedRecord {
+  id: string
+  bytesTotal: number | null
+  digestVerified: boolean | null
+}
+
 export interface ScanReport {
   added: number
   modified: number
@@ -141,7 +149,10 @@ export interface EmbedReport {
   image_refusals: { path: string; class: string }[]
   verification: string
   offline: boolean
+  /** The model this run downloaded, when it downloaded one. `null` is the ordinary case. */
+  fetched: FetchedRecord | null
 }
+
 
 /** What the shell emits when np cannot be found or is too old, with np's install instructions attached. */
 export interface NpMissingPayload {

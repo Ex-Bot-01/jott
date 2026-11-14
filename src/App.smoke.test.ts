@@ -564,3 +564,34 @@ describe('the window mounts', () => {
     await vi.waitFor(() => expect(document.querySelector('.hit-path')).not.toBeNull(), { timeout: 2000 })
     expect(document.querySelector('.results')!.textContent).toContain('words only')
   })
+
+  it('draws a download bar out of np’s bytes', async () => {
+    // The bar exists to answer "is anything happening?" during a several-minute download. It is drawn from np's own
+    // counters — and when np does not announce a total, the window shows movement without pretending to know how far.
+    scenario.current = 'vault'
+    await start()
+
+    handlers.get('ingest://event')!({ working: { phase: 'fetching', done: 155 * 1024 * 1024, total: 310 * 1024 * 1024, memberIndex: 1, memberCount: 2 } })
+    const bar = await vi.waitFor(() => {
+      const found = document.querySelector('footer.status progress')
+      expect(found, 'a fetch with a known size gets a determinate bar').not.toBeNull()
+      return found as HTMLProgressElement
+    }, { timeout: 2000 })
+    expect(Number(bar.getAttribute('max'))).toBe(310 * 1024 * 1024)
+    expect(Number(bar.value)).toBe(155 * 1024 * 1024)
+    await vi.waitFor(() => expect(document.querySelector('footer.status .text')!.textContent).toContain('model part 1 of 2'))
+
+    handlers.get('ingest://event')!({ working: { phase: 'fetching', done: 1024, total: null, memberIndex: null, memberCount: null } })
+    await vi.waitFor(() => {
+      // Unknown size is movement without a number, never a bar parked at zero.
+      expect(document.querySelector('footer.status progress')).toBeNull()
+      expect(document.querySelector('footer.status [role="progressbar"]')).not.toBeNull()
+    }, { timeout: 2000 })
+
+    // And no counters at all means no bar: `indexing` arrives with nothing measurable (§18.12).
+    handlers.get('ingest://event')!({ working: { phase: 'indexing', done: 0, total: null, memberIndex: null, memberCount: null } })
+    await vi.waitFor(() => {
+      expect(document.querySelector('footer.status progress')).toBeNull()
+      expect(document.querySelector('footer.status [role="progressbar"]')).toBeNull()
+    }, { timeout: 2000 })
+  })

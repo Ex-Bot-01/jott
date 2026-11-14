@@ -24,6 +24,20 @@
     {#if status}{status.text}{:else}idle{/if}
   </span>
 
+  {#if status?.progress}
+    <!-- A bar only ever drawn from np's own counters. No total means np did not know the size, which is drawn as
+         movement without a number — a `0%` bar reads as a stalled download and would be a lie either way (§18.12). -->
+    {#if status.progress.total !== null}
+      <progress
+        class="bar"
+        value={status.progress.done}
+        max={status.progress.total}
+        aria-label={status.text}></progress>
+    {:else}
+      <div class="bar indeterminate" role="progressbar" aria-label={status.text}></div>
+    {/if}
+  {/if}
+
   {#if status?.action === 'consent' && consent}
     <span class="buttons">
       <button type="button" onclick={() => onconsent(true)}>Allow the download</button>
@@ -61,6 +75,33 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  /* Slim, in the current colour, and never wider than the sentence beside it. */
+  .bar {
+    width: 7rem;
+    height: 3px;
+    accent-color: currentColor;
+    flex: 0 0 auto;
+  }
+  .indeterminate {
+    /* No number to show, so show movement: a stripe that travels the track. */
+    background: repeating-linear-gradient(90deg, currentColor 0 25%, transparent 25% 50%) 0 0 / 200% 100%;
+    border: none;
+    animation: slide 1.4s linear infinite;
+  }
+  @keyframes slide {
+    from {
+      background-position: 0 0;
+    }
+    to {
+      background-position: -200% 0;
+    }
+  }
+  /* Nobody should have a stripe running circles around them while they read. The bytes keep arriving either way. */
+  @media (prefers-reduced-motion: reduce) {
+    .indeterminate {
+      animation: none;
+    }
   }
   .buttons,
   button {

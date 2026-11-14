@@ -501,3 +501,65 @@ async fn an_np_that_prices_nothing_leaves_the_price_unnamed() {
     assert_eq!(listing.only_price(), None, "and there is no single entry to guess from");
     client.shutdown().await.unwrap();
 }
+
+/// np says what it fetched, in its own record: which model, which members, how many bytes each, and whether the
+/// digest matched. That is the only honest source for "model ready · 295 MiB" on a banner — Jott must not add up a
+/// download it did not watch. Two member shapes matter: every member naming a size totals up; one without a size has
+/// no total at all, because half a promise is worse than none.
+#[tokio::test]
+async fn an_embed_reports_the_model_it_fetched_and_what_that_cost() {
+    let mut report = fixture_result(4);
+    report["outcome"] = json!("current");
+    // Measured against np 0.4.0's embed document, verbatim in shape:
+    report["fetched"] = json!({"id": "embeddinggemma-2",
+                               "members": [{"bytes": 309_855_456, "digest-verified": true, "name": "main"}],
+                               "origin": "compiled-in-pin"});
+    let (_d, client) = spawn(json!({"replies": {"embed": report}})).await;
+
+    let EmbedOutcome::Applied(done) = embed(&client, &vault()).await.unwrap() else {
+        panic!("outcome `current` is work finished");
+    };
+    assert_eq!(
+        done.fetched,
+        Some(jott_core::np::outcomes::FetchedRecord {
+            id: "embeddinggemma-2".into(),
+            bytes_total: Some(309_855_456),
+            digest_verified: Some(true),
+        }),
+        "the banner quotes np's numbers, not ours",
+    );
+}
+
+#[tokio::test]
+async fn a_fetch_that_named_no_sizes_totals_to_nothing() {
+    let mut report = fixture_result(4);
+    report["outcome"] = json!("current");
+    // One member announces no size (np omits the key rather than guessing), and both carry np's digest verdict.
+    report["fetched"] = json!({"id": "some-model",
+                               "members": [{"name": "main", "digest-verified": true},
+                                           {"bytes": 1_024, "name": "mmproj", "digest-verified": true}],
+                               "origin": "compiled-in-pin"});
+    let (_d, client) = spawn(json!({"replies": {"embed": report}})).await;
+
+    let EmbedOutcome::Applied(done) = embed(&client, &vault()).await.unwrap() else {
+        panic!("outcome `current` is work finished");
+    };
+    let fetched = done.fetched.expect("np said it fetched something");
+    assert_eq!(fetched.id, "some-model");
+    assert_eq!(fetched.bytes_total, None, "one member without a size means the total is unknown, not 1 KiB");
+    assert_eq!(fetched.digest_verified, Some(true), "both members verified it, which is a separate fact from size");
+}
+
+#[tokio::test]
+async fn an_embed_that_fetched_nothing_says_so_by_being_null() {
+    // The fixture's own document carries `"fetched": null` — the ordinary case, and the one that must not become an
+    // empty record the window could read as "downloaded 0 bytes".
+    let mut report = fixture_result(4);
+    report["outcome"] = json!("current");
+    let (_d, client) = spawn(json!({"replies": {"embed": report}})).await;
+
+    let EmbedOutcome::Applied(done) = embed(&client, &vault()).await.unwrap() else {
+        panic!("outcome `current` is work finished");
+    };
+    assert_eq!(done.fetched, None);
+}
