@@ -472,7 +472,9 @@ async fn answering_consent_records_the_key_and_where_it_went() {
     assert!(detail.contains("config.toml"), "and which file it goes to: {detail}");
 
     let raw = std::fs::read_to_string(app_data.path().join("logs").join("jott.jsonl")).expect("log file");
-    for forbidden in ["kumquat", "# A"] {
+    // "kumquat" and "# A" are the note's own words; the model id is the other thing this line must not carry — a
+    // settings decision is auditable from the key and the file, and the plan asked for exactly this guard.
+    for forbidden in ["kumquat", "# A", "embeddinggemma"] {
         assert!(!raw.contains(forbidden), "note text reached the log: {forbidden}");
     }
 

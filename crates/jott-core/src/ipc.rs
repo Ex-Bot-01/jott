@@ -823,6 +823,7 @@ impl VaultSession {
                 SettingsGap::ProviderMissing => "providerMissing",
                 SettingsGap::ModelMissing => "modelMissing",
                 SettingsGap::ProviderOther { .. } => "providerOther",
+                SettingsGap::ConfigUnreadable => "configUnreadable",
                 SettingsGap::Ready => "ready",
             }
             .to_string(),
@@ -830,7 +831,12 @@ impl VaultSession {
             lines_to_add: gap_lines(&gap, quoted.as_deref()),
             model_id,
             config_path: self.np_config.clone(),
-            auto_fetch: path.filter(|path| path.exists()).map(crate::ingest::consent::auto_fetch_allowed),
+            // `false` here would be a statement about someone's file. A file that will not parse makes no statement at
+            // all, so the wire says nothing (`null`) and the card says it cannot read the file — which is also what
+            // np itself answers, in its own words, with a line number.
+            auto_fetch: path
+                .filter(|path| path.exists() && !crate::ingest::consent::consent_file_is_unreadable(path))
+                .map(crate::ingest::consent::auto_fetch_allowed),
         }
     }
 
@@ -1087,7 +1093,8 @@ pub struct RegistryInfo {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ConsentHelp {
-    /// `"providerMissing" | "modelMissing" | "providerOther" | "ready"` — `SettingsGap` spelled for the wire.
+    /// `"providerMissing" | "modelMissing" | "providerOther" | "configUnreadable" | "ready"` — `SettingsGap`
+    /// spelled for the wire, and pinned word for word against the TypeScript union by `src/lib/ipc.test.ts`.
     pub gap: String,
     /// The provider np's config names today, quoted as written. A setting name, never note content.
     pub provider: Option<String>,

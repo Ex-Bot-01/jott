@@ -184,8 +184,11 @@ pub struct EmbedReport {
     pub fetched: Option<FetchedRecord>,
 }
 
-/// np's own record of a fetch: which model arrived, how big it was in total, and whether every member's digest
-/// matched what np expected.
+/// np's own record of a fetch: which model arrived, and how big it was in total.
+///
+/// np also reports `digest-verified` per member and an `origin`; both stay unparsed. Nothing on screen can use them —
+/// the banner says which model and how many bytes — and a field nobody reads is a field nobody checks (the same rule
+/// that keeps `artifact_check` and `workers` out of `EmbedReport`).
 ///
 /// `bytes_total` is the sum of the members' sizes **only when every member names one**. A model whose second file has
 /// no announced size has an unknown total, and a banner that promises "412 MiB" for an 865 MB download is worse than
@@ -195,8 +198,6 @@ pub struct EmbedReport {
 pub struct FetchedRecord {
     pub id: String,
     pub bytes_total: Option<u64>,
-    /// `None` when np's document named no member at all — not the same answer as "members, unverified".
-    pub digest_verified: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -210,8 +211,6 @@ struct RawFetched {
 struct RawMember {
     #[serde(default)]
     bytes: Option<u64>,
-    #[serde(rename = "digest-verified", default)]
-    digest_verified: Option<bool>,
 }
 
 fn fetched_record<'de, D>(d: D) -> Result<Option<FetchedRecord>, D::Error>
@@ -229,8 +228,6 @@ where
             id: fetched.id,
             // An empty member list is "np told us nothing about size", not "zero bytes".
             bytes_total: if fetched.members.is_empty() { None } else { bytes_total },
-            digest_verified: (!fetched.members.is_empty())
-                .then(|| fetched.members.iter().all(|member| member.digest_verified == Some(true))),
         }
     }))
 }

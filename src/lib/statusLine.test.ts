@@ -133,7 +133,7 @@ describe('a model arriving', () => {
 
 describe('the sentence for a finished download', () => {
   it('quotes the model and the bytes np fetched', () => {
-    expect(modelReadySentence({ id: 'embeddinggemma-2', bytesTotal: 309_855_456, digestVerified: true })).toBe(
+    expect(modelReadySentence({ id: 'embeddinggemma-2', bytesTotal: 309_855_456 })).toBe(
       // 309,855,456 bytes is 295.5 MiB, and the window rounds the same way the download line does — one helper, so
       // the bar and the banner cannot disagree about the same download.
       'model ready · embeddinggemma-2 · 296 MiB · keyword and meaning search both on now',
@@ -141,8 +141,15 @@ describe('the sentence for a finished download', () => {
   })
 
   it('omits a size np did not total up', () => {
-    expect(modelReadySentence({ id: 'some-model', bytesTotal: null, digestVerified: null })).toBe(
+    expect(modelReadySentence({ id: 'some-model', bytesTotal: null })).toBe(
       'model ready · some-model · keyword and meaning search both on now',
     )
   })
 })
+
+  it('leaves the size off when the payload does not carry one', () => {
+    // Not the same as `bytesTotal: null`. A missing key means we do not know the shape of what arrived, and "NaN MiB"
+    // is the kind of number this project has already promised never to put on screen.
+    const noKey = { id: 'some-model' } as unknown as Parameters<typeof modelReadySentence>[0]
+    expect(modelReadySentence(noKey)).toBe('model ready · some-model · keyword and meaning search both on now')
+  })

@@ -55,7 +55,7 @@ sentence reads oddly, say so.
    to `●` (*indexed · awaiting embedding*) and the sidebar line should disappear — that is the index half, and
    it needs no model and no download. Then the question comes:
 
-   > semantic search needs a model (embeddinggemma-2, about 295 MiB) downloaded into
+   > semantic search needs a model (embeddinggemma-2, about 296 MiB) downloaded into
    > `C:\Users\you\AppData\Roaming\note-processor\models`. Allow?
 
    **Allow the download** fetches it and writes the vectors; markers end at `·` (*embedded*) and search starts
@@ -161,9 +161,11 @@ Unset the variable to get the copy in the installer; that is the normal case.
 Five things, all of them about parts that used to be invisible:
 
 - **"Allow the download" now ends in something you can act on.** If note-processor still cannot embed — no embedding
-  engine turned on, or an engine with no model named — the window shows a card instead of the old
-  `keyword-only: embeddings.provider is not set`. It says what your click recorded, quotes note-processor's refusal
-  word for word, and lists the exact lines its settings file is missing as text you can copy.
+  engine turned on, an engine with no model named, or a `config.toml` that will not parse — the window shows a card
+  instead of the old `keyword-only: embeddings.provider is not set`. It says what your click recorded, quotes
+  note-processor's own sentence word for word, and lists the exact lines its settings file is missing as text you can
+  copy. A file that does not parse gets that sentence and nothing else: no advice about which lines to add, because
+  Jott cannot read the file to know where they would go.
 - **Jott writes one key, and says which.** Your answer goes into `models.auto_fetch` in note-processor's `config.toml`
   and nowhere else. Jott does not pick your embedding engine or model, because there is no way to ask it to over the
   protocol — that gap is [note-processor#7](https://github.com/Ex-Bot-01/note-processor/issues/7). Until you answer,

@@ -70,3 +70,27 @@ describe('the card after a consent answer', () => {
     expect(cardClipboard(facts)).not.toContain(FILE)
   })
 })
+
+  it('says the file could not be read, and nothing else', () => {
+    // Measured against np 0.4.0: a half-edited config answers `config parse error in …/config.toml: TOML parse
+    // error at line 1, column 12 …`. The card must not add a claim about what that file says, or lines to paste
+    // into it.
+    const npSentence =
+      'configuration error: config io: config parse error in /home/you/.config/note-processor/config.toml: TOML parse error at line 1, column 12'
+    const facts = { help: help({ gap: 'configUnreadable', autoFetch: null, linesToAdd: [] }), refusal: npSentence }
+    const sentences = cardSentences(facts)
+    expect(sentences).toContain(npSentence)
+    const text = sentences.join(' ')
+    expect(text).toContain('could not be read')
+    expect(text).not.toContain('models.auto_fetch = false')
+    expect(text).not.toContain('auto_fetch = true')
+    expect(text).not.toMatch(/lines? (are|is) missing/)
+  })
+
+  it('does not point at a button the card does not have', () => {
+    // The guardrail sentence used to end "Say the word above to allow one." — while this branch of the window shows
+    // Copy / Try again / the issue link, and suppresses the offer that would actually allow it.
+    const text = cardSentences({ help: help({ autoFetch: false }), refusal: null }).join(' ')
+    expect(text).toContain('models.auto_fetch = false')
+    expect(text).not.toContain('Say the word above')
+  })

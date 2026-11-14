@@ -81,10 +81,16 @@ describe('the consent card payload', () => {
     expect(interfaceKeys(ipcTs, 'ConsentHelp').sort()).toEqual(rustFields(ipcRust, 'ConsentHelp').sort())
   })
 
-  it('names all four gaps Rust can report', () => {
+  it('names every gap Rust can report, on both sides of the wire', () => {
+    // Both halves used to be checked against themselves: this file asserted that ipc.ts mentions the words, and
+    // `ipc_surface.rs` asserted that Rust produces them. Renaming one side's spelling passed both suites and sent
+    // an unknown gap to a card that then gave advice about a provider somebody chose on purpose.
     const block = ipcTs.slice(ipcTs.indexOf('export interface ConsentHelp'), ipcTs.indexOf('}', ipcTs.indexOf('export interface ConsentHelp')))
-    for (const gap of ['providerMissing', 'modelMissing', 'providerOther', 'ready']) {
-      expect(block, `gap ${gap} is missing from the union`).toContain(`'${gap}'`)
+    for (const gap of ['providerMissing', 'modelMissing', 'providerOther', 'configUnreadable', 'ready']) {
+      expect(block, `gap ${gap} is missing from the TypeScript union`).toContain(`'${gap}'`)
+      // `=> "word"`, not `"word"`: the enum mapping is the contract, and a doc comment that still spells the old word
+      // must not be allowed to satisfy a pin on its own.
+      expect(ipcRust, `core no longer answers "${gap}" — rename both sides or neither`).toContain(`=> "${gap}"`)
     }
   })
 })

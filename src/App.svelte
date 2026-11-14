@@ -67,6 +67,8 @@
       next pass supersedes it or the person moves on to another note. */
   let modelReady = $state<FetchedRecord | null>(null)
   let cardClipFailed = $state(false)
+  /** Somebody answered "don't notify". Held for the run: a refusal is not a question to repeat. */
+  let notifyRefused = $state(false)
   let showAbout = $state(false)
   let aboutLoading = $state(false)
 
@@ -115,10 +117,23 @@
   /** The folders the registry remembers, minus the one already open: a recent that is current is noise. */
   const recents = $derived((registry?.recent ?? []).filter((folder) => folder !== listing?.vault))
 
+  /** Adopt a freshly listed folder, and drop everything that was only ever true of the previous one.
+   *
+   *  "model ready", the consent card's facts and np's last refusal are statements about *this* folder's index.
+   *  Carried across they let the window describe yesterday's download as a property of the folder someone just
+   *  opened — which is the same class of claim this release exists to stop making. */
+  function adopt(next: VaultListing) {
+    listing = next
+    modelReady = null
+    consentHelp = null
+    lastRefusal = null
+    cardClipFailed = false
+  }
+
   async function openRecent(folder: string) {
     if (!folder) return
     const next = await call(() => ipc.openVault(folder))
-    if (next) listing = next
+    if (next) adopt(next)
   }
 
   function basename(path: string): string {
@@ -170,7 +185,7 @@
   async function openVault(path: string) {
     const next = await call(() => ipc.openVault(path))
     if (next) {
-      listing = next
+      adopt(next)
       openFolders = new Set()
       selected = null
       note = null
@@ -205,10 +220,14 @@
    * without the plugin) leaves the banner as the announcement, which was always the primary one (§4).
    */
   async function announceModelReady(fetched: FetchedRecord) {
+    if (notifyRefused) return
     try {
       let permission: Permission = (await isPermissionGranted()) ? 'granted' : 'not-determined'
       if (permission === 'not-determined') {
         permission = (await requestPermission()) === 'granted' ? 'granted' : 'denied'
+        // Remembered, because the second ask would be the same question with a worse answer: somebody who said no to
+        // notifications should not be asked again by every model that finishes downloading.
+        if (permission === 'denied') notifyRefused = true
       }
       if (!shouldNotify(await getCurrentWindow().isFocused(), permission)) return
       sendNotification({ title: 'Jott', body: notifyBody(fetched.id) })
@@ -365,7 +384,7 @@
     // `null` is a cancelled dialog, not a failure: whatever was on screen stays as it was.
     const next = await call(ipc.pickVault)
     if (!next) return
-    listing = next
+    adopt(next)
     openFolders = new Set()
     selected = null
     note = null
@@ -531,14 +550,22 @@
     if (last) {
       // A vault that has gone missing is not worth a shout at startup; the empty state asks instead.
       const reopened = await ipc.openVault(last).catch(() => null)
-      if (reopened) listing = reopened
+      if (reopened) adopt(reopened)
     } else {
       await refresh()
     }
 
     void ipc.onIngestEvent((event) => {
       if ('needsConsent' in event) consent = event.needsConsent
-      if ('refused' in event) lastRefusal = event.refused.message
+      // Either answer can mean "embedding cannot run": np answers a configuration it dislikes with
+      // `configuration-disabled`, and one it cannot parse or complete with a fault that arrives here as `refused`
+      // (measured against 0.4.0 for a provider named without a model). Both are worth reading the settings over —
+      // and `cardSentences` answers nothing when the settings are fine, so an unrelated refusal in a healthy folder
+      // still raises no card.
+      if ('refused' in event) {
+        lastRefusal = event.refused.message
+        void readConsentHelp()
+      }
       if ('disabled' in event) void readConsentHelp()
       if ('embedded' in event) {
         const fetched = event.embedded.fetched

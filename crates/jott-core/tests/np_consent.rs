@@ -276,3 +276,29 @@ fn provider_and_model_together_leave_nothing_to_say() {
     assert_eq!(settings_gap(Some(&path), Some("embeddinggemma-2")), SettingsGap::Ready);
     assert!(gap_lines(&SettingsGap::Ready, Some("embeddinggemma-2")).is_empty());
 }
+
+/// A half-edited `config.toml` is the state a person gets into by editing it themselves — and np answers it with a
+/// parse error naming the file and the line (measured against 0.4.0: *"config parse error in …/config.toml: TOML
+/// parse error at line 1, column 12 … unclosed table, expected `]`"*). Jott must not answer that state with a claim
+/// about what the file says.
+#[test]
+fn an_unparsable_config_says_the_file_is_unreadable_and_offers_no_lines() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    std::fs::write(&path, "[embeddings\nprovider = \"local-model\n").unwrap();
+
+    assert_eq!(settings_gap(Some(&path), Some("embeddinggemma-2")), SettingsGap::ConfigUnreadable);
+    assert!(
+        gap_lines(&SettingsGap::ConfigUnreadable, Some("embeddinggemma-2")).is_empty(),
+        "handing somebody lines to paste into a file that does not parse is advice, not help"
+    );
+}
+
+#[test]
+fn a_missing_file_is_not_the_same_as_an_unreadable_one() {
+    // No file at all means np's defaults answer, which is a readable state: the card should talk about the missing
+    // provider, not about a file that isn't there.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    assert_eq!(settings_gap(Some(&path), None), SettingsGap::ProviderMissing);
+}

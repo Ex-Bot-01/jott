@@ -121,6 +121,8 @@ export function consentSentence(offer: { modelId?: string | null; bytes?: number
  * different search behaviour after a download nobody watched — is how people stop trusting a status line.
  */
 export function modelReadySentence(fetched: FetchedRecord): string {
-  const size = fetched.bytesTotal === null ? [] : [`${mebibytes(fetched.bytesTotal)} MiB`]
+  // `typeof`, not `!== null`: a payload that omits the key entirely (an older core, a renamed field) reads as
+  // `undefined`, and `undefined` through `mebibytes` is "NaN MiB" on a banner about a finished download.
+  const size = typeof fetched.bytesTotal === 'number' ? [`${mebibytes(fetched.bytesTotal)} MiB`] : []
   return ['model ready', fetched.id, ...size, 'keyword and meaning search both on now'].join(' · ')
 }

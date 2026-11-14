@@ -23,7 +23,9 @@ function guardrail(autoFetch: boolean | null): string {
     return 'You allowed model downloads. Jott recorded that as models.auto_fetch = true in note-processor’s settings — nothing else, and no note left this machine.'
   }
   if (autoFetch === false) {
-    return 'Model downloads are switched off in note-processor’s settings (models.auto_fetch = false), so nothing has been fetched. Say the word above to allow one.'
+    // No button is offered beside this sentence, so it must not point at one: the card that shows it carries Copy /
+    // Try again and the issue link, and it stands in for the offer that would have allowed a download.
+    return 'Model downloads are switched off in note-processor’s settings (models.auto_fetch = false), so nothing has been fetched.'
   }
   return 'Nobody has answered whether models may be downloaded yet, so Jott keeps models.auto_fetch = false and nothing arrives on its own.'
 }
@@ -39,6 +41,17 @@ export function cardSentences(facts: ConsentFacts): string[] {
     // would be a guess about what someone chose it for; the honest sentence is that this window has no business here.
     return [
       `note-processor’s embedding engine is set to “${help.provider}”. Jott does not know what that means and will not guess about it — search keeps matching whole words meanwhile, and if that setting is not what you chose, note-processor’s own settings are the place to look.`,
+    ]
+  }
+
+  if (help.gap === 'configUnreadable') {
+    // Nothing can be quoted out of a file that will not parse, and lines to paste into it would land somewhere np has
+    // already refused to read. So: np's own sentence first when it sent one, then the plain fact.
+    const where =
+      help.configPath === null ? 'note-processor’s settings file' : `note-processor’s settings file at ${help.configPath}`
+    return [
+      ...(refusal === null ? [] : [refusal]),
+      `${where} could not be read: it is not valid TOML. Until that is fixed, no embedding setting takes effect, whichever way it is set.`,
     ]
   }
 

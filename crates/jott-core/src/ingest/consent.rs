@@ -133,17 +133,28 @@ pub enum SettingsGap {
     /// Someone chose a provider deliberately. Jott has no advice about it: the separation ruling says we ask np for
     /// a method (note-processor#7) instead of editing a decision that is not ours.
     ProviderOther { provider: String },
+    /// The file exists and will not parse — the state a person walks into by editing it themselves, which np answers
+    /// with its own `config parse error in <path>: TOML parse error at line …`. Nothing about this file can be quoted
+    /// back as a setting, so nothing is: no lines to paste, no claim about what `auto_fetch` says.
+    ConfigUnreadable,
     /// Nothing missing: consent and configuration agree.
     Ready,
 }
 
-/// What np's config is short of. An unreadable or unparsable file answers `ProviderMissing`, because that is what np
-/// would do with it too — the card for an unreadable file is Task 2's to phrase, not this function's to invent.
+/// What np's config is short of.
+///
+/// An absent file is `ProviderMissing` — there is nothing to read, and np's defaults are a readable state. A file that
+/// exists and will not parse is `ConfigUnreadable`, which used to answer `ProviderMissing` as well; that conflation
+/// told someone with a half-edited `config.toml` that three lines were missing from it, when the one true sentence was
+/// that nobody could read the file. np says so itself, in those words, and Jott must not contradict it.
 ///
 /// `quoted_model` is unused here on purpose: whether the *artifact* is present is `models.list`'s question, and
 /// asking a TOML file it cannot answer is how a consent prompt ends up promising a download somebody already has.
 pub fn settings_gap(np_config: Option<&Path>, _quoted_model: Option<&str>) -> SettingsGap {
     let Some(path) = np_config else { return SettingsGap::ProviderMissing };
+    if consent_file_is_unreadable(path) {
+        return SettingsGap::ConfigUnreadable;
+    }
     let Ok(Some(document)) = load(path) else { return SettingsGap::ProviderMissing };
     let provider = document.get("embeddings").and_then(|e| e.get("provider")).and_then(|v| v.as_str());
     match provider {
@@ -171,7 +182,9 @@ pub fn gap_lines(gap: &SettingsGap, quoted_model: Option<&str>) -> Vec<String> {
         // The section and the provider already exist; repeating them would either break the file or "fix" something
         // that is not wrong.
         SettingsGap::ModelMissing => vec![format!("model = \"{model}\"")],
-        SettingsGap::ProviderOther { .. } | SettingsGap::Ready => Vec::new(),
+        // Nothing to paste: not over a deliberate choice, not once the settings agree, and not into a file that does
+        // not parse — those lines would land somewhere np has already refused to read.
+        SettingsGap::ProviderOther { .. } | SettingsGap::Ready | SettingsGap::ConfigUnreadable => Vec::new(),
     }
 }
 

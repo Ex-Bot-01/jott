@@ -105,12 +105,12 @@ export type IngestEvent =
 
 export type StateReason = 'offline' | { locked: { waitedMs: number } }
 
-/** np's own record of a model it downloaded: which one, how big in total (only when every member announced a
-    size), and whether every member's digest matched. The banner quotes these numbers rather than Jott's pin. */
+/** np's own record of a model it downloaded: which one, and how big in total — `null` when any member announced no
+    size, because half a total is not a total. What np also reports (per-member digests, origin) stays unread: nothing
+    on screen uses it, and a field nobody reads is a field nobody checks. */
 export interface FetchedRecord {
   id: string
   bytesTotal: number | null
-  digestVerified: boolean | null
 }
 
 export interface ScanReport {
@@ -254,7 +254,7 @@ export const embeddingsOffer = () => invoke<ConsentOffer | null>('embeddings_off
     setting is short, the lines that would close it, and what `auto_fetch` says today. Note what is missing —
     there is no field claiming Jott wrote any of it, because presence in someone's file proves only presence. */
 export interface ConsentHelp {
-  gap: 'providerMissing' | 'modelMissing' | 'providerOther' | 'ready'
+  gap: 'providerMissing' | 'modelMissing' | 'providerOther' | 'configUnreadable' | 'ready'
   provider: string | null
   modelId: string | null
   linesToAdd: string[]

@@ -502,10 +502,10 @@ async fn an_np_that_prices_nothing_leaves_the_price_unnamed() {
     client.shutdown().await.unwrap();
 }
 
-/// np says what it fetched, in its own record: which model, which members, how many bytes each, and whether the
-/// digest matched. That is the only honest source for "model ready · 295 MiB" on a banner — Jott must not add up a
-/// download it did not watch. Two member shapes matter: every member naming a size totals up; one without a size has
-/// no total at all, because half a promise is worse than none.
+/// np says what it fetched, in its own record: which model, and how many bytes each of its members was. That is the
+/// only honest source for "model ready · 296 MiB" on a banner — Jott must not add up a download it did not watch. Two
+/// member shapes matter: every member naming a size totals up; one without a size has no total at all, because half a
+/// promise is worse than none.
 #[tokio::test]
 async fn an_embed_reports_the_model_it_fetched_and_what_that_cost() {
     let mut report = fixture_result(4);
@@ -521,11 +521,7 @@ async fn an_embed_reports_the_model_it_fetched_and_what_that_cost() {
     };
     assert_eq!(
         done.fetched,
-        Some(jott_core::np::outcomes::FetchedRecord {
-            id: "embeddinggemma-2".into(),
-            bytes_total: Some(309_855_456),
-            digest_verified: Some(true),
-        }),
+        Some(jott_core::np::outcomes::FetchedRecord { id: "embeddinggemma-2".into(), bytes_total: Some(309_855_456) }),
         "the banner quotes np's numbers, not ours",
     );
 }
@@ -547,7 +543,6 @@ async fn a_fetch_that_named_no_sizes_totals_to_nothing() {
     let fetched = done.fetched.expect("np said it fetched something");
     assert_eq!(fetched.id, "some-model");
     assert_eq!(fetched.bytes_total, None, "one member without a size means the total is unknown, not 1 KiB");
-    assert_eq!(fetched.digest_verified, Some(true), "both members verified it, which is a separate fact from size");
 }
 
 #[tokio::test]

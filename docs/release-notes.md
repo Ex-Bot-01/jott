@@ -10,7 +10,10 @@ that belong to Jott, and files the third where it belongs — which is not in Jo
   `keyword-only: embeddings.provider is not set` — note-processor's shrug, presented as if it were an answer to your
   click. Now, when embedding still cannot run, the window shows a card: what your click recorded, note-processor's own
   refusal quoted word for word, and the exact lines its settings file is missing, as text you can copy. A **Try again**
-  button re-runs the pass once you have edited them.
+  button re-runs the pass once you have edited them. This includes the two states that arrive as an outright error
+  rather than a shrug — an engine named with no model, and a `config.toml` with a stray quote in it. For the second one
+  the card quotes note-processor's parse error and adds nothing: Jott cannot read that file, so it does not claim to
+  know which lines are missing from it.
 - **Jott writes one setting, and says which.** Your answer becomes `models.auto_fetch` in note-processor's
   `config.toml`, that key only. Jott does not choose your embedding engine or model, because nothing over the protocol
   lets it ask — see [#7](https://github.com/Ex-Bot-01/note-processor/issues/7) below. Until you answer, the key reads
@@ -45,17 +48,22 @@ not given permission to own.
 
 ## Not user-visible, but worth knowing
 
-- The card's facts come from core: one command reads np's config and answers which setting is short
-  (`provider missing` / `model missing` / `an engine Jott does not know` / `ready`). The window only puts sentences
-  under it — so the same verdict cannot be worded two ways, and a provider Jott has never heard of gets no advice at
-  all rather than a guess.
+- The card's facts come from core: one command reads np's config and answers which setting is short —
+  `providerMissing`, `modelMissing`, `providerOther`, `configUnreadable` or `ready`. The window only puts sentences
+  under it, so the same verdict cannot be worded two ways, and a provider Jott has never heard of gets no advice at all
+  rather than a guess. Those five words are now pinned on both sides of the wire by one test that reads both files:
+  each half used to be checked against itself, which meant renaming one side's spelling passed every suite and sent an
+  unknown gap to a card that then gave advice about a provider somebody chose deliberately.
+- "Model ready", the card's facts and np's last refusal are dropped when you open a different folder. They are
+  statements about *this* folder's index, and carrying them across let the window describe yesterday's download as a
+  property of the folder you had just opened.
 - Nothing in Jott talks to Ollama, and nothing does now: local inference in note-processor is `local-model`, which is
   statically linked llama.cpp with a pinned model.
 - The front-end test harness had been quietly degrading: tests appended since 0.0.13 landed *outside* their `describe`
   block, so the shared scenario state stopped being reset between them. One new test failed for exactly that reason
   and is what surfaced it.
 
-Tests: **263** Rust, **167** front-end. The CI job prints whether np was on `PATH` (several tests are about np being
+Tests: **267** Rust, **181** front-end. The CI job prints whether np was on `PATH` (several tests are about np being
 absent, and pass for the wrong reason on a machine that has it) and fails if the Rust count drops below its floor.
 
 ## What to look at, if you tested 0.0.13
