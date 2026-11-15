@@ -4,9 +4,11 @@
 //! Everything else in that file is somebody's own configuration, so it has to come back unchanged.
 
 use jott_core::ingest::consent::{
-    auto_fetch_allowed, builtin_default_model, consent_file_is_unreadable, embedding_model_named, gap_lines,
-    np_config_path, settings_gap, set_auto_fetch, SettingsGap,
+    answer_consent, auto_fetch_allowed, builtin_default_model, consent_file_is_unreadable, embedding_model_named,
+    gap_lines, np_config_path, settings_gap, set_auto_fetch, AutoFetch, ConsentError, SettingsGap,
 };
+
+mod common;
 
 /// `NP_PATH`-style env games again: one variable, several threads.
 static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -301,4 +303,195 @@ fn a_missing_file_is_not_the_same_as_an_unreadable_one() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
     assert_eq!(settings_gap(Some(&path), None), SettingsGap::ProviderMissing);
+}
+
+// ---- the answer goes through np (note-processor#7). The rule these tests exist for: a consent click must never
+// leave Jott having written np's provider or model by hand, and a refusal must leave Jott's own key untouched.
+
+fn enable_ok(model: &str) -> serde_json::Value {
+    serde_json::json!({"changed": ["embeddings.provider", "embeddings.model"],
+                       "fetch": {"bytes_total": 309_855_456, "members": ["main"]},
+                       "model": model,
+                       "persisted_to": "/home/you/.config/note-processor/config.toml",
+                       "provider": "local-model"})
+}
+
+#[tokio::test]
+async fn saying_yes_opens_the_door_first_and_writes_only_our_own_key_second() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("config.toml");
+    std::fs::write(&config, "[models]\nauto_fetch = false\n").unwrap();
+    let record = dir.path().join("calls.ndjson");
+    std::fs::write(&record, "").unwrap();
+
+    let (_d, client) = common::spawn(serde_json::json!({
+        "record": record.display().to_string(),
+        "replies": {"embeddings.enable": enable_ok("embeddinggemma-2")}
+    }))
+    .await;
+
+    let receipt = answer_consent(&client, Some(&config), true, "embeddinggemma-2").await;
+
+    assert!(receipt.granted, "this was the yes button");
+    assert!(receipt.np_refused.is_none(), "np said yes: {:?}", receipt.np_refused);
+    assert_eq!(receipt.changed, vec!["embeddings.provider".to_string(), "embeddings.model".to_string()],
+               "the card lists what np changed, in np's order");
+    assert_eq!(receipt.provider.as_deref(), Some("local-model"));
+    assert_eq!(receipt.fetch_bytes, Some(309_855_456), "np's price, quoted");
+    assert_eq!(
+        receipt.persisted_to.as_deref(),
+        Some(std::path::Path::new("/home/you/.config/note-processor/config.toml")),
+        "np names the file it wrote, so the card can name it too"
+    );
+
+    // Jott's own key, and nothing else: np's two keys came from np over the pipe, so the file must show no hand of ours
+    // in `[embeddings]` — which is what §4 of the design is about.
+    let after = std::fs::read_to_string(&config).unwrap();
+    assert!(after.contains("auto_fetch = true"), "{after}");
+    assert!(!after.contains("[embeddings]"), "Jott wrote into `[embeddings]`: {after}");
+    assert!(matches!(receipt.auto_fetch, AutoFetch::Written), "{:?}", receipt.auto_fetch);
+
+    let lines = std::fs::read_to_string(&record).unwrap();
+    assert_eq!(lines.matches("\"embeddings.enable\"").count(), 1, "{lines}");
+    client.shutdown().await.unwrap();
+}
+
+/// A refusal is the interesting case: np said no, so Jott must not have touched anything. Writing `auto_fetch = true`
+/// after a refusal would leave the guardrail off and the door shut — the worst of both, and invisible.
+#[tokio::test]
+async fn a_refusal_leaves_jotts_own_key_alone_and_keeps_np_sentence() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("config.toml");
+    std::fs::write(&config, "[models]\nauto_fetch = false\n").unwrap();
+    let sentence = "config io: no pinned model \"no-such\": this build can name \"embeddinggemma-2\"";
+    let (_d, client) = common::spawn(serde_json::json!({
+        "faults": {"embeddings.enable": {"code": -32000, "message": sentence}}
+    }))
+    .await;
+
+    let receipt = answer_consent(&client, Some(&config), true, "no-such").await;
+
+    assert_eq!(receipt.np_refused.as_deref(), Some(sentence), "np's words, byte for byte");
+    assert!(receipt.changed.is_empty(), "nothing changed, so nothing is claimed: {:?}", receipt.changed);
+    let after = std::fs::read_to_string(&config).unwrap();
+    assert_eq!(after, "[models]\nauto_fetch = false\n", "a refusal must not leave the guardrail off");
+    assert!(matches!(receipt.auto_fetch, AutoFetch::Untouched), "{:?}", receipt.auto_fetch);
+    client.shutdown().await.unwrap();
+}
+
+/// An unparsable config is np's to refuse and np's to explain. Jott never parses it here — that is what
+/// `settings_gap` is for when *showing* — so the file has to come back with the same bytes it went in with, and np's
+/// sentence has to survive intact for the card to quote.
+#[tokio::test]
+async fn a_file_np_cannot_read_is_left_byte_for_byte_as_it_was() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("config.toml");
+    let broken = "[embeddings\nprovider = \"local-model\n";
+    std::fs::write(&config, broken).unwrap();
+    let sentence = "config io: config parse error in /home/you/.config/note-processor/config.toml: \
+        TOML parse error at line 1, column 12";
+    let (_d, client) = common::spawn(serde_json::json!({
+        "faults": {"embeddings.enable": {"code": -32000, "message": sentence}}
+    }))
+    .await;
+
+    let receipt = answer_consent(&client, Some(&config), true, "embeddinggemma-2").await;
+
+    assert_eq!(receipt.np_refused.as_deref(), Some(sentence));
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), broken, "Jott edited a file it was refused at");
+    client.shutdown().await.unwrap();
+}
+
+/// Saying no revokes the provider but keeps the model someone chose, and **always** leaves `auto_fetch = false`
+/// behind — even when np refused to revoke. A decline that left the download guardrail up would be a bug that costs
+/// somebody 296 MiB.
+#[tokio::test]
+async fn saying_no_keeps_the_guardrail_down_even_when_np_refuses_to_revoke() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("config.toml");
+    std::fs::write(&config, "[models]\nauto_fetch = true\n").unwrap();
+    let sentence = "config io: cannot write the config file";
+    let (_d, client) = common::spawn(serde_json::json!({
+        "faults": {"embeddings.disable": {"code": -32000, "message": sentence}}
+    }))
+    .await;
+
+    let receipt = answer_consent(&client, Some(&config), false, "embeddinggemma-2").await;
+
+    assert_eq!(receipt.np_refused.as_deref(), Some(sentence));
+    assert!(matches!(receipt.auto_fetch, AutoFetch::Written), "the guardrail is Jott's own job: {:?}", receipt.auto_fetch);
+    assert!(!auto_fetch_allowed(&config), "np refused, and yet nothing may download");
+    client.shutdown().await.unwrap();
+}
+
+/// A decline np accepted reports np's answer, including the model it kept. `changed` naming one key is the proof that
+/// revoking is not erasing.
+#[tokio::test]
+async fn a_decline_np_accepted_says_which_key_moved_and_which_model_stayed() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("config.toml");
+    std::fs::write(&config, "[models]\nauto_fetch = true\n").unwrap();
+    let (_d, client) = common::spawn(serde_json::json!({
+        "replies": {"embeddings.disable": {"changed": ["embeddings.provider"], "fetch": null,
+                                            "model": "embeddinggemma-2", "provider": "none"}}
+    }))
+    .await;
+
+    let receipt = answer_consent(&client, Some(&config), false, "embeddinggemma-2").await;
+
+    assert!(receipt.np_refused.is_none());
+    assert_eq!(receipt.changed, vec!["embeddings.provider".to_string()]);
+    assert_eq!(receipt.provider.as_deref(), Some("none"));
+    assert_eq!(receipt.model.as_deref(), Some("embeddinggemma-2"), "no is not a deletion");
+    assert_eq!(receipt.fetch_bytes, None);
+    assert!(!auto_fetch_allowed(&config));
+    client.shutdown().await.unwrap();
+}
+
+/// np opened the door and Jott had no file to write its own key into. The receipt has to say "nowhere to write"
+/// rather than claim the guardrail was set — this is the case where an env-only np install leaves `auto_fetch` at its
+/// default of *yes*, so a false "Written" would be exactly the wrong reassurance.
+#[tokio::test]
+async fn with_no_config_path_jott_says_it_wrote_nothing() {
+    let (_d, client) = common::spawn(serde_json::json!({
+        "replies": {"embeddings.enable": enable_ok("embeddinggemma-2")}
+    }))
+    .await;
+
+    let receipt = answer_consent(&client, None, true, "embeddinggemma-2").await;
+    assert!(receipt.np_refused.is_none(), "np itself said yes");
+    assert_eq!(receipt.auto_fetch, AutoFetch::NoConfigPath, "{:?}", receipt.auto_fetch);
+    client.shutdown().await.unwrap();
+}
+
+/// A write that fails is reported as failing, with the sentence naming the file. `Written` here would tell somebody
+/// their guardrail is down when it is still up — and np did say yes, so this is a half-done answer the card has to be
+/// able to show.
+#[tokio::test]
+async fn a_failed_write_of_our_own_key_is_not_reported_as_written() {
+    let dir = tempfile::tempdir().unwrap();
+    // A regular file where the config's parent directory should be: no amount of `auto_fetch` gets written there.
+    std::fs::write(dir.path().join("blocked"), b"not a directory").unwrap();
+    let blocked = dir.path().join("blocked/config.toml");
+    let (_d, client) = common::spawn(serde_json::json!({
+        "replies": {"embeddings.enable": enable_ok("embeddinggemma-2")}
+    }))
+    .await;
+
+    let receipt = answer_consent(&client, Some(&blocked), true, "embeddinggemma-2").await;
+
+    let AutoFetch::Failed { sentence } = &receipt.auto_fetch else {
+        panic!("a write that could not happen is not `Written`: {:?}", receipt.auto_fetch);
+    };
+    assert!(sentence.contains("blocked/config.toml"), "the sentence names the file it failed on: {sentence}");
+    client.shutdown().await.unwrap();
+}
+
+#[test]
+fn a_consent_error_names_the_file_it_failed_on() {
+    // The card quotes these sentences, so they have to name a path rather than say "io error".
+    let err = ConsentError::NotATable { path: "/home/you/.config/note-processor/config.toml".into() };
+    let said = err.to_string();
+    assert!(said.contains("note-processor/config.toml"), "{said}");
+    assert!(said.contains("[models]"), "{said}");
 }

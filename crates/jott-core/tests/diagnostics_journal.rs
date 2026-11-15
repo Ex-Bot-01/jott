@@ -448,6 +448,17 @@ async fn answering_consent_records_the_key_and_where_it_went() {
     std::fs::write(vault.path().join("a.md"), b"# A\n").expect("note");
     let np_config = app_data.path().join("config.toml");
 
+    // Answering consent now talks to np over the pipe, so this test needs a stand-in of its own: `FAKE_NP_SCENARIO`
+    // is process-global and another test in this binary may well have left it pointing at a tempdir that no longer
+    // exists. Inheriting that was a crash with a Python traceback, which is a fair punishment but a poor fixture.
+    let _scenario = scenario(json!({"replies": {"embeddings.enable": {
+        "changed": ["embeddings.provider", "embeddings.model"],
+        "fetch": {"bytes_total": 309_855_456, "members": ["main"]},
+        "model": "embeddinggemma-2",
+        "persisted_to": "/home/you/.config/note-processor/config.toml",
+        "provider": "local-model"
+    }}}));
+
     let journal = Arc::new(Journal::open(app_data.path()));
     let session = VaultSession::open_in(
         fake_np(),
@@ -459,7 +470,7 @@ async fn answering_consent_records_the_key_and_where_it_went() {
     )
     .with_journal(journal.clone());
 
-    session.set_consent(true);
+    session.answer_consent(true).await;
 
     let lines = journal.read_lines().expect("log reads back");
     let consent = lines
@@ -470,6 +481,9 @@ async fn answering_consent_records_the_key_and_where_it_went() {
     assert!(detail.contains("granted"), "what was answered: {detail}");
     assert!(detail.contains("models.auto_fetch"), "which key Jott writes: {detail}");
     assert!(detail.contains("config.toml"), "and which file it goes to: {detail}");
+    // The line now says what *np* moved, not just what Jott did: after note-processor#7 the two are different facts,
+    // and an audit of somebody's machine should show both.
+    assert!(detail.contains("embeddings.provider"), "what np changed itself: {detail}");
 
     let raw = std::fs::read_to_string(app_data.path().join("logs").join("jott.jsonl")).expect("log file");
     // "kumquat" and "# A" are the note's own words; the model id is the other thing this line must not carry — a

@@ -11,6 +11,8 @@
 //! (which does not).
 
 use std::path::{Path, PathBuf};
+use crate::np::client::NpClient;
+use crate::np::methods::{embeddings_disable, embeddings_enable};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -186,6 +188,98 @@ pub fn gap_lines(gap: &SettingsGap, quoted_model: Option<&str>) -> Vec<String> {
         // not parse — those lines would land somewhere np has already refused to read.
         SettingsGap::ProviderOther { .. } | SettingsGap::Ready | SettingsGap::ConfigUnreadable => Vec::new(),
     }
+}
+
+/// What happened to Jott's own key, `models.auto_fetch`. Four states because there are four honest things to say:
+/// it was written, it was deliberately left alone, there is no file to write to, and the write failed. Collapsing
+/// "failed" into "written" would tell somebody their guardrail is down when it is not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AutoFetch {
+    Written,
+    /// Consent was refused, so Jott touched nothing: a guardrail off behind a door that will not open is the worst
+    /// combination available, and it is invisible unless somebody says so.
+    Untouched,
+    NoConfigPath,
+    Failed { sentence: String },
+}
+
+/// The receipt for one consent answer — np's words where np had any, and the truth about Jott's own key.
+///
+/// Nothing here is inferred from what Jott intended: `changed`, `provider`, `model` and `persisted_to` are exactly
+/// what np answered, and `np_refused` carries its fault sentence unchanged so a card can quote it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConsentReceipt {
+    pub granted: bool,
+    /// np's own sentence when it refused to open or close its door. `None` means np did what was asked.
+    pub np_refused: Option<String>,
+    /// Which settings np moved itself, in the order it named them. Empty after an accepted **yes** means it had
+    /// already been done — enabling what is enabled writes no bytes.
+    pub changed: Vec<String>,
+    pub provider: Option<String>,
+    /// The model np kept in mind. A decline keeps naming it: revoking permission to download is not a licence to
+    /// erase which model somebody chose.
+    pub model: Option<String>,
+    /// The file np says it wrote. Absent means np did not say, and the card must speak without naming a path.
+    pub persisted_to: Option<PathBuf>,
+    /// What the fetch would cost, in bytes, from np — not from Jott's compiled-in copy of an old answer.
+    pub fetch_bytes: Option<u64>,
+    pub auto_fetch: AutoFetch,
+}
+
+impl ConsentReceipt {
+    /// The receipt when there was no np to ask at all — the child would not start, or died mid-answer. np's own words
+    /// are unavailable, so this says that plainly instead of inventing a refusal it never heard.
+    pub fn unreachable(granted: bool, sentence: String) -> ConsentReceipt {
+        ConsentReceipt {
+            granted,
+            np_refused: Some(sentence),
+            changed: Vec::new(),
+            provider: None,
+            model: None,
+            persisted_to: None,
+            fetch_bytes: None,
+            auto_fetch: AutoFetch::Untouched,
+        }
+    }
+}
+
+/// Record a consent answer where it belongs: np opens its own door (`embeddings.enable`), np closes it
+/// (`embeddings.disable`), and Jott writes the one key that is actually its business — `[models] auto_fetch`, the
+/// guardrail against an unasked-for download (§11).
+///
+/// The order matters on a **yes**: np first, then our key. `auto_fetch = true` next to a provider that cannot fetch
+/// is a promise nobody can keep, and if np refuses we leave the guardrail exactly where it was. On a **no** the order
+/// flips in effect — our `false` is written even when np refuses to revoke, because the guardrail is the part that
+/// protects the person's bandwidth and it is the one thing Jott may guarantee.
+///
+/// Jott never writes `embeddings.provider` or `embeddings.model`. That was the whole point of note-processor#7.
+pub async fn answer_consent(
+    client: &NpClient,
+    config: Option<&Path>,
+    granted: bool,
+    model_id: &str,
+) -> ConsentReceipt {
+    let door = if granted { embeddings_enable(client, model_id).await } else { embeddings_disable(client).await };
+
+    let (np_refused, changed, provider, model, persisted_to, fetch_bytes) = match door {
+        Ok(answer) => (None, answer.changed, answer.provider, answer.model, answer.persisted_to, answer.fetch_bytes),
+        Err(fault) => (Some(fault.message), Vec::new(), None, None, None, None),
+    };
+
+    // A refused *yes* writes nothing of ours. A *no* writes its guardrail whatever np said.
+    let auto_fetch = if granted && np_refused.is_some() {
+        AutoFetch::Untouched
+    } else {
+        match config {
+            None => AutoFetch::NoConfigPath,
+            Some(path) => match set_auto_fetch(path, granted) {
+                Ok(()) => AutoFetch::Written,
+                Err(why) => AutoFetch::Failed { sentence: why.to_string() },
+            },
+        }
+    };
+
+    ConsentReceipt { granted, np_refused, changed, provider, model, persisted_to, fetch_bytes, auto_fetch }
 }
 
 pub fn set_auto_fetch(path: &Path, allow: bool) -> Result<(), ConsentError> {

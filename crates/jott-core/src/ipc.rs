@@ -840,16 +840,59 @@ impl VaultSession {
         }
     }
 
-    pub fn set_consent(&self, granted: bool) {
-        // The answer is written into np's own config, so the log names the key and the destination. Someone
-        // auditing their machine later should be able to see that a window changed their configuration, and where.
-        let answer = if granted { "granted" } else { "declined" };
-        let detail = match &self.np_config {
-            Some(path) => format!("{answer} · writes models.auto_fetch = {granted} → {}", path.display()),
-            None => format!("{answer} · nothing written: no np config path was found"),
+    /// The consent prompt's two buttons, taken to np over the pipe.
+    ///
+    /// np opens and closes its own door (`embeddings.enable` / `embeddings.disable`, note-processor#7); Jott writes
+    /// the one key that is its own business, `[models] auto_fetch`, and reports what actually happened to it. The
+    /// log line names the keys and the files and never a model id — a settings decision has to be auditable from
+    /// those two facts alone.
+    pub async fn answer_consent(&self, granted: bool) -> crate::ingest::consent::ConsentReceipt {
+        use crate::ingest::consent::{answer_consent as record, AutoFetch, ConsentReceipt};
+        // The same id the card is naming, read the same way, so a person clicking a button about one model cannot
+        // have a different one enabled behind their back.
+        let model = self
+            .embeddings_help()
+            .model_id
+            .unwrap_or_else(|| crate::ingest::consent::builtin_default_model().id.to_string());
+
+        let receipt = match self.pool.writer().await {
+            Ok(client) => record(&client, self.np_config.as_deref(), granted, &model).await,
+            // No child to ask: np's words do not exist, so the receipt says that instead of inventing a refusal.
+            Err(why) => ConsentReceipt::unreachable(granted, why.to_string()),
         };
+
+        let answer = if granted { "granted" } else { "declined" };
+        let mut detail = String::from(answer);
+        if let Some(sentence) = &receipt.np_refused {
+            // np's sentence verbatim. It names the file and often the line, which is the whole value of keeping it.
+            detail.push_str(&format!(" · note-processor refused: {sentence}"));
+            detail.push_str(if granted { " · models.auto_fetch left as it was" } else { " · wrote models.auto_fetch = false anyway" });
+        } else {
+            let moved = if receipt.changed.is_empty() {
+                "nothing (already set)".to_string()
+            } else {
+                receipt.changed.join(", ")
+            };
+            let where_to = receipt
+                .persisted_to
+                .as_deref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "a file note-processor did not name".to_string());
+            detail.push_str(&format!(" · note-processor wrote {moved} → {where_to}"));
+            let key = match &receipt.auto_fetch {
+                AutoFetch::Written => format!("writes models.auto_fetch = {granted}"),
+                AutoFetch::Untouched => "models.auto_fetch left as it was".to_string(),
+                AutoFetch::NoConfigPath => "wrote no models.auto_fetch: no np config path was found".to_string(),
+                AutoFetch::Failed { sentence } => format!("could not write models.auto_fetch: {sentence}"),
+            };
+            detail.push_str(&format!(" · {key}"));
+        }
         self.local(LocalRecord::new("consent").with_detail(detail));
+
+        // The queue's own switch flips last, and flips even when np refused: a person who was told no still
+        // expects the window to stop asking, and the guardrail question is settled by the receipt above.
         self.queue.set_consent(if granted { Consent::Granted } else { Consent::Declined });
+        receipt
     }
 
     /// Closing: finish what is in flight up to the queue's cap, then stop watching. Never waits for a

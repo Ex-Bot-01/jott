@@ -384,9 +384,10 @@ pub fn embeddings_help(app: State<'_, App>) -> Result<ConsentHelp, IpcError> {
 /// The consent prompt's two buttons. The queue writes np's config; the registry remembers the answer for
 /// the next launch (§8, §12).
 #[tauri::command]
-pub fn set_consent(granted: bool, app: State<'_, App>) -> Result<(), IpcError> {
+pub async fn set_consent(granted: bool, app: State<'_, App>) -> Result<(), IpcError> {
     let session = app.current()?;
-    session.set_consent(granted);
+    // The answer goes to np over the pipe; the window re-reads `embeddings_help` afterwards to show what np said.
+    session.answer_consent(granted).await;
     app.store
         .set_consent(session.vault(), if granted { Consent::Granted } else { Consent::Declined })
         .map_err(|e| IpcError::io("", e.to_string()))
