@@ -9,11 +9,15 @@ use common::repo_root;
 use jott_core::diagnostics::{TraceEvent, TraceKind};
 use jott_core::ingest::consent::auto_fetch_allowed;
 use jott_core::ingest::queue::{IngestEvent, StateReason};
-use jott_core::ipc::{self, ConnectionState, ConsentHelp, ErrorKind, HitDto, NoteContent, RenameOutcome, SearchResults, VaultListing, WriteResult};
+use jott_core::ipc::{
+    self, ConnectionState, ConsentAnswerDto, ConsentHelp, ErrorKind, HitDto, NoteContent, RenameOutcome, SearchResults,
+    VaultListing, WriteResult,
+};
 use jott_core::np::outcomes::{EmbedReport, ScanReport};
 use jott_core::np::resolve::{NpMissing, NpSource, Os};
 use jott_core::np::{NpFeatures, NpInfo};
 use jott_core::vault::walk::EntryKind;
+use jott_core::ingest::consent::AutoFetch;
 use jott_core::ipc::VaultSession;
 use jott_core::vault::stamps::StampState;
 use jott_core::vault::store::Consent;
@@ -172,7 +176,7 @@ async fn the_tree_and_editor_work_with_no_np_anywhere_to_be_found() {
 
     session.save_note("b.md", "# B\n").expect("saving needs no np either");
     // Search does need it, and says so in one line the window can show.
-    let error = session.search("anything", 8).await.expect_err("np is not installed here");
+    let error = session.search("anything", 8, false).await.expect_err("np is not installed here");
     assert_eq!(error.kind, ErrorKind::NpGone);
 }
 
@@ -250,7 +254,7 @@ async fn a_search_answers_while_an_embed_is_still_running() {
     assert!(recorded(scenario_dir.path()).contains(&"embed".to_string()), "no embed was running: {:?}", recorded(scenario_dir.path()));
 
     let started = std::time::Instant::now();
-    let answer = session.search("A", 8).await.expect("the reader answers");
+    let answer = session.search("A", 8, false).await.expect("the reader answers");
     let waited = started.elapsed();
     assert!(waited < std::time::Duration::from_millis(400), "the search queued behind the embed: {waited:?}");
     assert_eq!(answer.mode, "keyword", "np's own word for which half answered (§18.11)");
@@ -396,8 +400,12 @@ async fn what_the_window_receives_is_named_exactly_as_ipc_ts_says() {
     let rename = serde_json::to_value(RenameOutcome { incoming_links: vec![] }).expect("rename");
     assert_eq!(rename, json!({ "incomingLinks": [] }));
 
+    // First the shape an older np answers with: every key the window reads is present and **null**, because it has to
+    // tell "np did not say" from "np said no". A missing key would be a third fact, arriving in TypeScript as
+    // `undefined` where no test would ever notice.
     let search = serde_json::to_value(SearchResults {
-        hits: vec![HitDto { path: "a.md".into(), snippet: None, kind: "note".into(), score: 1.0, bm25: None, cosine: None }],
+        hits: vec![HitDto { path: "a.md".into(), snippet: None, kind: "note".into(), score: 1.0, bm25: None,
+                            cosine: None, matched_exactly: None }],
         mode: "keyword".into(),
         vectors: false,
         offline: false,
@@ -406,11 +414,35 @@ async fn what_the_window_receives_is_named_exactly_as_ipc_ts_says() {
         keyword_used: None,
         semantic_used: None,
         notice: None,
+        prefix_used: None,
+        prefix_terms: vec![],
     })
     .expect("search");
-    assert_eq!(search, json!({ "hits": [{"path": "a.md", "snippet": null, "kind": "note", "score": 1.0, "bm25": null, "cosine": null}],
+    assert_eq!(search, json!({ "hits": [{"path": "a.md", "snippet": null, "kind": "note", "score": 1.0, "bm25": null,
+                                         "cosine": null, "matchedExactly": null}],
                                  "mode": "keyword", "vectors": false, "offline": false, "reason": null,
-                                 "indexed": null, "keywordUsed": null, "semanticUsed": null, "notice": null }));
+                                 "indexed": null, "keywordUsed": null, "semanticUsed": null, "notice": null,
+                                 "prefixUsed": null, "prefixTerms": [] }));
+
+    // …then 0.5.1's widened answer: np says it widened, names the word, and marks the row as not an exact match.
+    let widened = serde_json::to_value(SearchResults {
+        hits: vec![HitDto { path: "a.md".into(), snippet: Some("my [grandmother] kept".into()), kind: "note".into(),
+                            score: 1.1, bm25: None, cosine: Some(0.82), matched_exactly: Some(false) }],
+        mode: "hybrid".into(),
+        vectors: true,
+        offline: false,
+        reason: None,
+        indexed: Some(true),
+        keyword_used: Some(true),
+        semantic_used: Some(true),
+        notice: None,
+        prefix_used: Some(true),
+        prefix_terms: vec!["grand".into()],
+    })
+    .expect("widened search");
+    assert_eq!(widened["hits"][0]["matchedExactly"], json!(false), "a word-beginning row is not an exact match");
+    assert_eq!(widened["prefixUsed"], json!(true));
+    assert_eq!(widened["prefixTerms"], json!(["grand"]), "the header may name these words and no others");
 
     let note = serde_json::to_value(NoteContent {
         rel: "a.md".into(),
@@ -603,7 +635,7 @@ async fn a_vault_still_opens_when_np_cannot_be_asked_anything() {
 
     assert_eq!(session.listing().expect("the tree needs no np").nodes.len(), 1);
     session.save_note("b.md", "# B\n").expect("neither does a save");
-    assert_eq!(session.search("anything", 8).await.expect_err("np is not here").kind, ErrorKind::NpGone);
+    assert_eq!(session.search("anything", 8, false).await.expect_err("np is not here").kind, ErrorKind::NpGone);
 
     // And the `[embed]` button's queue does not spin: it fails its batch and moves on.
     session.ingest_all();
@@ -886,7 +918,7 @@ async fn the_trace_shows_what_the_session_asked_np() {
         harness.data.path().to_path_buf(),
     );
 
-    session.search("kumquat", 8).await.expect("the stand-in answers");
+    session.search("kumquat", 8, false).await.expect("the stand-in answers");
 
     let rows = session.trace().recent();
     let search = rows
@@ -930,7 +962,7 @@ async fn a_child_that_could_not_be_started_is_a_row_of_its_own() {
         harness.data.path().to_path_buf(),
     );
 
-    let err = session.search("anything", 8).await.expect_err("np is not here");
+    let err = session.search("anything", 8, false).await.expect_err("np is not here");
     assert_eq!(err.kind, ErrorKind::NpGone);
 
     let rows = session.trace().recent();
@@ -978,7 +1010,7 @@ async fn the_snapshot_shows_the_run_so_far() {
         harness.data.path().to_path_buf(),
     );
 
-    session.search("kumquat", 8).await.expect("the stand-in answers");
+    session.search("kumquat", 8, false).await.expect("the stand-in answers");
     let snapshot = session.diagnostics().await;
 
     assert!(snapshot.recent.iter().any(|row| row.method.as_deref() == Some("search")));
@@ -1153,7 +1185,7 @@ async fn a_refusal_from_np_is_not_reported_as_np_being_gone() {
         harness.data.path().to_path_buf(),
     );
 
-    let err = session.search("anything", 8).await.expect_err("np refused");
+    let err = session.search("anything", 8, false).await.expect_err("np refused");
     assert_eq!(err.kind, ErrorKind::NpRefused, "np answered; nothing is missing");
     assert_eq!(err.message, sentence, "and np's own sentence is the message (§4)");
 
@@ -1184,7 +1216,7 @@ async fn a_method_this_np_does_not_answer_says_which_floor_jott_needs() {
         harness.data.path().to_path_buf(),
     );
 
-    let err = session.search("anything", 8).await.expect_err("too old");
+    let err = session.search("anything", 8, false).await.expect_err("too old");
     assert_eq!(err.kind, ErrorKind::NpTooOld);
     assert!(
         err.message.contains(&jott_core::np::resolve::min_version_text()),
@@ -1258,7 +1290,7 @@ async fn np_is_asked_about_the_folder_and_not_one_spelling_of_it() {
         harness.data.path().to_path_buf(),
     );
 
-    session.search("kumquat", 8).await.expect("the stand-in answers");
+    session.search("kumquat", 8, false).await.expect("the stand-in answers");
     session.close().await;
 
     let lines = std::fs::read_to_string(&recorded).expect("the stand-in recorded what it was asked");
@@ -1388,7 +1420,7 @@ async fn the_window_is_told_what_ran_and_whether_there_was_an_index() {
         harness.data.path().to_path_buf(),
     );
 
-    let answer = session.search("kumquat", 8).await.expect("the stand-in answered");
+    let answer = session.search("kumquat", 8, false).await.expect("the stand-in answered");
     assert_eq!(answer.indexed, Some(false));
     assert_eq!(answer.keyword_used, Some(true));
     assert_eq!(answer.semantic_used, Some(false), "whatever `mode` claims, the vector half did not run");
@@ -1522,4 +1554,213 @@ fn an_embed_report_that_fetched_a_model_pins_its_wire_keys() {
         value["embedded"]["fetched"],
         json!({ "id": "embeddinggemma-2", "bytesTotal": 309_855_456 })
     );
+}
+
+/// The consent receipt is the card’s whole claim about what just happened, so its keys are a contract with
+/// `src/lib/ipc.ts` like every other payload: renamed here, the card would say "np said nothing" where np said plenty.
+#[test]
+fn the_consent_receipt_is_named_exactly_as_ipc_ts_says() {
+    use jott_core::ingest::consent::{AutoFetch, ConsentReceipt};
+    let accepted = ConsentAnswerDto::from(ConsentReceipt {
+        granted: true,
+        np_refused: None,
+        changed: vec!["embeddings.provider".into(), "embeddings.model".into()],
+        provider: Some("local-model".into()),
+        model: Some("embeddinggemma-2".into()),
+        persisted_to: Some("/home/you/.config/note-processor/config.toml".into()),
+        fetch_bytes: Some(309_855_456),
+        auto_fetch: AutoFetch::Written,
+    });
+    assert_eq!(
+        serde_json::to_value(&accepted).expect("receipt"),
+        json!({ "granted": true, "npRefused": null,
+                "changed": ["embeddings.provider", "embeddings.model"],
+                "provider": "local-model", "model": "embeddinggemma-2",
+                "persistedTo": "/home/you/.config/note-processor/config.toml",
+                "fetchBytes": 309_855_456, "autoFetch": "written", "autoFetchError": null })
+    );
+
+    // A refusal carries np's sentence and the word `untouched`: the card must be able to say "Jott changed nothing"
+    // without inferring it from an absent field.
+    let refused = ConsentAnswerDto::from(ConsentReceipt {
+        granted: true,
+        np_refused: Some("config io: no pinned model".into()),
+        changed: vec![],
+        provider: None,
+        model: None,
+        persisted_to: None,
+        fetch_bytes: None,
+        auto_fetch: AutoFetch::Untouched,
+    });
+    assert_eq!(refused.auto_fetch, "untouched");
+    let value = serde_json::to_value(&refused).expect("refusal");
+    assert_eq!(value["npRefused"], json!("config io: no pinned model"));
+    assert_eq!(value["autoFetch"], json!("untouched"));
+    assert_eq!(value["changed"], json!([]));
+
+    // And the fourth state names the file it could not write, because "written" would be a lie about the guardrail.
+    let failed = ConsentAnswerDto::from(ConsentReceipt {
+        granted: true,
+        np_refused: None,
+        changed: vec![],
+        provider: Some("local-model".into()),
+        model: Some("embeddinggemma-2".into()),
+        persisted_to: None,
+        fetch_bytes: None,
+        auto_fetch: AutoFetch::Failed { sentence: "could not write /x/config.toml: permission denied".into() },
+    });
+    let value = serde_json::to_value(&failed).expect("failed");
+    assert_eq!(value["autoFetch"], json!("failed"));
+    assert_eq!(value["autoFetchError"], json!("could not write /x/config.toml: permission denied"));
+}
+
+// ---- answering consent through the session (v0.0.15 review). These exist because the free function was tested and
+// the session was not: `VaultSession::answer_consent` could — and did — let a second writer raise the guardrail after
+// np refused, while the card and the log both said it had been left alone.
+
+/// The button's whole point in one test: np refused, so nothing of ours moved either.
+#[tokio::test]
+async fn a_refused_yes_leaves_the_guardrail_exactly_where_it_was() {
+    let _turn = SERIAL.lock().await;
+    let harness = Harness::new();
+    harness.write("a.md", b"# A\n");
+    let config = harness.data.path().join("np-config.toml");
+    let before = "[models]\nauto_fetch = false\n";
+    std::fs::write(&config, before).expect("np config");
+
+    let sentence = "config io: no pinned model \"no-such\": this build can name \"embeddinggemma-2\"";
+    let (_d, client) = common::spawn(json!({
+        "faults": {"embeddings.enable": {"code": -32000, "message": sentence}}
+    }))
+    .await;
+    let (_sentinel, info) = ipc::np_absent();
+    let session = VaultSession::open_in_with(
+        NpSource::Env(common::repo_root().join("tests/fake-np/np.py")),
+        info,
+        Some(Arc::new(client)),
+        harness.vault.path(),
+        Consent::Undecided,
+        Some(config.clone()),
+        harness.data.path().to_path_buf(),
+    );
+
+    let receipt = session.answer_consent(true).await;
+    assert_eq!(receipt.np_refused.as_deref(), Some(sentence), "np's words survive to the card");
+    assert_eq!(receipt.auto_fetch, AutoFetch::Untouched, "{:?}", receipt.auto_fetch);
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), before, "a refused yes must not raise the guardrail");
+    session.close().await;
+}
+
+/// The other half of the asymmetry: a *no* is Jott's own protection to install, so np refusing to revoke its provider
+/// does not get to leave `auto_fetch = true` behind.
+#[tokio::test]
+async fn a_decline_lowers_the_guardrail_even_when_np_refuses_to_revoke() {
+    let _turn = SERIAL.lock().await;
+    let harness = Harness::new();
+    harness.write("a.md", b"# A\n");
+    let config = harness.data.path().join("np-config.toml");
+    std::fs::write(&config, "[models]\nauto_fetch = true\n").expect("np config");
+
+    let (_d, client) = common::spawn(json!({
+        "faults": {"embeddings.disable": {"code": -32000, "message": "config io: cannot write the config file"}}
+    }))
+    .await;
+    let (_sentinel, info) = ipc::np_absent();
+    let session = VaultSession::open_in_with(
+        NpSource::Env(common::repo_root().join("tests/fake-np/np.py")),
+        info,
+        Some(Arc::new(client)),
+        harness.vault.path(),
+        Consent::Undecided,
+        Some(config.clone()),
+        harness.data.path().to_path_buf(),
+    );
+
+    let receipt = session.answer_consent(false).await;
+    assert!(receipt.np_refused.is_some(), "np's refusal is still reported: {:?}", receipt.np_refused);
+    assert_eq!(receipt.auto_fetch, AutoFetch::Written, "{:?}", receipt.auto_fetch);
+    assert!(!auto_fetch_allowed(&config), "nothing may download after a no");
+    session.close().await;
+}
+
+/// No child to ask, and a person who said no: Jott's key needs no np, so the guardrail still goes down. A grant with
+/// no np is the opposite case — there is no door to open, so nothing of ours moves either.
+#[tokio::test]
+async fn declining_without_np_still_writes_false_and_granting_it_writes_nothing() {
+    let _turn = SERIAL.lock().await;
+    let harness = Harness::new();
+    harness.write("a.md", b"# A\n");
+
+    let (_sentinel, info) = ipc::np_absent();
+
+    let config = harness.data.path().join("declined.toml");
+    std::fs::write(&config, "[models]\nauto_fetch = true\n").expect("np config");
+    let session = VaultSession::open_in_with(
+        common::unreachable_np(),
+        info.clone(),
+        None,
+        harness.vault.path(),
+        Consent::Undecided,
+        Some(config.clone()),
+        harness.data.path().to_path_buf(),
+    );
+    let receipt = session.answer_consent(false).await;
+    assert!(receipt.np_refused.is_some(), "the window says there was no np to ask");
+    assert_eq!(receipt.auto_fetch, AutoFetch::Written, "Jott's own key does not need a child: {:?}", receipt.auto_fetch);
+    assert!(!auto_fetch_allowed(&config));
+    session.close().await;
+
+    let config = harness.data.path().join("granted.toml");
+    let before = "[models]\nauto_fetch = false\n";
+    std::fs::write(&config, before).expect("np config");
+    let session = VaultSession::open_in_with(
+        common::unreachable_np(),
+        info,
+        None,
+        harness.vault.path(),
+        Consent::Undecided,
+        Some(config.clone()),
+        harness.data.path().to_path_buf(),
+    );
+    let receipt = session.answer_consent(true).await;
+    assert!(receipt.np_refused.is_some());
+    assert_eq!(receipt.auto_fetch, AutoFetch::Untouched);
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), before, "no np, no door: our key stays put");
+    session.close().await;
+}
+
+/// An accepted grant is still the ordinary path worth pinning at this level: np's keys by np, ours by us.
+#[tokio::test]
+async fn an_accepted_yes_writes_our_key_once_and_reports_nps() {
+    let _turn = SERIAL.lock().await;
+    let harness = Harness::new();
+    harness.write("a.md", b"# A\n");
+    let config = harness.data.path().join("np-config.toml");
+    std::fs::write(&config, "[models]\nauto_fetch = false\n").expect("np config");
+
+    let (_d, client) = common::spawn(json!({
+        "replies": {"embeddings.enable": {"changed": ["embeddings.provider", "embeddings.model"],
+                                          "fetch": {"bytes_total": 309_855_456, "members": ["main"]},
+                                          "model": "embeddinggemma-2", "provider": "local-model"}}
+    }))
+    .await;
+    let (_sentinel, info) = ipc::np_absent();
+    let session = VaultSession::open_in_with(
+        NpSource::Env(common::repo_root().join("tests/fake-np/np.py")),
+        info,
+        Some(Arc::new(client)),
+        harness.vault.path(),
+        Consent::Undecided,
+        Some(config.clone()),
+        harness.data.path().to_path_buf(),
+    );
+
+    let receipt = session.answer_consent(true).await;
+    assert!(receipt.np_refused.is_none());
+    assert_eq!(receipt.changed, vec!["embeddings.provider".to_string(), "embeddings.model".to_string()]);
+    assert_eq!(receipt.auto_fetch, AutoFetch::Written);
+    let after = std::fs::read_to_string(&config).unwrap();
+    assert!(after.contains("auto_fetch = true"), "{after}");
+    assert!(!after.contains("[embeddings]"), "Jott wrote into `[embeddings]`: {after}");
+    session.close().await;
 }

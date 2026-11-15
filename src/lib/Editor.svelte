@@ -26,6 +26,7 @@
     saveSignal = 0,
     kept = false,
     highlight = '',
+    highlightPrefix = false,
     onphase,
     onsave,
     onmirror,
@@ -49,6 +50,10 @@
     /** The words that made this note show up in a search, marked in the text and scrolled to. Empty means
      * nobody searched, or this note was opened from the tree rather than from a hit. */
     highlight?: string
+    /** Whether the search that produced these marks widened words (note-processor#6). The marks in a result row and
+     *  the marks in the note it opens are answered by the same module with the same flag, or they disagree about what
+     *  matched — which is the §18.11 complaint in a new place. */
+    highlightPrefix?: boolean
     /** The parent needs the phase to decide what an outside change means (§14): a clean buffer reloads,
      * a dirty one asks. It is reported, never recomputed there. */
     onphase?: (phase: SavePhase) => void
@@ -67,12 +72,12 @@
 
   /** Where the query's words are in this text, marked. Offsets come from `highlight.ts`, which is also what
    * the result list marks with — the row and the note it opens cannot disagree about what matched (§18.11). */
-  function highlightExtension(query: string): Extension {
+  function highlightExtension(query: string, prefix: boolean): Extension {
     if (!query) return []
     const mark = Decoration.mark({ class: 'cm-jott-match' })
     const build = (state: EditorState) =>
       RangeSet.of(
-        matchRanges(state.doc.toString(), query).map((range) => mark.range(range.from, range.to)),
+        matchRanges(state.doc.toString(), query, prefix).map((range) => mark.range(range.from, range.to)),
         true,
       )
     return StateField.define<ReturnType<typeof build>>({
@@ -130,7 +135,7 @@
       EditorView.domEventHandlers({ blur: () => (void saveNow(), true) }),
       // Read untracked on purpose: this runs inside the effect that opens a note, and a keystroke in the
       // search box must not re-run that effect — it would rebuild the buffer under someone typing (§4).
-      highlighter.of(highlightExtension(untrack(() => highlight))),
+      highlighter.of(highlightExtension(untrack(() => highlight), untrack(() => highlightPrefix))),
     ]
   }
 
@@ -138,12 +143,15 @@
    * the highlighting is reconfigured — the text, the caret's history and any unsaved typing are untouched. */
   $effect(() => {
     const query = highlight
+    // Tracked beside the query: flipping "match word beginnings" re-marks and re-scrolls this note, because the words
+    // that matched genuinely changed and marks left over from the other mode would be a lie about the previous search.
+    const prefix = highlightPrefix
     const viewNow = view
     if (!viewNow) return
     untrack(() => {
-      viewNow.dispatch({ effects: highlighter.reconfigure(highlightExtension(query)) })
+      viewNow.dispatch({ effects: highlighter.reconfigure(highlightExtension(query, prefix)) })
       if (!query) return
-      const [first] = matchRanges(viewNow.state.doc.toString(), query)
+      const [first] = matchRanges(viewNow.state.doc.toString(), query, prefix)
       if (!first) return
       // Vector-only hits have no words to land on, and jumping to the top of a note nobody matched is worse
       // than not moving at all.

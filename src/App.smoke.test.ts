@@ -22,6 +22,8 @@ Range.prototype.getBoundingClientRect = () => emptyRect
  * window means when it isn't a missing file.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { unmount, type Component } from 'svelte'
+import { PREFIX_KEY } from './lib/prefixSearch'
 import type { IngestEvent } from './lib/ipc'
 
 /** Which backend this window believes it is talking to. */
@@ -30,13 +32,24 @@ const scenario = vi.hoisted(() => ({ current: 'empty' as unknown as Scene }))
 /** What the native confirm dialog answers. Tests set it before pressing a button that asks. */
 const confirmed = vi.hoisted(() => ({ current: false }))
 const commands = vi.hoisted(() => [] as string[])
+/** Every argument set the window sent to `search_vault`, so a test can see what actually crossed the wire. */
+const searchCalls = vi.hoisted(() => [] as Record<string, unknown>[])
 /** The backend version every stub reports. One place, because the About assertions below check that this exact
     string travels from `app_info` through the panel to the screen — a second copy of it would pass either way. */
-const NP_STUB_VERSION = '0.4.0'
+// The build this release ships with (§12). An older number here once hid a test that only passed against a backend
+// Jott no longer accepts.
+const NP_STUB_VERSION = '0.5.1'
 
 /** Set by one test to say what np claims about the folder: `false` = never scanned, `true` = indexed and searched.
     The fixture's tree markers deliberately disagree with both, so whichever way the window resolves it is a choice. */
 const searchSays: { indexed: boolean | null } = { indexed: null }
+
+/** When on, `search_vault` answers the way np 0.5.1 does with word-beginning matching: the row was reached from
+ *  `grand`, and np says so in `prefix_used`, `prefix_terms` and `matched_exactly`. */
+const widening = vi.hoisted(() => ({ on: false }))
+
+/** What `set_consent` hands back: np's own answer to the button (np 0.5.x). */
+const consentAnswer = vi.hoisted(() => ({ current: 'accepted' as 'accepted' | 'refused' }))
 
 /** Set by one test to make `search_vault` answer a slow query *later* than the query typed after it — the order np
  *  is free to hand back in, and the reason the window has to know which answer belongs on screen. */
@@ -90,7 +103,9 @@ vi.mock('@tauri-apps/api/core', () => ({
             : { recent: [], consent: 'undecided' },
         )
       case 'open_vault':
-        return Promise.resolve(vault)
+        // The listing answers for the folder that was asked for. Handing back the same path every time hid a real
+        // bug: the window could not tell a new folder from a re-list of the one already open.
+        return Promise.resolve({ ...vault, vault: String((args as { path?: string } | undefined)?.path ?? vault.vault) })
       case 'app_info':
         return Promise.resolve({
           jottVersion: '0.0.5',
@@ -103,7 +118,33 @@ vi.mock('@tauri-apps/api/core', () => ({
           diagnostics: `Jott 0.0.5 · https://github.com/Ex-Bot-01/jott\nnp ${NP_STUB_VERSION} from bundled (C:\\Program Files\\Jott\\np\\np.exe)`,
         })
       case 'search_vault': {
+        searchCalls.push({ ...(args ?? {}) })
         const query = String((args as { query?: string } | undefined)?.query ?? '')
+        if (widening.on) {
+          return Promise.resolve({
+            hits: [
+              {
+                path: 'family.md',
+                snippet: 'my grandmother kept a jar of kumquats',
+                kind: 'note',
+                score: 1.1,
+                bm25: null,
+                cosine: 0.82,
+                matchedExactly: false,
+              },
+            ],
+            mode: 'hybrid',
+            vectors: true,
+            offline: false,
+            reason: null,
+            indexed: true,
+            keywordUsed: true,
+            semanticUsed: true,
+            notice: null,
+            prefixUsed: true,
+            prefixTerms: ['grand'],
+          })
+        }
         const hit = (path: string, snippet: string) => ({
           hits: [
             {
@@ -113,6 +154,8 @@ vi.mock('@tauri-apps/api/core', () => ({
               score: 1.4,
               bm25: 1.4,
               cosine: null,
+              // This stub stands for a backend that has no word-beginning flag: unknown, not "matched exactly".
+              matchedExactly: null,
             },
           ],
           mode: 'keyword',
@@ -125,11 +168,15 @@ vi.mock('@tauri-apps/api/core', () => ({
           keywordUsed: true,
           semanticUsed: false,
           notice: null,
+          prefixUsed: null,
+          prefixTerms: [],
         })
         if (slowSearch.on && query === 'kumquat') {
           return new Promise((resolve) => setTimeout(() => resolve(hit('stale.md', '…an old kumquat page…')), 400))
         }
-        if (/zzz/.test(query)) {
+        // `grand` is empty unless the widened fixture is switched on — which is how the offer test reaches a folder
+        // that is indexed, whole-word-empty, and widened-with-a-hit.
+        if (/zzz/.test(query) || (!widening.on && query === 'grand')) {
           // An empty list carries the same four keys as a full one — that is rather the point of note-processor#5.
           return Promise.resolve({
             hits: [],
@@ -141,11 +188,26 @@ vi.mock('@tauri-apps/api/core', () => ({
             keywordUsed: true,
             semanticUsed: false,
             notice: null,
+            prefixUsed: null,
+            prefixTerms: [],
           })
         }
         return Promise.resolve(hit('inbox.md', '…a kumquat tree in the corner…'))
       }
-      case 'read_note':
+      case 'read_note': {
+        const rel = String((args as { rel?: string } | undefined)?.rel ?? 'inbox.md')
+        if (rel === 'family.md') {
+          // Written so whole-word marking and prefix marking disagree: whole words mark the letters inside both
+          // *agrand* and *grandmother*; prefix rules mark only the one that starts a word.
+          return Promise.resolve({
+            rel,
+            text: '# Family\n\nthe agrand family kept a grandmother here\n',
+            hash: 'f'.repeat(64),
+            diskHash: 'f'.repeat(64),
+            diskMtimeMs: 1_700_000_000_000,
+            mirrored: null,
+          })
+        }
         return Promise.resolve({
           rel: 'inbox.md',
           text: '# Inbox\n\nA kumquat tree in the corner.\n',
@@ -154,12 +216,39 @@ vi.mock('@tauri-apps/api/core', () => ({
           diskMtimeMs: 1_700_000_000_000,
           mirrored: null,
         })
+      }
       case 'mirror_buffer':
       case 'discard_mirror':
         // The editor mirrors a dirty buffer on a timer. A test that ends before that timer fires would otherwise
         // reject into the void, and Vitest reads one unhandled rejection as a failed run even when every assertion
         // passed — so every command the window can legitimately send gets a stub, not just the ones a test waits on.
         return Promise.resolve()
+      case 'set_consent':
+        return Promise.resolve(
+          consentAnswer.current === 'accepted'
+            ? {
+                granted: true,
+                npRefused: null,
+                changed: ['embeddings.provider', 'embeddings.model'],
+                provider: 'local-model',
+                model: 'embeddinggemma-2',
+                persistedTo: 'C:\\Users\\chris\\AppData\\Roaming\\note-processor\\config.toml',
+                fetchBytes: 309_855_456,
+                autoFetch: 'written',
+                autoFetchError: null,
+              }
+            : {
+                granted: true,
+                npRefused: 'config io: no pinned model "no-such": this build can name "embeddinggemma-2"',
+                changed: [],
+                provider: null,
+                model: null,
+                persistedTo: null,
+                fetchBytes: null,
+                autoFetch: 'untouched',
+                autoFetchError: null,
+              },
+        )
       case 'embeddings_help':
         // What np's settings actually say. `incompleteSettings` is the state behind a tester's report: consent was
         // given, and np still has no embedding engine turned on.
@@ -322,7 +411,10 @@ function ingest(event: IngestEvent) {
   fire!(event)
 }
 
-async function start(): Promise<{ errors: unknown[] }> {
+/** Mount a fresh window. The returned handle lets a test unmount it and mount another, which is the only honest way
+    to ask "does this survive closing the app?" — `localStorage` outlives the component either way, but an orphaned
+    instance left mounted would keep answering events behind the next window's back. */
+async function start(): Promise<{ errors: unknown[]; app: Component }> {
   document.body.innerHTML = '<div id="app"></div><div id="boot"><p>Jott is starting…</p></div>'
   const errors: unknown[] = []
   vi.spyOn(console, 'error').mockImplementation((...seen: unknown[]) => {
@@ -332,13 +424,17 @@ async function start(): Promise<{ errors: unknown[] }> {
 
   // Reset first: a module imported once would not mount a second time.
   vi.resetModules()
-  await import('./main')
-  return { errors }
+  // `main.ts` default-exports what `mount()` returned, which is exactly what `unmount()` takes.
+  const app = (await import('./main')).default as Component
+  return { errors, app }
 }
 
 describe('the window mounts', () => {
   beforeEach(() => {
     commands.length = 0
+    searchCalls.length = 0
+    widening.on = false
+    consentAnswer.current = 'accepted'
     scenario.current = 'empty'
     incompleteSettings.current = false
     confirmed.current = false
@@ -928,6 +1024,245 @@ describe('the window mounts', () => {
     button.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     await new Promise((resolve) => setTimeout(resolve, 60))
     expect(revealed.current).toEqual([])
+  })
+
+
+  it('remembers word beginnings across a relaunch, and says so on the wire', async () => {
+    // note-processor#6 arrived in np 0.5.x: `grand` reaches *grandmother* only when the request asks for it. The
+    // toggle is off by default — widening changes what a query means — so the first thing worth proving is that an
+    // untouched window sends `prefix: false` rather than hoping np's default matches ours.
+    localStorage.removeItem(PREFIX_KEY)
+    const first = await start()
+
+    const box = document.querySelector('input[type="search"]') as HTMLInputElement
+    box.value = 'grand'
+    box.dispatchEvent(new Event('input', { bubbles: true }))
+    await vi.waitFor(() => expect(searchCalls.length).toBeGreaterThan(0))
+    expect(searchCalls.at(-1)?.prefix, 'an untouched window searches whole words').toBe(false)
+
+    const toggle = document.querySelector('input[aria-label="Match word beginnings"]') as HTMLInputElement
+    expect(toggle, 'the window offers the choice').not.toBeNull()
+    expect(toggle.checked).toBe(false)
+
+    toggle.checked = true
+    toggle.dispatchEvent(new Event('change', { bubbles: true }))
+    await vi.waitFor(() => expect(localStorage.getItem(PREFIX_KEY)).toBe('1'))
+    // Flipping it re-runs the query that is already typed, immediately: a debounce here would read as a click that
+    // changed nothing about the results on screen.
+    await vi.waitFor(() => expect(searchCalls.at(-1)?.prefix).toBe(true))
+
+    unmount(first.app)
+    const second = await start()
+
+    const again = document.querySelector('input[aria-label="Match word beginnings"]') as HTMLInputElement
+    expect(again.checked, 'the choice is the app’s memory, not this window’s').toBe(true)
+    const box2 = document.querySelector('input[type="search"]') as HTMLInputElement
+    box2.value = 'grand'
+    box2.dispatchEvent(new Event('input', { bubbles: true }))
+    await vi.waitFor(() => expect(searchCalls.at(-1)?.prefix).toBe(true))
+
+    expect(second.errors).toEqual([])
+  })
+
+
+  it('says which words note-processor widened, and marks the rows it reached that way', async () => {
+    // note-processor#6: a widened answer must not look like an exact one. np names the words it widened and flags
+    // the row; the window prints both, because "3 results" for a search that silently grew is the same family of
+    // lie as a `mode` word that claimed vectors ran when they did not.
+    widening.on = true
+    const { errors } = await start()
+
+    const box = document.querySelector('input[type="search"]') as HTMLInputElement
+    box.value = 'grand'
+    box.dispatchEvent(new Event('input', { bubbles: true }))
+
+    await vi.waitFor(() => expect(document.body.textContent ?? '').toContain('also matched word beginnings (grand)'))
+    expect(document.body.textContent ?? '').toContain('from the start of a word')
+    // The mark covers the letters that matched — `grand` — and not the whole word np widened it into.
+    const marks = [...document.querySelectorAll('.results mark')].map((node) => node.textContent)
+    expect(marks).toEqual(['grand'])
+
+    widening.on = false
+    expect(errors).toEqual([])
+  })
+
+
+  it('lets note-processor’s own answer fill the card', async () => {
+    // The point of np 0.5.x (`embeddings.enable`, note-processor#7): pressing Allow gets an *answer*, and the card
+    // should quote that answer instead of going on telling somebody to paste lines into a file that was just written
+    // for them.
+    incompleteSettings.current = true
+    scenario.current = 'needs-embedding'
+    confirmed.current = true
+    const { errors } = await start()
+
+    await vi.waitFor(() => expect(document.body.textContent ?? '').toContain('indexed but not embedded'))
+    const button = [...document.querySelectorAll('button')].find((b) => b.textContent === 'Set up embeddings')
+    button!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+
+    const card = await vi.waitFor(() => {
+      const el = document.querySelector('[data-testid="consent-card"]')
+      expect(el, 'an answer from np belongs on the card').not.toBeNull()
+      return el as HTMLElement
+    }, { timeout: 2000 })
+
+    expect(card.textContent).toContain('note-processor wrote embeddings.provider and embeddings.model')
+    expect(card.textContent).toContain('AppData')
+    // The paste block is gone: two contradictory instructions on one screen read as a window that did not hear itself.
+    expect(card.textContent).not.toContain('provider = "local-model"')
+    expect(card.textContent).toContain('Copy what happened')
+    // Jott's part, stated beside np's — the card does not claim credit for settings it never wrote.
+    expect(card.textContent).toContain('models.auto_fetch = true')
+
+    incompleteSettings.current = false
+    expect(errors).toEqual([])
+  })
+
+  it('says what np refused and that Jott changed nothing of its own', async () => {
+    // A refusal has to be legible as a refusal. The important half is the guardrail: after a refused Yes,
+    // `models.auto_fetch` must read as untouched rather than as allowed.
+    incompleteSettings.current = true
+    scenario.current = 'needs-embedding'
+    confirmed.current = true
+    consentAnswer.current = 'refused'
+    const { errors } = await start()
+
+    await vi.waitFor(() => expect(document.body.textContent ?? '').toContain('indexed but not embedded'))
+    const button = [...document.querySelectorAll('button')].find((b) => b.textContent === 'Set up embeddings')
+    button!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+
+    const card = await vi.waitFor(() => {
+      const el = document.querySelector('[data-testid="consent-card"]')
+      expect(el, 'a refusal is the one thing the card must never soften').not.toBeNull()
+      return el as HTMLElement
+    }, { timeout: 2000 })
+
+    expect(card.textContent).toContain('no pinned model "no-such"')
+    expect(card.textContent).toContain('left models.auto_fetch alone')
+    expect(card.textContent).not.toContain('provider = "local-model"')
+
+    incompleteSettings.current = false
+    expect(errors).toEqual([])
+  })
+
+  it('offers word beginnings on an empty answer, once, without deciding for anybody', async () => {
+    // np says the folder is indexed and the whole-word search came back empty: the one moment where offering the
+    // widening can change the answer. Pressing it widens *this* query and leaves the remembered preference alone.
+    localStorage.removeItem(PREFIX_KEY)
+    searchSays.indexed = true
+    const { errors } = await start()
+
+    const box = document.querySelector('input[type="search"]') as HTMLInputElement
+    box.value = 'zzz'
+    box.dispatchEvent(new Event('input', { bubbles: true }))
+
+    const offer = await vi.waitFor(() => {
+      const el = document.querySelector('[data-testid="widen-offer"]') as HTMLButtonElement | null
+      expect(el, 'an indexed folder with no whole-word hits should offer the widening').not.toBeNull()
+      return el!
+    }, { timeout: 2000 })
+
+    searchCalls.length = 0
+    offer.click()
+    await vi.waitFor(() => expect(searchCalls.at(-1)?.prefix).toBe(true))
+    // The remembered choice is untouched — that is what the checkbox beside the box is for.
+    expect(localStorage.getItem(PREFIX_KEY)).toBeNull()
+    const toggle = document.querySelector('input[aria-label="Match word beginnings"]') as HTMLInputElement
+    expect(toggle.checked, 'a one-off offer must not move the toggle').toBe(false)
+
+    // Typing a new question starts from the remembered setting again.
+    box.value = 'zzzu'
+    box.dispatchEvent(new Event('input', { bubbles: true }))
+    await vi.waitFor(() => expect(searchCalls.at(-1)?.prefix).toBe(false))
+
+    searchSays.indexed = null
+    expect(errors).toEqual([])
+  })
+
+
+  it('marks the note with the rules that produced its row', async () => {
+    // The one-off widening (pressing *try matching word beginnings*) asks np with `prefix: true`. If the window then
+    // paints the results and opens the note with whole-word rules, the letters underlined are not the ones that
+    // matched — and in this fixture it is visibly wrong: whole-word marking lights up inside *agrand* as well.
+    localStorage.removeItem(PREFIX_KEY)
+    searchSays.indexed = true
+    const { errors } = await start()
+
+    const box = document.querySelector('input[type="search"]') as HTMLInputElement
+    box.value = 'grand'
+    box.dispatchEvent(new Event('input', { bubbles: true }))
+    const offer = await vi.waitFor(() => {
+      const el = document.querySelector('[data-testid="widen-offer"]') as HTMLButtonElement | null
+      expect(el, 'the empty indexed folder should offer the widening').not.toBeNull()
+      return el!
+    }, { timeout: 2000 })
+
+    // np answers the widened request with the family note.
+    widening.on = true
+    offer.click()
+    const row = await vi.waitFor(() => {
+      const el = [...document.querySelectorAll('.results button')].find((b) => b.textContent?.includes('family.md'))
+      expect(el, 'the widened search should put a row on screen').not.toBeUndefined()
+      return el as HTMLButtonElement
+    }, { timeout: 2000 })
+
+    // The row marks one stretch — `grand` at the start of *grandmother* — not two.
+    expect([...row.querySelectorAll('mark')].map((m) => m.textContent)).toEqual(['grand'])
+
+    row.click()
+    await vi.waitFor(() => expect(document.body.textContent ?? '').toContain('grandmother'), { timeout: 2000 })
+    // The note's own marks are the same `matchRanges` call with the same flag (`highlightPrefix`), and jsdom never
+    // paints CodeMirror's document — `.cm-content` is empty here — so there is nothing on screen to count. That half
+    // is pinned in `highlight.test.ts` (prefix rules mark only *grandmother*) and by the request below, which is what
+    // decides the flag in the first place.
+    expect(
+      (searchCalls.at(-1) as { prefix?: boolean } | undefined)?.prefix,
+      'the note was opened from a widened request',
+    ).toBe(true)
+
+    widening.on = false
+    searchSays.indexed = null
+    expect(errors).toEqual([])
+  })
+
+
+  it('keeps what np answered when a later refusal arrives', async () => {
+    // After a press, np can still refuse the pass it was asked to run. The card used to drop the receipt at that
+    // moment and go back to describing the file — the one thing it may not do after np has just written it.
+    scenario.current = 'needs-embedding'
+    confirmed.current = true
+    const { errors } = await start()
+
+    await vi.waitFor(() => expect(document.body.textContent ?? '').toContain('indexed but not embedded'))
+    const button = [...document.querySelectorAll('button')].find((b) => b.textContent === 'Set up embeddings')
+    expect(button, 'the offer line has no way to take it up').not.toBeNull()
+    button!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+
+    const said = await vi.waitFor(() => {
+      const text = document.body.textContent ?? ''
+      if (!text.includes('note-processor wrote embeddings.provider')) {
+        console.log('BODY>>>', text.slice(0, 600))
+      }
+      expect(text).toContain('note-processor wrote embeddings.provider')
+      return text
+    }, { timeout: 1500 })
+    expect(said).toContain('Jott wrote models.auto_fetch = true')
+
+    // np refuses the next pass, for its own reason.
+    ingest({ refused: { message: 'configuration error: config io: embeddings.model names no installed model' } })
+
+    const both = await vi.waitFor(() => {
+      const text = document.body.textContent ?? ''
+      expect(text).toContain('embeddings.model names no installed model')
+      return text
+    }, { timeout: 2000 })
+
+    // Both facts on one card — what np recorded, and what it says now — and never the paste-advice again, because
+    // those lines are in the file already.
+    expect(both).toContain('note-processor wrote embeddings.provider')
+    expect(both).toContain('Jott wrote models.auto_fetch = true')
+    expect(both).not.toContain('Copy these settings')
+    expect(errors).toEqual([])
   })
 
 })

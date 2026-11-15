@@ -5,6 +5,9 @@ import { describe, expect, it } from 'vitest'
 
 import {
   emptySearchSentence,
+  hitSuffix,
+  suggestPrefix,
+  wideningSentence,
   noResultsSentence,
   resultsHeadline,
   searchCaveat,
@@ -91,5 +94,91 @@ describe('the quiet line about what ran', () => {
 
   it('is not shown for an empty list, where the sentence above already explains', () => {
     expect(searchCaveat({ keywordUsed: true, semanticUsed: false }, 0)).toBeNull()
+  })
+})
+
+describe('what np widened', () => {
+  it('names the words note-processor said it widened', () => {
+    // note-processor#6: `grand` reaching *grandmother* is a different search from the one that was typed, and the
+    // header is where that gets admitted. The words come from np's `prefix_terms`, so the sentence cannot promise a
+    // widening np did not report.
+    const sentence = wideningSentence({ prefixUsed: true, prefixTerms: ['grand', 'kestr'] })
+    expect(sentence).toContain('word beginnings')
+    expect(sentence).toContain('grand')
+    expect(sentence).toContain('kestr')
+  })
+
+  it('says nothing when np did not widen', () => {
+    expect(wideningSentence({ prefixUsed: false, prefixTerms: [] })).toBeNull()
+  })
+
+  it('says nothing when an older np did not say', () => {
+    // `null` is "this build has no flag", and printing "did not widen" would be Jott speaking for a backend that
+    // stayed quiet — the same mistake §4 refuses elsewhere.
+    expect(wideningSentence({ prefixUsed: null, prefixTerms: [] })).toBeNull()
+  })
+
+  it('admits the widening even when np did not name the words', () => {
+    // `prefix_used: true` with an empty term list is a real shape: something was widened and np would not say what.
+    // The sentence stays truthful and vaguer — inventing a word here would put Jott's guess in np's mouth.
+    const sentence = wideningSentence({ prefixUsed: true, prefixTerms: [] })
+    expect(sentence).toContain('word beginnings')
+    expect(sentence).not.toMatch(/grand/)
+  })
+
+  it('ignores terms np sent without saying it widened anything', () => {
+    // Both keys have to agree before the header claims a widening.
+    expect(wideningSentence({ prefixUsed: false, prefixTerms: ['grand'] })).toBeNull()
+  })
+})
+
+describe('a row reached by a word beginning', () => {
+  it('is marked when np says it was not an exact match', () => {
+    expect(hitSuffix(false)).toContain('start of a word')
+  })
+
+  it('is unmarked when it matched what was typed', () => {
+    expect(hitSuffix(true)).toBeNull()
+  })
+
+  it('is unmarked when np never word-tested it', () => {
+    // A vector-only hit has no words to compare. Marking it "start of a word" would accuse the reader's typing of
+    // something that was never tested, which is the opposite error from hiding a widened row.
+    expect(hitSuffix(null)).toBeNull()
+  })
+})
+
+describe('offering the widening', () => {
+  const empty = { indexed: true as boolean | null, hits: [] as unknown[] }
+
+  it('offers it when a folder that could answer said nothing', () => {
+    // np says this workspace is indexed, the whole-word search came back empty, and the person is not already
+    // widening: that is the one moment where "try word beginnings" is a suggestion rather than a shrug.
+    expect(suggestPrefix(empty, 'grand', false)).toBe(true)
+  })
+
+  it('does not offer it when np says the folder has never been indexed', () => {
+    // Nothing to widen yet. Offering the toggle here would teach somebody to press a button that cannot help.
+    expect(suggestPrefix({ indexed: false, hits: [] }, 'grand', false)).toBe(false)
+  })
+
+  it('does not offer it when np did not say', () => {
+    // An older backend's silence is not evidence that an index exists.
+    expect(suggestPrefix({ indexed: null, hits: [] }, 'grand', false)).toBe(false)
+  })
+
+  it('does not offer it when something matched', () => {
+    expect(suggestPrefix({ indexed: true, hits: ['a.md'] }, 'grand', false)).toBe(false)
+  })
+
+  it('does not offer it on a blank query', () => {
+    for (const query of ['', '   ', '\t\n']) {
+      expect(suggestPrefix(empty, query, false), JSON.stringify(query)).toBe(false)
+    }
+  })
+
+  it('does not offer it when word beginnings are already on', () => {
+    // The empty answer already came from widening. Saying "try widening" would be the window arguing with itself.
+    expect(suggestPrefix(empty, 'grand', true)).toBe(false)
   })
 })

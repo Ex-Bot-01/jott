@@ -20,7 +20,7 @@ use crate::sync::guarded;
 use crate::diagnostics::{now_ms, Journal, RequestRecord, Trace, TraceEvent, TraceKind};
 use crate::hashes::sha256_file;
 use crate::ingest::consent::{
-    consent_file_is_unreadable, default_bytes_for, embedding_model_named, set_auto_fetch,
+    consent_file_is_unreadable, default_bytes_for, embedding_model_named,
 };
 use crate::np::outcomes::{EmbedOutcome, EmbedReport, ScanOutcome, ScanReport};
 use crate::np::pool::{Connection, NpPool, PoolNote};
@@ -283,31 +283,15 @@ impl IngestQueue {
         *guarded(&self.shared.consent) = consent;
     }
 
-    /// The user answered the consent prompt. Granted writes `auto_fetch = true` and runs what was held at
-    /// the gate; declined writes `false` and keeps indexing, because keyword search must not stop working
-    /// (§11).
+    /// The user answered the consent prompt: remember it, wake whatever the gate held, and keep indexing either
+    /// way, because keyword search must not stop working over a "not yet" (§11).
+    ///
+    /// It does **not** write `models.auto_fetch`. That file has exactly one writer —
+    /// [`answer_consent`](crate::ingest::consent::answer_consent), which writes our key only after note-processor
+    /// opened its own door. Two writers was not a theoretical worry: this one raised the guardrail unconditionally,
+    /// so a *yes* that np refused ended with `auto_fetch = true` in someone's file while the card and the log both
+    /// said it had been left alone.
     pub fn set_consent(&self, consent: Consent) {
-        // Always writes, even when the memory already holds this answer: what is remembered from a earlier
-        // session is not the same fact as somebody pressing a button now (§11), and the file is where np
-        // reads it. Writing the same value twice leaves the file unchanged anyway — `toml_edit` keeps the
-        // rest of it as it was.
-        let config = guarded(&self.shared.options).np_config.clone();
-        // The file first, then the in-memory answer: the file is where np reads it, so if writing failed,
-        // the answer has not been given anywhere that matters and saying so beats promising a download
-        // the child will refuse.
-        if let Some(path) = config {
-            let allow = match consent {
-                Consent::Granted => Some(true),
-                Consent::Declined => Some(false),
-                // "Not yet" changes nothing in someone's config file; only an answer does.
-                Consent::Undecided => None,
-            };
-            if let Some(allow) = allow {
-                if let Err(e) = set_auto_fetch(&path, allow) {
-                    self.emit(IngestEvent::Refused { message: e.to_string() });
-                }
-            }
-        }
         if let Consent::Granted | Consent::Declined = consent {
             // Only an answer is a row. "Undecided" is the absence of one, and the drawer showing it as a fact
             // would be §4's invented value in a different costume.
@@ -316,9 +300,9 @@ impl IngestQueue {
                 TraceEvent {
                     at_ms: now_ms(),
                     kind: TraceKind::Consent,
-                method: None,
-                outcome: None,
-                elapsed_ms: None,
+                    method: None,
+                    outcome: None,
+                    elapsed_ms: None,
                     detail: Some(match consent {
                         Consent::Granted => "granted",
                         _ => "declined",
@@ -386,11 +370,6 @@ impl IngestQueue {
         }
     }
 
-    fn emit(&self, event: IngestEvent) {
-        if !self.shared.closing.load(Ordering::SeqCst) {
-            let _ = self.events.send(event);
-        }
-    }
 }
 
 /// What the worker carries between messages.

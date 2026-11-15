@@ -12,16 +12,26 @@
   import { actionsFor, flattenTree, moveTargets, moveTo, notesAwaitingEmbedding, notesAwaitingIndex, targetFolder } from './lib/tree'
   import type { TreeAction } from './lib/tree'
   import { bareKeyFor, isTypingTarget, shortcutFor } from './lib/shortcuts'
-  import { emptySearchSentence, resultsHeadline, searchCaveat, searchIsCurrent } from './lib/searchState'
+  import {
+    emptySearchSentence,
+    hitSuffix,
+    resultsHeadline,
+    searchCaveat,
+    searchIsCurrent,
+    suggestPrefix,
+    wideningSentence,
+  } from './lib/searchState'
   import { markTerms } from './lib/highlight'
   import { consentSentence, modelReadySentence, statusFor, type Status } from './lib/statusLine'
   import { cardClipboard, cardSentences, NP_ISSUE } from './lib/consentHelp'
+  import type { ConsentOutcome } from './lib/ipc'
   import { openUrl } from '@tauri-apps/plugin-opener'
   import { getCurrentWindow } from '@tauri-apps/api/window'
   import { isPermissionGranted, requestPermission, sendNotification } from '@tauri-apps/plugin-notification'
   import { notifyBody, shouldNotify, type Permission } from './lib/notify'
   import type { SavePhase } from './lib/saveState'
   import * as ipc from './lib/ipc'
+  import { loadPrefix, savePrefix } from './lib/prefixSearch'
   import type { DiagnosticsSnapshot, TraceEvent } from './lib/diagnostics'
   import type { AboutInfo, ConsentHelp, FetchedRecord, IngestEvent, NoteContent, RegistryInfo, SearchResults, VaultListing } from './lib/ipc'
 
@@ -63,6 +73,10 @@
   let consentHelp = $state<ConsentHelp | null>(null)
   /** The last sentence np sent as a refusal, kept word for word for the card to quote (§4). */
   let lastRefusal = $state<string | null>(null)
+  /** What note-processor answered to the button this window pressed (0.5.x). It outranks the file's state in the card,
+   *  because "np wrote these two settings ten seconds ago" is a truer sentence than a re-read of the file — and it is
+   *  the only version that can admit a refusal. */
+  let consentOutcome = $state<ConsentOutcome | null>(null)
   /** A model that this run's embed pass downloaded. The announcement outlives the status line and goes when the
       next pass supersedes it or the person moves on to another note. */
   let modelReady = $state<FetchedRecord | null>(null)
@@ -79,6 +93,12 @@
   let traceRows = $state<TraceEvent[]>([])
 
   let searchQuery = $state('')
+  /** Word-beginning matching (note-processor#6), remembered between runs and off until asked: widening a query
+   * changes what it means, so it is a choice somebody makes once about their own notes, not a default. */
+  let prefixOn = $state(loadPrefix(typeof localStorage === 'undefined' ? null : localStorage))
+  /** One search with word beginnings matched, asked for from an empty answer. Deliberately not the remembered
+   *  preference: pressing "try this" once should not silently decide every future search. */
+  let prefixOnce = $state(false)
   /** The query that produced the hit this note was opened from. Kept apart from `searchQuery` on purpose: the
    * box keeps being typed in, and marks should follow the hit that was clicked, not every keystroke after it. */
   let hitQuery = $state('')
@@ -123,11 +143,18 @@
    *  Carried across they let the window describe yesterday's download as a property of the folder someone just
    *  opened — which is the same class of claim this release exists to stop making. */
   function adopt(next: VaultListing) {
+    const changedFolder = listing !== null && listing.vault !== next.vault
     listing = next
+    // A model was downloaded for one folder's index, and a search widened itself in one folder's results; carried
+    // across they let the window describe yesterday's news as a property of the folder someone just opened — the same
+    // class of claim v0.0.14 exists to stop making.
+    if (!changedFolder) return
     modelReady = null
     consentHelp = null
     lastRefusal = null
+    consentOutcome = null
     cardClipFailed = false
+    prefixOnce = false
   }
 
   async function openRecent(folder: string) {
@@ -194,7 +221,7 @@
 
   /** The card's sentences. Empty means np is ready to embed, and the card stays out of the way — emptiness is
       decided in `consentHelp.ts`, where it is tested, rather than in markup. */
-  const cardFacts = $derived(consentHelp ? { help: consentHelp, refusal: lastRefusal } : null)
+  const cardFacts = $derived(consentHelp ? { help: consentHelp, refusal: lastRefusal, outcome: consentOutcome } : null)
   const cardLines = $derived(cardFacts ? cardSentences(cardFacts) : [])
   const cardText = $derived(cardFacts ? cardClipboard(cardFacts) : '')
 
@@ -449,12 +476,37 @@
     }
     const seq = ++searchSeq
     searching = true
-    const answer = await call(() => ipc.searchVault(query, 12))
+    const answer = await call(() => ipc.searchVault(query, 12, prefixOn || prefixOnce))
     // Typing "abc" fires three requests and np is free to answer them in any order. Without this guard the slowest
     // one wins, which reads as the search box ignoring what you typed last.
     if (!searchIsCurrent(seq, searchSeq)) return
     results = answer
     searching = false
+  }
+
+  /** The "match word beginnings" toggle. Saving and re-running are both immediate: someone flipping it wants to see
+   * what changes about *this* query, and a 250 ms debounce would read as the click having done nothing. */
+  function togglePrefix(event: Event) {
+    prefixOn = (event.currentTarget as HTMLInputElement).checked
+    savePrefix(typeof localStorage === 'undefined' ? null : localStorage, prefixOn)
+    // Back to the box afterwards: shortcuts stand down while focus is in any input, so a person who flips this and
+    // then presses Ctrl+S would otherwise find the save key ignored.
+    searchBox?.focus()
+    if (searchQuery.trim()) void runSearch()
+  }
+
+  /** A keystroke means a new question, and a new question starts from the remembered setting rather than from a
+   *  one-off widening asked for against the last one. */
+  function onQueryInput() {
+    prefixOnce = false
+    scheduleSearch()
+  }
+
+  /** The empty answer's offer: run *this* query again with word beginnings matched, once. It does not write the
+   *  preference — that is what the toggle beside the box is for. */
+  function widenThisSearch() {
+    prefixOnce = true
+    void runSearch()
   }
 
   function scheduleSearch() {
@@ -522,7 +574,14 @@
     consent = null
     embeddingsOffer = null
     offerAskedFor = null
-    await call(() => ipc.setConsent(granted))
+    // np's answer goes straight onto the card, and a stale refusal from before the button is cleared beside it: two
+    // reports about one question, one of them ten minutes old, read as a window that disagrees with itself.
+    const receipt = await call(() => ipc.setConsent(granted))
+    if (receipt) {
+      consentOutcome = receipt
+      lastRefusal = null
+    }
+    void readConsentHelp()
   }
 
   /** The same question, asked again later. "Stay keyword-only" answers the moment, not the year, and the way
@@ -533,9 +592,9 @@
     if (!offer) return
     const sentence = consentSentence(offer)
     if (!(await ipc.askConfirm(sentence, 'Set up semantic search'))) return
-    embeddingsOffer = null
-    offerAskedFor = null
-    await call(() => ipc.setConsent(true))
+    // The same answer as the offer's own Allow button — one code path, so both leave np's receipt on the card and
+    // neither can forget to re-read the settings beside it.
+    await answerConsent(true)
     // "Yes" means go, not "yes, whenever the next save happens": the vault goes through the pass now.
     await call(ipc.ingestAll)
     notice = 'Downloading the model and embedding your notes. The line at the bottom keeps count.'
@@ -563,6 +622,8 @@
       // and `cardSentences` answers nothing when the settings are fine, so an unrelated refusal in a healthy folder
       // still raises no card.
       if ('refused' in event) {
+        // Both facts stand: what np answered the button, and what it says now. `cardSentences` prints the receipt and
+        // then this sentence — dropping the receipt put the paste-advice back over a file np had just written.
         lastRefusal = event.refused.message
         void readConsentHelp()
       }
@@ -643,9 +704,16 @@
         type="search"
         placeholder="Search this vault (Ctrl+F)"
         bind:value={searchQuery}
-        oninput={scheduleSearch}
+        oninput={onQueryInput}
         aria-label="Search the vault"
       />
+      <label
+        class="prefix-toggle"
+        title="Also match word beginnings: “grand” finds grandmother. note-processor says which words it widened."
+      >
+        <input type="checkbox" checked={prefixOn} onchange={togglePrefix} aria-label="Match word beginnings" />
+        match word beginnings
+      </label>
       <span class="tool-buttons">
         <button type="button" title="New note (Ctrl+N)" onclick={() => runAction('new-note', null)}>+ note</button>
         <button type="button" title="New folder (Ctrl+Shift+N)" onclick={() => runAction('new-folder', null)}>
@@ -667,6 +735,7 @@
 
     {#if results}
       {@const caveat = searchCaveat(results, results.hits.length)}
+      {@const widened = wideningSentence(results)}
       <ul class="results">
         {#if results.hits.length === 0}
           <!-- An empty list is two different facts and only one of them is about the words. np 0.4.0 answers
@@ -675,6 +744,12 @@
           <li class="none">
             {emptySearchSentence(results, searchQuery.trim(), awaitingIndex)}
             {#if results.offline}(np is offline — keyword search only){/if}
+            {#if suggestPrefix(results, searchQuery.trim(), prefixOn || prefixOnce)}
+              <!-- np says this folder is indexed and the whole-word search found nothing, so widening is the one
+                   thing that can change the answer. Offered, never done silently: a widened search is a different
+                   question than the one that was typed (§4). -->
+              <button type="button" data-testid="widen-offer" onclick={widenThisSearch}>try matching word beginnings</button>
+            {/if}
           </li>
         {/if}
         {#each results.hits as hit (hit.path)}
@@ -682,10 +757,15 @@
             <button type="button" onclick={() => void openNote(hit.path, searchQuery.trim())}>
               <span class="hit-path">{hit.path}</span>
               <span class="hit-snippet">
-                {#each markTerms(hit.snippet ?? '', searchQuery) as part, index}
+                {#each markTerms(hit.snippet ?? '', searchQuery, prefixOn) as part, index}
                   {#if part.matched}<mark>{part.text}</mark>{:else}{part.text}{/if}
                 {/each}
               </span>
+              {#if hitSuffix(hit.matchedExactly)}
+                <!-- np reached this note by a word beginning, so the row says which kind of match it is. Only rows np
+                     marked `matched_exactly: false` get one — a meaning-only hit was never word-tested (§4). -->
+                <span class="hit-kind">{hitSuffix(hit.matchedExactly)}</span>
+              {/if}
             </button>
           </li>
         {/each}
@@ -694,6 +774,7 @@
                actually ran goes on its own line, in `searchCaveat`'s words or np's own sentence. -->
           <li class="mode">
             {resultsHeadline(results.hits.length)}{searching ? ' · searching…' : ''}
+            {#if widened}<span class="caveat">· {widened}</span>{/if}
             {#if caveat}<span class="caveat">· {caveat}</span>{/if}
           </li>
         {:else}
@@ -727,12 +808,16 @@
             <p>{line}</p>
           {/each}
         </div>
-        {#if consentHelp && consentHelp.linesToAdd.length > 0}
-          <!-- The lines np needs, as copyable text rather than as a sentence to retype (§4). -->
+        {#if consentHelp && consentHelp.linesToAdd.length > 0 && !consentOutcome}
+          <!-- The lines np needs, as copyable text rather than as a sentence to retype (§4). Shown only while nobody
+               has answered: since np 0.5.x a press writes those keys itself, and paste-instructions beside a file that
+               was just written for you are two contradictory instructions on one screen. -->
           <pre class="settings">{consentHelp.linesToAdd.join('\n')}</pre>
         {/if}
         <span class="buttons">
-          <button type="button" onclick={() => void copyCardSettings()}>Copy these settings</button>
+          <button type="button" onclick={() => void copyCardSettings()}>
+            {consentOutcome ? 'Copy what happened' : 'Copy these settings'}
+          </button>
           <button type="button" data-testid="consent-retry" onclick={() => void retryEmbeddings()}>Try again</button>
           <button type="button" onclick={() => void openUrl(NP_ISSUE).catch(() => undefined)}>
             Read the note-processor request
@@ -742,7 +827,11 @@
           <!-- The clipboard refused. The text still has to leave this window somehow. -->
           <textarea readonly rows="6" aria-label="Settings to copy" onfocus={(e) => e.currentTarget.select()}>{cardText}</textarea>
         {/if}
-        <span class="hint">{NP_ISSUE}</span>
+        {#if !consentOutcome}
+          <!-- The request to note-processor is worth naming only while somebody still has to act by hand. Once np
+               answered over the pipe, this window has no unfinished business pointing there. -->
+          <span class="hint">{NP_ISSUE}</span>
+        {/if}
       </div>
     {:else if listing && awaitingIndex > 0 && !selected}
       <div class="first-pass">
@@ -853,6 +942,7 @@
     <Editor
       saveSignal={saveSignal}
       highlight={hitQuery}
+      highlightPrefix={prefixOn}
       rel={selected}
       {note}
       {external}
@@ -964,6 +1054,15 @@
     background: none;
     color: inherit;
   }
+  .prefix-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    font-size: 0.8rem;
+    white-space: nowrap;
+    user-select: none;
+  }
+
   .tool-buttons {
     display: flex;
     gap: 0.3rem;
@@ -1002,6 +1101,12 @@
     font-size: 0.75rem;
     color: color-mix(in srgb, currentColor 60%, transparent);
   }
+  .hit-kind {
+    font-size: 0.75rem;
+    opacity: 0.75;
+    white-space: nowrap;
+  }
+
   .hit-snippet {
     display: block;
     white-space: normal;

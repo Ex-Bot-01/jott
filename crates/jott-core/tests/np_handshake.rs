@@ -2,30 +2,36 @@ use jott_core::np::handshake::{check_version, parse_initialize, MIN_NP};
 use jott_core::np::NpMissing;
 use serde_json::json;
 
-/// The `initialize` answer captured verbatim from np 0.4.0 on this box (`np serve`, first line of the response),
-/// with `"notifications": true` in the request — which is why `progress` appears at all.
+/// The `initialize` answer captured verbatim from np 0.5.1 on this box (`np serve`, first line of the response),
+/// with `"notifications": true` in the request — which is why `progress` appears at all. Re-captured when the floor
+/// moved: a fixture that quietly keeps saying "0.4.0" would have this file testing a refusal against a build Jott no
+/// longer ships, and the ten-method list is the fact feature-detection reads.
 fn real() -> serde_json::Value {
     json!({"data_dir":"/home/agent/.local/share",
            "features":{"fetch":true,"local_model":true,"vision":false},
-           "methods":["status.get","initialize","search","scan","embed","models.list","links.list","shutdown"],
-           "np":"0.4.0","protocol":1,"progress":true})
+           "methods":["status.get","initialize","search","scan","embed","models.list","links.list",
+                      "embeddings.enable","embeddings.disable","shutdown"],
+           "np":"0.5.1","protocol":1,"progress":true})
 }
 
 #[test]
 fn reads_the_captured_handshake() {
     let info = parse_initialize(&real()).expect("parses");
-    assert_eq!(info.version, "0.4.0");
+    assert_eq!(info.version, "0.5.1");
     assert!(info.progress && info.features.local_model && !info.features.vision);
     assert!(info.has_method("models.list") && info.has_method("links.list"), "the 8th method is in the list");
+    // The two consent doors are what Jott asks instead of editing someone's settings, so seeing them is the
+    // difference between calling np and pasting lines into a file.
+    assert!(info.has_method("embeddings.enable") && info.has_method("embeddings.disable"), "{:?}", info.methods);
     assert_eq!(info.data_dir, "/home/agent/.local/share");
     // …and it is a build Jott will actually talk to.
-    check_version(&info.version).unwrap_or_else(|why| panic!("np 0.4.0 refused: {why}"));
+    check_version(&info.version).unwrap_or_else(|why| panic!("np 0.5.1 refused: {why}"));
 }
 
-/// Kept on purpose: this is the answer the floor now refuses, and the sentence a tester's screenshot shows. The
-/// refusal comes from the version check and nothing else — 0.3.1's document is well-formed, it just cannot say
-/// whether a folder was ever indexed (#5) or what its model costs (#3). So `parse_initialize` fails on the floor
-/// rather than half-parsing it, which is where "too old" belongs: before any request is sent.
+/// Kept on purpose: this is the answer the floor refuses, and the sentence a tester's screenshot shows. The refusal
+/// comes from the version check and nothing else — 0.3.1's document is well-formed, it just cannot say whether a
+/// folder was ever indexed (#5) or what its model costs (#3). So `parse_initialize` fails on the floor rather than
+/// half-parsing it, which is where "too old" belongs: before any request is sent.
 #[test]
 fn the_0_3_1_answer_is_refused_by_the_floor_and_says_so_as_too_old() {
     let old = json!({"data_dir":"/home/agent/.local/share",
@@ -55,5 +61,5 @@ fn a_build_without_notifications_or_methods_is_not_usable() {
 fn vision_off_means_no_image_search_promises() {
     let info = parse_initialize(&real()).unwrap();
     assert!(!info.features.vision, "released np cannot embed images; the UI must not promise it");
-    assert_eq!(MIN_NP, (0, 4, 0));
+    assert_eq!(MIN_NP, (0, 5, 1));
 }

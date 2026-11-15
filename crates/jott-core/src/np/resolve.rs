@@ -13,19 +13,21 @@ use thiserror::Error;
 /// The lowest np this app speaks to. Protocol 1 arrived in 0.3.0; `progress` notifications
 /// and `status.get` — both of which the ingest queue uses — arrived in 0.3.1.
 ///
-/// 0.4.0 is the floor now, for three measured reasons rather than tidiness: it says whether a workspace was ever
-/// indexed and which half of a search ran (note-processor#5), it stops re-indexing a whole vault over one trailing
-/// separator (#4), and it prices the model a consent prompt has to name before downloading it (#3). Jott still
-/// *reads* an older answer — every 0.4.0 key is optional on the wire — but a backend that cannot answer those
-/// questions is not one to keep pointing people at.
-pub const MIN_NP_VERSION: (u64, u64, u64) = (0, 4, 0);
+/// 0.5.1 is the floor, because two things Jott used to work around became np's own job: `embeddings.enable` and
+/// `embeddings.disable` record consent over the pipe instead of a person pasting settings (note-processor#7), and
+/// `{"prefix": true}` lets a search reach *grandmother* from `grand` while saying which words it widened (#6).
+/// 0.5.1 rather than 0.5.0 for one reason of its own: the provenance comment written into someone's `config.toml`
+/// names the method over `np serve` instead of a terminal command nobody ran (#10), and Jott quotes that line as an
+/// audit trail — a record that invents a command is worse than no record. Jott still *reads* an older answer, every
+/// new key being optional on the wire, but a backend that cannot take the answer itself is not one to ship.
+pub const MIN_NP_VERSION: (u64, u64, u64) = (0, 5, 1);
 
 /// The np release Jott puts inside its installer, and the one an older install is pointed at. CI downloads the one
 /// named in `packaging/np-pin.json`; `the_hint_names_the_np_the_installer_ships` fails if the two disagree, because
 /// a hint that sends someone to fetch a build Jott then refuses is worse than no hint.
-pub const NP_RELEASE_VERSION: &str = "0.4.0";
+pub const NP_RELEASE_VERSION: &str = "0.5.1";
 
-/// The floor as a sentence fragment: `0.4.0`. Spelled once so a refusal and an install hint cannot quote different
+/// The floor as a sentence fragment: `0.5.1`. Spelled once so a refusal and an install hint cannot quote different
 /// numbers at the same person.
 pub fn min_version_text() -> String {
     let (major, minor, patch) = MIN_NP_VERSION;

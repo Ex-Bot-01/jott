@@ -37,10 +37,25 @@ if path := os.environ.get("FAKE_NP_SCENARIO"):
 INITIALIZE = SCENARIO.get("initialize", {
     "data_dir": "/fake/data",
     "features": {"fetch": True, "local_model": True, "vision": False},
-    "methods": ["status.get", "initialize", "search", "scan", "embed", "models.list", "links.list", "shutdown"],
+    # Ten methods as of 0.5.x: the eight of 0.4.0 plus the two consent doors (#7). A client that reads this list to
+    # decide what it may ask must see what the real binary answers, or Jott's feature-detection is tested against a
+    # backend nobody ships.
+    "methods": [
+        "status.get",
+        "initialize",
+        "search",
+        "scan",
+        "embed",
+        "models.list",
+        "links.list",
+        "embeddings.enable",
+        "embeddings.disable",
+        "shutdown",
+    ],
     # What this stand-in emulates. Bump it with `packaging/np-pin.json`, and read the release notes before you do:
-    # 0.4.0 changed when `progress` appears (below) and added keys to `search` and `models.list`.
-    "np": "0.4.0",
+    # 0.4.0 changed when `progress` appears (below) and added keys to `search` and `models.list`; 0.5.0 opened
+    # `embeddings.enable`/`embeddings.disable` and prefix matching; 0.5.1 fixed the provenance line those doors write.
+    "np": "0.5.1",
     "protocol": 1,
 })
 
@@ -175,6 +190,35 @@ for line in sys.stdin:
         note(req_id, method, "refused", {"code": fault["code"]})
         continue
     result = SCENARIO.get("replies", {}).get(method)
+    if result is None and method == "embeddings.enable":
+        # Measured against 0.5.1, including the one door that refuses: a parameter that is not `model` is answered
+        # with -32602 rather than `ok`, because ignoring it would report consent that never happened. An id this
+        # stand-in has no reason to refuse is accepted; scenarios inject the `-32000 no pinned model …` fault when a
+        # test wants that path.
+        unknown = [key for key in params if key != "model"]
+        if unknown:
+            write({"error": {"code": -32602,
+                             "message": 'params need a "model" this build pins — `models.list` answers one under '
+                                        '`pinned`, with its byte count'},
+                   "id": req_id, "jsonrpc": "2.0"})
+            note(req_id, method, "refused", {"code": -32602})
+            continue
+        result = {
+            "changed": ["embeddings.provider", "embeddings.model"],
+            "fetch": {"bytes_total": 309855456, "members": ["main"]},
+            "model": params.get("model") or "embeddinggemma-2",
+            "persisted_to": "/fake/.config/note-processor/config.toml",
+            "provider": "local-model",
+        }
+    if result is None and method == "embeddings.disable":
+        # Revoking switches the provider off and keeps the model: `changed` naming one key is that decision.
+        result = {
+            "changed": ["embeddings.provider"],
+            "fetch": None,
+            "model": "embeddinggemma-2",
+            "persisted_to": "/fake/.config/note-processor/config.toml",
+            "provider": "none",
+        }
     if result is None:
         write({"error": {"code": -32601,
                          "message": f"unknown method `{method}`: this build answers status.get, "

@@ -13,8 +13,8 @@ export type Segment = { text: string; matched: boolean }
     in a note reads as a rendering fault rather than as an answer. np's own scorer wants two characters too. */
 const MIN_TERM = 2
 
-export function markTerms(text: string, query: string): Segment[] {
-  const ranges = matchRanges(text, query)
+export function markTerms(text: string, query: string, prefix = false): Segment[] {
+  const ranges = matchRanges(text, query, prefix)
   if (ranges.length === 0) return [{ text, matched: false }]
   const segments: Segment[] = []
   let at = 0
@@ -28,14 +28,15 @@ export function markTerms(text: string, query: string): Segment[] {
 }
 
 /** Where to scroll an editor so the reader lands on the answer. `null` means the words are not in this note —
-    which a vector-only hit can genuinely mean, and "no place to go" is truer than jumping to the top. */
-export function firstMatch(text: string, query: string): number | null {
-  const ranges = matchRanges(text, query)
+    which a vector-only hit can genuinely mean, and "no place to go" is truer than jumping to the top.
+    `prefix` must be what the search was run with, or the row and the opened note disagree about what matched. */
+export function firstMatch(text: string, query: string, prefix = false): number | null {
+  const ranges = matchRanges(text, query, prefix)
   return ranges.length === 0 ? null : ranges[0].from
 }
 
 /** Every occurrence of every word in `query`, in document order and never overlapping. */
-export function matchRanges(text: string, query: string): { from: number; to: number }[] {
+export function matchRanges(text: string, query: string, prefix = false): { from: number; to: number }[] {
   const terms = termsOf(query)
   if (terms.length === 0 || text.length === 0) return []
 
@@ -48,7 +49,7 @@ export function matchRanges(text: string, query: string): { from: number; to: nu
   while (at < haystack.length) {
     let best: { from: number; to: number } | null = null
     for (const term of terms) {
-      const found = haystack.indexOf(term, at)
+      const found = nextOccurrence(haystack, term, at, prefix)
       if (found === -1) continue
       // Earliest wins; on a tie the longer word does, so `kumquat` beats the `ku` of another term and the
       // mark covers the thing the reader searched for.
@@ -62,6 +63,23 @@ export function matchRanges(text: string, query: string): { from: number; to: nu
     at = Math.max(best.to, best.from + 1)
   }
   return ranges
+}
+
+/** The next occurrence of `term` at or after `from`, and in prefix mode the next one that **begins a word**.
+    Word-beginning is np's rule for widening (note-processor#6), so the window marks exactly what np matched: `grand`
+    lights up in *grandmother* and stays dark in *agrand*. */
+function nextOccurrence(haystack: string, term: string, from: number, prefix: boolean): number {
+  let at = haystack.indexOf(term, from)
+  while (at !== -1 && prefix && !startsWithWord(haystack, at)) at = haystack.indexOf(term, at + 1)
+  return at
+}
+
+function startsWithWord(haystack: string, at: number): boolean {
+  if (at === 0) return true
+  const before = haystack[at - 1]!
+  // Underscore counts: a vault full of `note_processor_run` identifiers is exactly where widening does harm, and
+  // treating `_` as a word character is what keeps `grand` from matching inside `my_grandmother`.
+  return !/[\p{L}\p{N}_]/u.test(before)
 }
 
 function termsOf(query: string): string[] {

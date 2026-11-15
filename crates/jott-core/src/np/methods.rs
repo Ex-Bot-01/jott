@@ -10,8 +10,8 @@
 use super::client::NpClient;
 use super::handshake::{parse_initialize, NpInfo};
 use super::outcomes::{
-    embed_outcome, model_listing, scan_outcome, search_answer, EmbedOutcome, Mode, ModelListing,
-    ScanOutcome, SearchAnswer,
+    embed_outcome, model_listing, scan_outcome, search_answer, EmbedOutcome, EnableAnswer, Mode,
+    ModelListing, RawEnableAnswer, ScanOutcome, SearchAnswer,
 };
 use super::{NpError, NpFault};
 use serde_json::{json, Value};
@@ -57,11 +57,16 @@ pub async fn search(
     query: &str,
     limit: u8,
     mode: Mode,
+    // Widen terms to word beginnings (0.5.x, note-processor#6). Always sent, always a boolean: np's own default is
+    // off and Jott's toggle is off until asked, so `false` is the honest value rather than an omitted key that lets
+    // somebody else's default decide what a person's search meant.
+    prefix: bool,
 ) -> Result<SearchAnswer, NpFault> {
     let mut params = workspace_params(workspace);
     params["query"] = json!(query);
     params["limit"] = json!(limit);
     params["mode"] = json!(mode.label());
+    params["prefix"] = json!(prefix);
     let value = client.request("search", params).await?;
     search_answer(&value)
 }
@@ -71,4 +76,31 @@ pub async fn search(
 pub async fn models_list(client: &NpClient, workspace: &Path) -> Result<ModelListing, NpFault> {
     let value = client.request("models.list", workspace_params(workspace)).await?;
     model_listing(&value)
+}
+
+/// Record consent where it belongs — in np. `embeddings.enable` writes np's own `embeddings.provider` and
+/// `embeddings.model`, refuses an id this build cannot use, and refuses to rewrite a file it cannot read; the answer
+/// says which keys moved, into which file, and what the eventual fetch costs.
+///
+/// Jott sends the model id and nothing else. It does not send a provider: choosing one was never ours to make, which
+/// is exactly what this method replaced.
+pub async fn embeddings_enable(client: &NpClient, model: &str) -> Result<EnableAnswer, NpFault> {
+    let value = client.request("embeddings.enable", json!({ "model": model })).await?;
+    Ok(serde_json::from_value::<RawEnableAnswer>(value).map_err(|e| NpFault {
+        code: -32603,
+        message: format!("np answered embeddings.enable in a shape Jott cannot read: {e}"),
+    })?
+    .into_answer())
+}
+
+/// Take the answer back. np switches the provider off and **keeps** `embeddings.model`, because revoking permission
+/// to download is not a licence to erase which model someone chose; Jott reports whatever np says it changed rather
+/// than describing the file from memory.
+pub async fn embeddings_disable(client: &NpClient) -> Result<EnableAnswer, NpFault> {
+    let value = client.request("embeddings.disable", json!({})).await?;
+    Ok(serde_json::from_value::<RawEnableAnswer>(value).map_err(|e| NpFault {
+        code: -32603,
+        message: format!("np answered embeddings.disable in a shape Jott cannot read: {e}"),
+    })?
+    .into_answer())
 }

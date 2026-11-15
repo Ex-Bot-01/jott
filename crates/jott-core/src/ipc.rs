@@ -197,6 +197,11 @@ pub struct SearchResults {
     /// np's own sentence about this answer ("never been scanned", "the model was fetched by this search"). Named
     /// `notice` rather than `note` because everywhere else in Jott a note is somebody's file.
     pub notice: Option<String>,
+    /// 0.5.x+: did np widen any term to word beginnings? `None` from an older np that has no such flag — the window
+    /// prints "did not widen" and "did not say" as different sentences (§4).
+    pub prefix_used: Option<bool>,
+    /// Which words np widened, in its own words. The header may name these and nothing else.
+    pub prefix_terms: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -212,6 +217,55 @@ pub struct HitDto {
     pub score: f64,
     pub bm25: Option<f64>,
     pub cosine: Option<f64>,
+    /// Did this row match a word that was typed? `false` means np reached it by a **word beginning** and the row says
+    /// so. `null` means np never word-tested it — a meaning-only hit — which is not the same as a yes.
+    pub matched_exactly: Option<bool>,
+}
+
+/// The receipt a consent button got back, in the shape the window can render (0.5.x, note-processor#7).
+///
+/// `auto_fetch` is one of four words — `written`, `untouched`, `noConfigPath`, `failed` — because "Jott wrote its key"
+/// and "Jott could not write its key" are different instructions to a person, and the wire has to be able to tell them
+/// apart. The TypeScript union in `ipc.ts` is pinned against these keys by `ipc.test.ts`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ConsentAnswerDto {
+    pub granted: bool,
+    /// np's own refusal sentence, unchanged. Non-null means np did not do the thing.
+    pub np_refused: Option<String>,
+    /// Which settings np moved itself, in the order it named them.
+    pub changed: Vec<String>,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    /// The file np says it wrote, as a path string. `None` means np did not say — not "the file you would guess".
+    pub persisted_to: Option<String>,
+    pub fetch_bytes: Option<u64>,
+    pub auto_fetch: String,
+    /// The sentence naming the file when `auto_fetch` is `failed`.
+    pub auto_fetch_error: Option<String>,
+}
+
+impl From<crate::ingest::consent::ConsentReceipt> for ConsentAnswerDto {
+    fn from(receipt: crate::ingest::consent::ConsentReceipt) -> ConsentAnswerDto {
+        use crate::ingest::consent::AutoFetch;
+        let (auto_fetch, auto_fetch_error) = match &receipt.auto_fetch {
+            AutoFetch::Written => ("written".to_string(), None),
+            AutoFetch::Untouched => ("untouched".to_string(), None),
+            AutoFetch::NoConfigPath => ("noConfigPath".to_string(), None),
+            AutoFetch::Failed { sentence } => ("failed".to_string(), Some(sentence.clone())),
+        };
+        ConsentAnswerDto {
+            granted: receipt.granted,
+            np_refused: receipt.np_refused,
+            changed: receipt.changed,
+            provider: receipt.provider,
+            model: receipt.model,
+            persisted_to: receipt.persisted_to.map(|path| path.display().to_string()),
+            fetch_bytes: receipt.fetch_bytes,
+            auto_fetch,
+            auto_fetch_error,
+        }
+    }
 }
 
 /// What `np://missing` carries: the reason, and the instructions for *this* platform (§2).
@@ -757,9 +811,12 @@ impl VaultSession {
     /// Content search. Reader connection, so it answers while an embed is running — §18.1 measured
     /// 102.1 s for a search queued behind an embed on one connection, and a frozen overlay is the whole
     /// reason there are two connections.
-    pub async fn search(&self, query: &str, limit: u8) -> Result<SearchResults, IpcError> {
+    /// Content search. `prefix` is the window's "match word beginnings" toggle (note-processor#6): off unless asked,
+    /// because a vault full of identifiers does not want `grand` reporting *grandmother* unbidden — and when it is on,
+    /// np says which words it widened so the header can name them.
+    pub async fn search(&self, query: &str, limit: u8, prefix: bool) -> Result<SearchResults, IpcError> {
         let started = std::time::Instant::now();
-        let answer = self.pool.search(&self.vault, query, limit).await.map_err(|fault| {
+        let answer = self.pool.search(&self.vault, query, limit, prefix).await.map_err(|fault| {
             self.record_fault("search", started.elapsed(), fault.code, &fault.message);
             IpcError::np_fault(&fault)
         })?;
@@ -777,6 +834,8 @@ impl VaultSession {
             keyword_used: answer.keyword_used,
             semantic_used: answer.semantic_used,
             notice: answer.note,
+            prefix_used: answer.prefix_used,
+            prefix_terms: answer.prefix_terms,
         })
     }
 
@@ -840,16 +899,66 @@ impl VaultSession {
         }
     }
 
-    pub fn set_consent(&self, granted: bool) {
-        // The answer is written into np's own config, so the log names the key and the destination. Someone
-        // auditing their machine later should be able to see that a window changed their configuration, and where.
-        let answer = if granted { "granted" } else { "declined" };
-        let detail = match &self.np_config {
-            Some(path) => format!("{answer} · writes models.auto_fetch = {granted} → {}", path.display()),
-            None => format!("{answer} · nothing written: no np config path was found"),
+    /// The consent prompt's two buttons, taken to np over the pipe.
+    ///
+    /// np opens and closes its own door (`embeddings.enable` / `embeddings.disable`, note-processor#7); Jott writes
+    /// the one key that is its own business, `[models] auto_fetch`, and reports what actually happened to it. The
+    /// log line names the keys and the files and never a model id — a settings decision has to be auditable from
+    /// those two facts alone.
+    pub async fn answer_consent(&self, granted: bool) -> crate::ingest::consent::ConsentReceipt {
+        use crate::ingest::consent::{answer_consent as record, answer_without_np, AutoFetch};
+        // The same id the card is naming, read the same way, so a person clicking a button about one model cannot
+        // have a different one enabled behind their back.
+        let model = self
+            .embeddings_help()
+            .model_id
+            .unwrap_or_else(|| crate::ingest::consent::builtin_default_model().id.to_string());
+
+        let receipt = match self.pool.writer().await {
+            Ok(client) => record(&client, self.np_config.as_deref(), granted, &model).await,
+            // No child to ask. np's words do not exist, so the receipt says that — and a *no* still gets its
+            // guardrail, because writing our own key needs nothing from the process that failed to start.
+            Err(why) => answer_without_np(self.np_config.as_deref(), granted, why.to_string()),
         };
-        self.local(LocalRecord::new("consent").with_detail(detail));
+
+        let answer = if granted { "granted" } else { "declined" };
+        // Which door was knocked on is the one fact that tells an audit "allowed" from "revoked", and no key name
+        // carries it.
+        let method = if granted { "embeddings.enable" } else { "embeddings.disable" };
+        let mut detail = format!("{answer} · called {method}");
+        // What happened to Jott's key comes from the receipt, never from what the button meant. This used to say
+        // "wrote models.auto_fetch = false anyway" for every declined answer np refused — including the ones where
+        // the write itself failed, which is a sentence about something that did not happen.
+        let key = match &receipt.auto_fetch {
+            AutoFetch::Written => format!("writes models.auto_fetch = {granted}"),
+            AutoFetch::Untouched => "models.auto_fetch left as it was".to_string(),
+            AutoFetch::NoConfigPath => "wrote no models.auto_fetch: no np config path was found".to_string(),
+            AutoFetch::Failed { sentence } => format!("could not write models.auto_fetch: {sentence}"),
+        };
+        detail.push_str(&format!(" · {key}"));
+        if receipt.np_refused.is_some() {
+            detail.push_str(" · note-processor refused (its words are on screen, not in this file)");
+        } else {
+            let moved = if receipt.changed.is_empty() {
+                "nothing (already set)".to_string()
+            } else {
+                receipt.changed.join(", ")
+            };
+            let where_to = receipt
+                .persisted_to
+                .as_deref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "a file note-processor did not name".to_string());
+            detail.push_str(&format!(" · note-processor wrote {moved} → {where_to}"));
+        }
+        // np's own sentence goes to the drawer row and nowhere else: it names the model ids this build can use, and
+        // the journal is read by somebody else years later. The card quotes it byte for byte while it is on screen.
+        self.local_record(LocalRecord::new("consent").with_detail(detail), receipt.np_refused.clone());
+
+        // The queue's own switch flips last, and flips even when np refused: a person who was told no still
+        // expects the window to stop asking, and the guardrail question is settled by the receipt above.
         self.queue.set_consent(if granted { Consent::Granted } else { Consent::Declined });
+        receipt
     }
 
     /// Closing: finish what is in flight up to the queue's cap, then stop watching. Never waits for a
@@ -893,6 +1002,14 @@ impl VaultSession {
     /// Both from one call so the two can never disagree about whether a save happened, and neither can fail the
     /// operation it describes: the log's own rule is that a diagnostic must not stop a save (§19).
     fn local(&self, record: LocalRecord) {
+        self.local_record(record, None);
+    }
+
+    /// As [`local`](Self::local), with one extra thing in the **drawer row** and not in the file: a sentence quoted
+    /// from note-processor. The journal keeps its closed, content-free detail because somebody else reads it years
+    /// later and np's sentences name model ids; the trace ring is memory for the person who is looking right now,
+    /// and v0.0.11 promised them np's words byte for byte.
+    fn local_record(&self, record: LocalRecord, np_sentence: Option<String>) {
         let _ = guarded(&self.journal).clone().record_local(&record);
         let mut detail = record.event.to_string();
         if let Some(rel) = &record.rel {
@@ -902,6 +1019,10 @@ impl VaultSession {
         if let Some(more) = &record.detail {
             detail.push_str(" — ");
             detail.push_str(more);
+        }
+        if let Some(sentence) = np_sentence {
+            // Quoted, so a reader can tell whose words these are.
+            detail.push_str(&format!(" · “{sentence}”"));
         }
         self.trace.push(TraceEvent {
             at_ms: now_ms(),
@@ -972,7 +1093,15 @@ impl From<crate::vault::files::LinkRef> for LinkRefDto {
 
 impl From<crate::np::outcomes::Hit> for HitDto {
     fn from(hit: crate::np::outcomes::Hit) -> HitDto {
-        HitDto { path: hit.path, snippet: hit.snippet, kind: hit.kind, score: hit.score, bm25: hit.bm25, cosine: hit.cosine }
+        HitDto {
+            path: hit.path,
+            snippet: hit.snippet,
+            kind: hit.kind,
+            score: hit.score,
+            bm25: hit.bm25,
+            cosine: hit.cosine,
+            matched_exactly: hit.matched_exactly,
+        }
     }
 }
 

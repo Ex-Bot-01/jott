@@ -6,7 +6,7 @@
 mod common;
 
 use common::{fixture_result, spawn, vault};
-use jott_core::np::methods::{embed, initialize, models_list, scan, search};
+use jott_core::np::methods::{embed, embeddings_disable, embeddings_enable, initialize, models_list, scan, search};
 use jott_core::np::outcomes::{EmbedOutcome, Mode, ModelState, ScanOutcome};
 use jott_core::np::{NpError, NpMissing};
 use serde_json::json;
@@ -190,7 +190,7 @@ async fn an_outcome_this_build_does_not_know_still_arrives_as_a_state() {
 async fn a_keyword_only_search_keeps_mode_vectors_and_reason_together() {
     let (_d, client) = spawn(json!({"replies": {"search": fixture_result(3)}})).await;
 
-    let answer = search(&client, &vault(), "hash", 8, Mode::Hybrid).await.unwrap();
+    let answer = search(&client, &vault(), "hash", 8, Mode::Hybrid, false).await.unwrap();
     assert_eq!(answer.mode, Mode::Keyword, "np answered which half ran, in `mode`");
     assert!(!answer.vectors);
     assert!(!answer.offline);
@@ -216,7 +216,7 @@ async fn a_search_that_names_why_a_half_was_missing_says_so() {
     }}}))
     .await;
 
-    let answer = search(&client, &vault(), "anything", 8, Mode::Hybrid).await.unwrap();
+    let answer = search(&client, &vault(), "anything", 8, Mode::Hybrid, false).await.unwrap();
     assert_eq!(answer.mode, Mode::Hybrid);
     assert!(!answer.vectors);
     assert_eq!(answer.reason.as_deref(), Some("provider-disabled"));
@@ -239,7 +239,7 @@ async fn a_semantic_only_hit_stays_distinguishable_from_a_zero_bm25() {
     }}}))
     .await;
 
-    let answer = search(&client, &vault(), "meaning", 8, Mode::Hybrid).await.unwrap();
+    let answer = search(&client, &vault(), "meaning", 8, Mode::Hybrid, false).await.unwrap();
     assert_eq!(answer.hits[0].bm25, None, "a hit only the vector list held has no bm25 at all");
     assert_eq!(answer.hits[0].snippet, None);
     assert_eq!(answer.hits[1].bm25, Some(0.0), "a real zero is a number np computed");
@@ -261,7 +261,7 @@ async fn a_newline_in_a_snippet_does_not_split_the_frame() {
     }}))
     .await;
 
-    let answer = search(&client, &vault(), "one\ntwo", 5, Mode::Keyword).await.unwrap();
+    let answer = search(&client, &vault(), "one\ntwo", 5, Mode::Keyword, false).await.unwrap();
     assert_eq!(answer.hits[0].snippet.as_deref(), Some("one\ntwo\nthree"));
     // The stream is still aligned: the next request gets its own answer, not the tail of that one.
     assert!(matches!(scan(&client, &vault()).await.unwrap(), ScanOutcome::Applied(_)));
@@ -352,7 +352,7 @@ async fn both_flavours_of_bad_params_keep_their_own_sentence() {
     }}))
     .await;
 
-    let mode = search(&client, &vault(), "q", 5, Mode::Keyword).await.unwrap_err();
+    let mode = search(&client, &vault(), "q", 5, Mode::Keyword, false).await.unwrap_err();
     assert_eq!((mode.code, mode.message.as_str()), (-32602, "unknown mode `telepathy`: write hybrid, semantic or keyword"));
     let query = scan(&client, &vault()).await.unwrap_err();
     assert_eq!((query.code, query.message.as_str()), (-32602, "params need a \"query\" string"));
@@ -431,7 +431,7 @@ async fn a_search_answer_says_whether_the_folder_was_ever_indexed() {
     }}}))
     .await;
 
-    let answer = search(&client, &vault(), "kumquat", 8, Mode::Hybrid).await.unwrap();
+    let answer = search(&client, &vault(), "kumquat", 8, Mode::Hybrid, false).await.unwrap();
     assert_eq!(answer.indexed, Some(false), "nothing matched and nothing *could* have: different sentences");
     assert_eq!(answer.keyword_used, Some(true));
     assert_eq!(answer.semantic_used, Some(false), "the meaning half did not run, whatever `mode` says");
@@ -445,7 +445,7 @@ async fn a_search_answer_says_whether_the_folder_was_ever_indexed() {
 async fn an_older_np_leaves_the_new_keys_absent_rather_than_false() {
     let (_d, client) = spawn(json!({"replies": {"search": fixture_result(3)}})).await;
 
-    let answer = search(&client, &vault(), "hash", 8, Mode::Hybrid).await.unwrap();
+    let answer = search(&client, &vault(), "hash", 8, Mode::Hybrid, false).await.unwrap();
     assert_eq!(answer.indexed, None);
     assert_eq!(answer.keyword_used, None);
     assert_eq!(answer.semantic_used, None);
@@ -557,4 +557,268 @@ async fn an_embed_that_fetched_nothing_says_so_by_being_null() {
         panic!("outcome `current` is work finished");
     };
     assert_eq!(done.fetched, None);
+}
+
+// ---- the two consent doors (note-processor#7). Every document below was answered by np 0.5.1 on this box.
+
+/// "Allow the download" now has somewhere to go: np writes its own two keys and says which ones, where, and what the
+/// fetch will cost. Jott's job is to pass that answer on, not to describe settings it did not write.
+#[tokio::test]
+async fn enabling_embeddings_reports_what_np_changed_and_what_it_costs() {
+    // The stand-in appends `{"method":…, "params":…}` per call when a scenario names a record file, which is the only
+    // way to see what Jott actually sent: a param dropped on the floor would consent to something else, silently.
+    let record = std::env::temp_dir().join(format!("jott-enable-{}.ndjson", std::process::id()));
+    let _ = std::fs::remove_file(&record);
+    let (_d, client) = spawn(json!({
+        "record": record.display().to_string(),
+        "replies": {"embeddings.enable": {
+        "changed": ["embeddings.provider", "embeddings.model"],
+        "fetch": {"bytes_total": 309_855_456, "members": ["main"]},
+        "model": "embeddinggemma-2",
+        "persisted_to": "/home/you/.config/note-processor/config.toml",
+        "provider": "local-model"
+    }}}))
+    .await;
+
+    let answer = embeddings_enable(&client, "embeddinggemma-2").await.expect("np accepted the answer");
+    assert_eq!(answer.changed, vec!["embeddings.provider".to_string(), "embeddings.model".to_string()]);
+    assert_eq!(answer.provider.as_deref(), Some("local-model"));
+    assert_eq!(answer.model.as_deref(), Some("embeddinggemma-2"));
+    assert_eq!(answer.fetch_bytes, Some(309_855_456), "the price is np's number, not ours");
+    assert_eq!(answer.persisted_to.as_deref(), Some(Path::new("/home/you/.config/note-processor/config.toml")));
+
+    // …and it asked about the model we named.
+    let lines = std::fs::read_to_string(&record).expect("the stand-in recorded its calls");
+    let asked: Vec<serde_json::Value> = lines
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("one call per line"))
+        .filter(|call: &serde_json::Value| call["method"] == json!("embeddings.enable"))
+        .collect();
+    assert_eq!(asked.len(), 1, "one answer, one call: {lines}");
+    assert_eq!(asked[0]["params"]["model"], json!("embeddinggemma-2"), "{}", asked[0]);
+    let _ = std::fs::remove_file(&record);
+
+    client.shutdown().await.unwrap();
+}
+
+/// Revoking is not erasing: np switches the provider off and **keeps** which model was chosen, so saying no twice in a
+/// row does not lose the choice someone made once. `changed` naming one key is that fact on the wire.
+#[tokio::test]
+async fn disabling_keeps_the_model_and_says_which_key_moved() {
+    let (_d, client) = spawn(json!({"replies": {"embeddings.disable": {
+        "changed": ["embeddings.provider"],
+        "fetch": null,
+        "model": "embeddinggemma-2",
+        "persisted_to": "/home/you/.config/note-processor/config.toml",
+        "provider": "none"
+    }}}))
+    .await;
+
+    let answer = embeddings_disable(&client).await.expect("np took the answer back");
+    assert_eq!(answer.changed, vec!["embeddings.provider".to_string()]);
+    assert_eq!(answer.provider.as_deref(), Some("none"));
+    assert_eq!(answer.model.as_deref(), Some("embeddinggemma-2"), "disable is not forget");
+    assert_eq!(answer.fetch_bytes, None);
+
+    client.shutdown().await.unwrap();
+}
+
+/// Measured on 0.5.1: enabling what is already enabled writes no bytes and answers `changed: []`. That is a success
+/// with an empty list, and the card must be able to tell it apart from "nothing happened because we did not ask".
+#[tokio::test]
+async fn an_enable_that_changed_nothing_is_still_an_answer() {
+    let (_d, client) = spawn(json!({"replies": {"embeddings.enable": {
+        "changed": [], "fetch": null, "model": "embeddinggemma-2",
+        "persisted_to": "/home/you/.config/note-processor/config.toml", "provider": "local-model"
+    }}}))
+    .await;
+
+    let answer = embeddings_enable(&client, "embeddinggemma-2").await.expect("already on is not an error");
+    assert!(answer.changed.is_empty(), "np wrote nothing: {answer:?}");
+    assert_eq!(answer.provider.as_deref(), Some("local-model"));
+    assert_eq!(answer.fetch_bytes, None, "no price quoted because no fetch is owed");
+
+    client.shutdown().await.unwrap();
+}
+
+/// A config file np itself cannot read is left untouched — the refusal measured on 0.5.1 names the parse problem and
+//  the path. Jott shows it byte for byte; a paraphrase would lose the line number that makes it fixable.
+#[tokio::test]
+async fn np_refuses_to_write_a_file_it_cannot_read_and_says_which() {
+    let sentence = "config io: config parse error in /home/you/.config/note-processor/config.toml: TOML parse error at line 1, column 12";
+    let (_d, client) = spawn(json!({"faults": {"embeddings.enable": {"code": -32000, "message": sentence}}}))
+        .await;
+
+    let Err(fault) = embeddings_enable(&client, "embeddinggemma-2").await else {
+        panic!("an unloadable config must not look like consent recorded");
+    };
+    assert_eq!(fault.code, -32000);
+    assert_eq!(fault.message, sentence, "np's sentence, unchanged: {}", fault.message);
+
+    client.shutdown().await.unwrap();
+}
+
+/// An id this build does not pin is refused by name, naming the ids it does. Jott passes that through rather than
+/// retrying with its own guess — the compiled-in default is not a fact about someone's binary.
+#[tokio::test]
+async fn an_unpinned_model_is_refused_with_the_names_np_will_accept() {
+    let sentence = "config io: no pinned model \"no-such-model\": this build can name \"embeddinggemma-2\" \
+        — enable one of those, or install bytes you already hold with `np models install`";
+    let (_d, client) = spawn(json!({"faults": {"embeddings.enable": {"code": -32000, "message": sentence}}}))
+        .await;
+
+    let Err(fault) = embeddings_enable(&client, "no-such-model").await else {
+        panic!("np refuses this, so Jott must not report success");
+    };
+    assert_eq!(fault.message, sentence);
+
+    client.shutdown().await.unwrap();
+}
+
+/// `persisted_to` is optional on the wire. Absent means np did not say where — it does **not** mean "the file we
+/// guessed", and the card has to be able to say "note-processor recorded it" without naming a path that may be wrong.
+#[tokio::test]
+async fn a_missing_persisted_to_stays_unknown() {
+    let (_d, client) = spawn(json!({"replies": {"embeddings.enable": {
+        "changed": ["embeddings.provider", "embeddings.model"], "fetch": null,
+        "model": "embeddinggemma-2", "provider": "local-model"
+    }}}))
+    .await;
+
+    let answer = embeddings_enable(&client, "embeddinggemma-2").await.expect("answer parsed");
+    assert_eq!(answer.persisted_to, None, "silence is not a path");
+    assert_eq!(answer.model.as_deref(), Some("embeddinggemma-2"));
+
+    client.shutdown().await.unwrap();
+}
+
+/// The stand-in answers these two doors the way 0.5.1 does with no scenario at all, so a later test that only cares
+/// about Jott's behaviour cannot accidentally configure a backend nobody ships.
+#[tokio::test]
+async fn the_stand_in_opens_the_door_without_being_told_to() {
+    let (_d, client) = spawn(json!({})).await;
+
+    let answer = embeddings_enable(&client, "embeddinggemma-2").await.expect("default behaviour");
+    assert_eq!(answer.changed, vec!["embeddings.provider".to_string(), "embeddings.model".to_string()]);
+    assert!(answer.provider_set(), "np switched embeddings on: {answer:?}");
+
+    let back = embeddings_disable(&client).await.expect("and took it back");
+    assert_eq!(back.changed, vec!["embeddings.provider".to_string()]);
+    assert!(!back.provider_set());
+    assert_eq!(back.model.as_deref(), Some("embeddinggemma-2"), "disable kept the choice");
+
+    client.shutdown().await.unwrap();
+}
+
+/// A guard on the stand-in itself, asked raw: 0.5.1 refuses a parameter it cannot use instead of answering `ok`, and
+/// a fixture that accepted typos would let Jott believe a consent answer had been recorded when np ignored it.
+#[tokio::test]
+async fn the_stand_in_refuses_a_parameter_np_would_refuse() {
+    let (_d, client) = spawn(json!({})).await;
+
+    let Err(fault) = client.request("embeddings.enable", json!({ "modle": "embeddinggemma-2" })).await else {
+        panic!("a misspelled parameter must not be reported as consent recorded");
+    };
+    assert_eq!(fault.code, -32602, "{fault}");
+
+    client.shutdown().await.unwrap();
+}
+
+// ---- prefix matching (note-processor#6). Measured against np 0.5.1 on a vault holding "grandmother":
+// `grand` finds nothing until the request asks for word beginnings, and then np says which words it widened.
+
+fn grand_note_reply(prefix: bool) -> serde_json::Value {
+    if prefix {
+        json!({"hits": [{"path": "a.md", "snippet": "\u{2026}my [grandmother] kept\u{2026}", "kind": "note",
+                          "score": 1.1, "bm25": null, "cosine": 0.82, "matched_exactly": false}],
+               "mode": "semantic", "vectors": true, "offline": false, "reason": null,
+               "indexed": true, "keyword_used": true, "semantic_used": true,
+               "prefix_used": true, "prefix_terms": ["grand"]})
+    } else {
+        json!({"hits": [], "mode": "hybrid", "vectors": true, "offline": false, "reason": null,
+               "indexed": true, "keyword_used": true, "semantic_used": true,
+               "prefix_used": false, "prefix_terms": []})
+    }
+}
+
+/// The default answer says plainly that nothing was widened. Jott must be able to tell "np did not widen" from
+/// "np did not say", because the first is a fact to print and the second is silence about an older build.
+#[tokio::test]
+async fn an_ordinary_search_says_nothing_was_widened() {
+    let record = std::env::temp_dir().join(format!("jott-prefix-off-{}.ndjson", std::process::id()));
+    let _ = std::fs::remove_file(&record);
+    let (_d, client) = spawn(json!({
+        "record": record.display().to_string(),
+        "replies": {"search": grand_note_reply(false)}
+    }))
+    .await;
+
+    let answer = search(&client, &vault(), "grand", 8, Mode::Hybrid, false).await.expect("np answered");
+    assert_eq!(answer.prefix_used, Some(false), "np said it did not widen");
+    assert_eq!(answer.prefix_terms, Vec::<String>::new());
+
+    // The parameter went out. A `prefix` that is never sent is the whole feature missing with every assertion above
+    // still passing, which is precisely why this test reads the wire rather than trusting the call site.
+    let lines = std::fs::read_to_string(&record).unwrap();
+    let sent: Vec<serde_json::Value> = lines
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("one call per line"))
+        .collect();
+    let search = sent.iter().find(|call| call["method"] == json!("search")).expect("a search was recorded");
+    assert_eq!(search["params"]["prefix"], json!(false), "{search}");
+
+    let _ = std::fs::remove_file(&record);
+    client.shutdown().await.unwrap();
+}
+
+/// With the flag on, np widens and **says** which words it widened. `prefix_terms` is what lets the window say
+/// "`grand` → grandmother" instead of claiming the note matched the typing.
+#[tokio::test]
+async fn a_widened_search_names_the_words_np_used() {
+    let record = std::env::temp_dir().join(format!("jott-prefix-on-{}.ndjson", std::process::id()));
+    let _ = std::fs::remove_file(&record);
+    let (_d, client) = spawn(json!({
+        "record": record.display().to_string(),
+        "replies": {"search": grand_note_reply(true)}
+    }))
+    .await;
+
+    let answer = search(&client, &vault(), "grand", 8, Mode::Hybrid, true).await.expect("np widened");
+    assert_eq!(answer.prefix_used, Some(true));
+    assert_eq!(answer.prefix_terms, vec!["grand".to_string()]);
+    assert_eq!(answer.hits.len(), 1);
+    assert_eq!(answer.hits[0].matched_exactly, Some(false), "this row was reached by a word beginning");
+
+    let lines = std::fs::read_to_string(&record).unwrap();
+    let search = lines
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("one call per line"))
+        .find(|call| call["method"] == json!("search"))
+        .expect("a search was recorded");
+    assert_eq!(search["params"]["prefix"], json!(true), "{search}");
+
+    let _ = std::fs::remove_file(&record);
+    client.shutdown().await.unwrap();
+}
+
+/// A hit with no `matched_exactly` key has never been word-tested — a vector-only hit. `None`, not `true`: reading
+/// absence as exactness would mark a meaning-match as a word match, which is the same lie in the other direction.
+#[tokio::test]
+async fn a_hit_np_never_word_tested_stays_unknown() {
+    let (_d, client) = spawn(json!({"replies": {"search": json!({
+        "hits": [{"path": "b.md", "snippet": null, "kind": "note", "score": 0.6, "bm25": null, "cosine": 0.71}],
+        "mode": "semantic", "vectors": true, "offline": false, "reason": null
+    })}}))
+    .await;
+
+    let answer = search(&client, &vault(), "grand", 8, Mode::Semantic, false).await.expect("answered");
+    assert_eq!(answer.hits[0].matched_exactly, None, "absence is not exactness");
+    // An np that predates the flag answers nothing about widening — and that stays unknown rather than "did not".
+    assert_eq!(answer.prefix_used, None, "silence from an older np is not a No");
+    assert!(answer.prefix_terms.is_empty());
+
+    client.shutdown().await.unwrap();
 }

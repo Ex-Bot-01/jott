@@ -13,8 +13,8 @@ use jott_core::diagnostics::{Journal, RunRecord};
 use jott_core::ingest::consent::np_config_path;
 use jott_core::ingest::queue::ConsentOffer;
 use jott_core::ipc::{
-    self, ConsentHelp, Diagnostics, IpcError, NpMissingPayload, NoteContent, RegistryInfo, RenameOutcome, SearchResults,
-    VaultListing, VaultSession, WriteResult,
+    self, ConsentAnswerDto, ConsentHelp, Diagnostics, IpcError, NpMissingPayload, NoteContent, RegistryInfo,
+    RenameOutcome, SearchResults, VaultListing, VaultSession, WriteResult,
 };
 use jott_core::np::client::NpClient;
 use jott_core::np::resolve::{current_os, resolve_np, NpSource};
@@ -354,8 +354,13 @@ pub fn discard_mirror(rel: String, app: State<'_, App>) -> Result<(), IpcError> 
 }
 
 #[tauri::command]
-pub async fn search_vault(query: String, limit: u8, app: State<'_, App>) -> Result<SearchResults, IpcError> {
-    app.current()?.search(&query, limit).await
+pub async fn search_vault(
+    query: String,
+    limit: u8,
+    prefix: bool,
+    app: State<'_, App>,
+) -> Result<SearchResults, IpcError> {
+    app.current()?.search(&query, limit, prefix).await
 }
 
 #[tauri::command]
@@ -384,12 +389,15 @@ pub fn embeddings_help(app: State<'_, App>) -> Result<ConsentHelp, IpcError> {
 /// The consent prompt's two buttons. The queue writes np's config; the registry remembers the answer for
 /// the next launch (§8, §12).
 #[tauri::command]
-pub fn set_consent(granted: bool, app: State<'_, App>) -> Result<(), IpcError> {
+pub async fn set_consent(granted: bool, app: State<'_, App>) -> Result<ConsentAnswerDto, IpcError> {
     let session = app.current()?;
-    session.set_consent(granted);
+    // The answer goes to np over the pipe, and what np said comes back to the window: the card quotes it rather than
+    // describing the file from memory.
+    let receipt = session.answer_consent(granted).await;
     app.store
         .set_consent(session.vault(), if granted { Consent::Granted } else { Consent::Declined })
-        .map_err(|e| IpcError::io("", e.to_string()))
+        .map_err(|e| IpcError::io("", e.to_string()))?;
+    Ok(ConsentAnswerDto::from(receipt))
 }
 
 /// Asked when the window closes, so a save that was in the queue gets its pass (§11). Bounded by the

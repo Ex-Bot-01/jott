@@ -71,6 +71,22 @@ describe('the search answer', () => {
     // what an older np sends — so the window would lose the fact and keep the doubt.
     expect(interfaceKeys(ipcTs, 'SearchResults').sort()).toEqual(rustFields(ipcRust, 'SearchResults').sort())
   })
+
+  it('carries every key Rust sends about one hit', () => {
+    // `matchedExactly` is the difference between a row that matched what somebody typed and a row np reached by a word
+    // beginning. Dropped on this side it becomes `undefined`, which renders exactly like a hit whose exactness nobody
+    // knows — so the widening would go unmarked on screen while every other test still passed.
+    expect(interfaceKeys(ipcTs, 'SearchHit').sort()).toEqual(rustFields(ipcRust, 'HitDto').sort())
+  })
+})
+
+describe('the consent receipt', () => {
+  it('carries every key Rust sends about what note-processor did', () => {
+    // Since np 0.5.x the answer comes back over the pipe (`embeddings.enable`), and the card quotes it. A key dropped
+    // on this side turns "Jott could not write models.auto_fetch" into `undefined`, which renders as silence about the
+    // one thing the person needs to know: whether the download guardrail actually moved.
+    expect(interfaceKeys(ipcTs, 'ConsentOutcome').sort()).toEqual(rustFields(ipcRust, 'ConsentAnswerDto').sort())
+  })
 })
 
 describe('the consent card payload', () => {

@@ -183,13 +183,19 @@ async fn a_search_through_the_session_writes_exactly_one_line() {
     let session = VaultSession::open_in(fake_np(), info(), vault.path(), Consent::Declined, None, app_data.path().to_path_buf())
         .with_journal(journal.clone());
 
-    session.search("A", 8).await.expect("the reader answers");
+    // Asked with word-beginning matching on purpose: whether np widened a search is a fact about one **answer**, and
+    // the journal's key set stays closed (§18.13). A widened request logs the same shape as any other.
+    session.search("A", 8, true).await.expect("the reader answers");
 
     let lines = journal.read_lines().expect("log reads back");
     assert_eq!(lines.len(), 1, "one request, one line: {lines:?}");
     assert_eq!(lines[0]["method"], "search");
     assert_eq!(lines[0]["outcome"], "applied");
     assert_eq!(lines[0]["workspace"], vault.path().display().to_string().replace('\\', "/"));
+    let keys: Vec<&str> = lines[0].as_object().expect("a line is an object").keys().map(String::as_str).collect();
+    for forbidden in ["prefix", "prefix_used", "prefix_terms", "matched_exactly", "query"] {
+        assert!(!keys.contains(&forbidden), "the search line grew a field ({forbidden}): {keys:?}");
+    }
 
     session.close().await;
 }
@@ -212,7 +218,7 @@ async fn a_refused_search_is_recorded_as_a_fault_with_np_words() {
     )
     .with_journal(journal.clone());
 
-    session.search("anything", 8).await.expect_err("no np here");
+    session.search("anything", 8, false).await.expect_err("no np here");
     let lines = journal.read_lines().expect("log");
     assert_eq!(lines.len(), 1);
     assert_eq!(lines[0]["outcome"], "fault");
@@ -448,6 +454,17 @@ async fn answering_consent_records_the_key_and_where_it_went() {
     std::fs::write(vault.path().join("a.md"), b"# A\n").expect("note");
     let np_config = app_data.path().join("config.toml");
 
+    // Answering consent now talks to np over the pipe, so this test needs a stand-in of its own: `FAKE_NP_SCENARIO`
+    // is process-global and another test in this binary may well have left it pointing at a tempdir that no longer
+    // exists. Inheriting that was a crash with a Python traceback, which is a fair punishment but a poor fixture.
+    let _scenario = scenario(json!({"replies": {"embeddings.enable": {
+        "changed": ["embeddings.provider", "embeddings.model"],
+        "fetch": {"bytes_total": 309_855_456, "members": ["main"]},
+        "model": "embeddinggemma-2",
+        "persisted_to": "/home/you/.config/note-processor/config.toml",
+        "provider": "local-model"
+    }}}));
+
     let journal = Arc::new(Journal::open(app_data.path()));
     let session = VaultSession::open_in(
         fake_np(),
@@ -459,7 +476,7 @@ async fn answering_consent_records_the_key_and_where_it_went() {
     )
     .with_journal(journal.clone());
 
-    session.set_consent(true);
+    session.answer_consent(true).await;
 
     let lines = journal.read_lines().expect("log reads back");
     let consent = lines
@@ -470,6 +487,9 @@ async fn answering_consent_records_the_key_and_where_it_went() {
     assert!(detail.contains("granted"), "what was answered: {detail}");
     assert!(detail.contains("models.auto_fetch"), "which key Jott writes: {detail}");
     assert!(detail.contains("config.toml"), "and which file it goes to: {detail}");
+    // The line now says what *np* moved, not just what Jott did: after note-processor#7 the two are different facts,
+    // and an audit of somebody's machine should show both.
+    assert!(detail.contains("embeddings.provider"), "what np changed itself: {detail}");
 
     let raw = std::fs::read_to_string(app_data.path().join("logs").join("jott.jsonl")).expect("log file");
     // "kumquat" and "# A" are the note's own words; the model id is the other thing this line must not carry — a
@@ -478,5 +498,113 @@ async fn answering_consent_records_the_key_and_where_it_went() {
         assert!(!raw.contains(forbidden), "note text reached the log: {forbidden}");
     }
 
+    session.close().await;
+}
+
+/// A refusal is the case the log gets wrong easiest: np's words name model ids, and "the button said no" is not the
+/// same fact as "the file was written". So the file carries keys, the method called, and what happened to Jott's own
+/// key — and np's sentence goes only to the drawer row, where a person is looking at it right now.
+#[tokio::test]
+async fn a_refused_answer_logs_the_method_and_our_key_without_nps_words() {
+    let _turn = SERIAL.lock().await;
+    let app_data = tempfile::tempdir().expect("app data");
+    let vault = tempfile::tempdir().expect("vault");
+    std::fs::write(vault.path().join("a.md"), b"# A\n").expect("note");
+    let np_config = app_data.path().join("config.toml");
+    std::fs::write(&np_config, "[models]\nauto_fetch = false\n").expect("np config");
+
+    // np refuses a model id this build cannot use — and names the ones it can, which is exactly what must not end up
+    // in a file somebody else reads years later.
+    let _scenario = scenario(json!({
+        "faults": {"embeddings.enable": {
+            "code": -32000,
+            "message": "config io: no pinned model \"bge-m3\": this build can name \"embeddinggemma-2\""
+        }}
+    }));
+
+    let journal = Arc::new(Journal::open(app_data.path()));
+    let session = VaultSession::open_in(
+        fake_np(),
+        info(),
+        vault.path(),
+        Consent::Undecided,
+        Some(np_config.clone()),
+        app_data.path().to_path_buf(),
+    )
+    .with_journal(journal.clone());
+
+    session.answer_consent(true).await;
+
+    let lines = journal.read_lines().expect("log reads back");
+    let consent = lines
+        .iter()
+        .find(|line| line["event"] == "consent")
+        .unwrap_or_else(|| panic!("a consent answer is file work worth logging: {lines:?}"));
+    let detail = consent["detail"].as_str().unwrap_or_default();
+
+    // Which door was knocked on, and what became of our key.
+    assert!(detail.contains("embeddings.enable"), "an audit needs to know which method ran: {detail}");
+    assert!(detail.contains("models.auto_fetch left as it was"), "the guardrail did not move: {detail}");
+    // And not what np said: its sentence names model ids, and the card quotes it on screen instead.
+    let raw = std::fs::read_to_string(app_data.path().join("logs").join("jott.jsonl")).expect("log file");
+    for forbidden in ["embeddinggemma", "bge-m3", "no pinned model"] {
+        assert!(!raw.contains(forbidden), "np\'s sentence reached the log file: {forbidden}");
+    }
+    // A refusal must never be logged as a write, whatever the button was.
+    assert!(!detail.contains("writes models.auto_fetch"), "{detail}");
+
+    // The drawer row does carry np\'s words — byte for byte, quoted, because that is where they belong (v0.0.11).
+    let rows = session.trace().recent();
+    let row = rows
+        .iter()
+        .rev()
+        .find(|row| row.detail.as_deref().is_some_and(|d| d.contains("consent")))
+        .expect("the drawer saw the answer too");
+    assert!(
+        row.detail.as_deref().unwrap_or_default().contains("no pinned model \"bge-m3\""),
+        "np\'s own words belong in the row: {:?}",
+        row.detail
+    );
+    session.close().await;
+}
+
+/// A decline whose write *failed* must not log a write. This is the state where np will not touch its unparsable file
+/// and the OS will not let us write ours.
+#[tokio::test]
+async fn a_decline_whose_write_failed_does_not_log_a_write() {
+    let _turn = SERIAL.lock().await;
+    let app_data = tempfile::tempdir().expect("app data");
+    let vault = tempfile::tempdir().expect("vault");
+    std::fs::write(vault.path().join("a.md"), b"# A\n").expect("note");
+    // A regular file where the config's parent directory should be: no answer gets written anywhere.
+    std::fs::write(app_data.path().join("blocked"), b"not a directory").expect("blocker");
+    let np_config = app_data.path().join("blocked/config.toml");
+
+    let _scenario = scenario(json!({
+        "faults": {"embeddings.disable": {"code": -32000, "message": "config io: cannot write the config file"}}
+    }));
+
+    let journal = Arc::new(Journal::open(app_data.path()));
+    let session = VaultSession::open_in(
+        fake_np(),
+        info(),
+        vault.path(),
+        Consent::Undecided,
+        Some(np_config),
+        app_data.path().to_path_buf(),
+    )
+    .with_journal(journal.clone());
+
+    session.answer_consent(false).await;
+
+    let lines = journal.read_lines().expect("log reads back");
+    let detail = lines
+        .iter()
+        .find(|line| line["event"] == "consent")
+        .and_then(|line| line["detail"].as_str())
+        .expect("a consent row");
+    assert!(detail.contains("embeddings.disable"), "{detail}");
+    assert!(detail.contains("could not write models.auto_fetch"), "say the failure, not the intent: {detail}");
+    assert!(!detail.contains("wrote models.auto_fetch = false"), "{detail}");
     session.close().await;
 }
