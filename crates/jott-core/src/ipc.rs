@@ -81,7 +81,6 @@ impl From<FileError> for IpcError {
 }
 
 impl IpcError {
-    /// For the shell's own commands when no vault is open (§9's empty state asks for a folder instead).
     /// The window asked for a search mode Jott cannot ask np for. The message names every label that works, because
     /// the person reading it is the one who has to say which they meant.
     pub fn bad_mode(label: &str) -> IpcError {
@@ -94,6 +93,7 @@ impl IpcError {
         }
     }
 
+    /// For the shell's own commands when no vault is open (§9's empty state asks for a folder instead).
     pub fn no_vault() -> IpcError {
         IpcError { kind: ErrorKind::NoVault, message: "no vault is open".into() }
     }

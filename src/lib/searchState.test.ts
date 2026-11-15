@@ -236,3 +236,21 @@ describe('the warning under the meanings-only choice', () => {
     expect(meaningsNotice(undefined)).toBeNull()
   })
 })
+
+describe('the widening offer needs evidence that words were tried', () => {
+  it('does not offer it when no keyword search ran', () => {
+    // "Try matching word beginnings" is advice about the *word* half of a search. In a meanings-only answer nothing
+    // tested words at all, so pressing it cannot change the answer — and this module's own contract is to offer it
+    // only where pressing it can. np said which halves ran; use that rather than assume both did.
+    expect(suggestPrefix({ indexed: true, hits: [], keywordUsed: false }, 'grand', false)).toBe(false)
+  })
+
+  it('still offers it when keywords ran and came back empty', () => {
+    expect(suggestPrefix({ indexed: true, hits: [], keywordUsed: true }, 'grand', false)).toBe(true)
+  })
+
+  it('offers it when an older backend did not say which halves ran', () => {
+    // Silence is not evidence that meanings-only was asked for; the v0.0.15 behaviour stands unless np says otherwise.
+    expect(suggestPrefix({ indexed: true, hits: [], keywordUsed: null }, 'grand', false)).toBe(true)
+  })
+})

@@ -321,9 +321,18 @@
       if (gen === generation) setBaseline(text, hash)
     })
     open(text)
+    // The `rel` this buffer was opened as, captured rather than read later: the parent changes `rel` to switch notes,
+    // and a teardown flush has to be about the file whose text is on screen.
+    const openedRel = rel
     return () => {
       clearTimeout(mirrorTimer)
       clearTimeout(saveTimer)
+      // A buffer being thrown away mid-tick must not lose typing (§18.13). The mirror tick is half a second after
+      // the last keystroke, and this cleanup used to cancel it — so closing a note, pressing Escape, or switching
+      // folder inside that window left unsaved text with nothing on record about it. Closing still writes nothing to
+      // the note itself: `onmirror` is core's memory of an unsaved buffer, not a save.
+      const leaving = view?.state.doc.toString()
+      if (openedRel && leaving !== undefined && leaving !== baseline) onmirror(openedRel, leaving)
       view?.destroy()
       view = undefined
     }

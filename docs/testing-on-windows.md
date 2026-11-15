@@ -262,13 +262,16 @@ caret in dark mode, moving a note somewhere that does not exist yet, and finding
 
 - **A note can be closed.** There is a **close** button beside the note's name, and **Escape** does the same thing —
   but only when Escape has nothing above it to dismiss. One press dismisses one thing, topmost first: the row menu,
-  then the settings panel, then the diagnostics drawer, then the note. Escape typed *inside* a note or the search box
+  then the settings panel, then About, then whatever you were being asked (a rename, a move, the trash confirmation),
+  then the diagnostics drawer, then the note. Escape typed *inside* a note or the search box
   never closes that note, because there the key has a job already. Closing is not saving: nothing is written, and an
-  unsaved buffer keeps its "unsaved" marker if you reopen the file.
+  unsaved typing is kept as a draft rather than lost, so reopening that note says there was something there.
 - **`INDEX.md` opens, and says it cannot be edited.** It used to refuse to open at all, which read as a broken file.
   Now it reads like any other note — greyed in the tree, with a banner: *note-processor's own index — read only*. The
   refusal moved to where it belongs: writes. **Ctrl+S** on it sends no save and says why in one line; core still
-  refuses the write even if something else asks it. The shard files (`INDEX-2.md` and so on, when a vault is big
+  refuses the write even if something else asks it. The row stays greyed and italic so you can see it is not yours, its
+  right-click menu offers nothing, and the toolbar's **rename** and **delete** stay disabled while it is selected — a
+  window that offers a thing and then refuses it is worse than one that does not offer it. The shard files (`INDEX-2.md` and so on, when a vault is big
   enough to need them) behave the same way. Your own notes are unaffected: they stay editable, marker and all.
 - **The caret should stop disappearing in dark mode.** The real fault was that CodeMirror was never told the window
   was dark: it drew its default one-pixel grey caret on a near-black page, which is invisible rather than faint. It now
@@ -305,20 +308,24 @@ until it is fixed, Jott says what it can and does not fill the gap in:
   compare against, or — when np said nothing at all — that np returned nothing and gave no reason.
 - A refusal is quoted with the issue number in it, so you can read why rather than wonder whether Jott broke.
 
-**Six things worth trying:**
+**Seven things worth trying:**
 
 1. Open a note, press **Escape**: it closes. Open another, open the settings panel with **Ctrl+,**, press **Escape**:
    the panel goes and the note stays. Press **Escape** again: *now* the note closes.
 2. Click into the search box and press **Escape**. The note behind it should stay open — the key belongs to the box.
-3. Double-click `INDEX.md`. It should read, be marked read-only, and refuse **Ctrl+S** with a sentence about whose
-   file it is. Then rename it from the tree menu: that should still be refused, because renaming is a write.
-4. In a vault with no folders, right-click a note → **Move to…** → type `ideas` in the new field → **create and move**.
+3. Open `INDEX.md`. It should read, be marked read-only, and refuse **Ctrl+S** with a sentence about whose file it
+   is. Its row should still look quieter than your notes, its right-click menu should offer nothing, and **rename** and
+   **delete** in the toolbar should stay disabled while it is selected — then select one of your own notes and watch
+   both come back.
+4. Press **Escape** to cancel a dialog: open *Move to…* and press it. The dialog closes, the note behind it stays open,
+   and nothing is sent. Then press **Escape** again — *that* is the press that closes the note.
+5. In a vault with no folders, right-click a note → **Move to…** → type `ideas` in the new field → **create and move**.
    The folder appears and the note is inside it. Then do it again with a name that cannot work (`..`) — the dialog
    should stay open, still holding what you typed.
-5. Open **Settings**, choose *words only*, search something whose only match is a longer word: nothing should come
+6. Open **Settings**, choose *words only*, search something whose only match is a longer word: nothing should come
    back, and no line should claim the folder was searched by meaning. Choose *both* and the row should return. Quit and
    reopen Jott: it should still be on *words only*.
-6. In a folder you have indexed but never embedded, search once so Jott learns there are no vectors, then open
+7. In a folder you have indexed but never embedded, search once so Jott learns there are no vectors, then open
    **Settings** and pick *meanings only*. You should get the warning under that choice, and an empty answer whose
    sentence blames the missing vectors rather than your notes.
 

@@ -19,6 +19,7 @@ import { describe, expect, it } from 'vitest'
 
 const appCss = readFileSync(fileURLToPath(new URL('./app.css', import.meta.url)), 'utf8')
 const shell = readFileSync(fileURLToPath(new URL('../index.html', import.meta.url)), 'utf8')
+const treeSvelte = readFileSync(fileURLToPath(new URL('./lib/Tree.svelte', import.meta.url)), 'utf8')
 
 /** The dark block is the `@media` rule that follows the light one, not a stray mention of the word. */
 function darkBlock(css: string): string {
@@ -104,5 +105,26 @@ describe('the caret is named, not inherited', () => {
 
   it('keeps the native carets in the window on the same ruler', () => {
     expect(appCss).toMatch(/caret-color:\s*var\(--ink\)/)
+  })
+})
+
+/** A row that is not yours has to look different, in a way a test can see. */
+describe('the catalogue row still looks like something you do not edit', () => {
+  it('styles the class the tree actually emits', () => {
+    // These rows used to be `disabled`, which carried the dimming as a side effect of an attribute whose real job was
+    // "unclickable". Making np's catalogue readable removed that attribute — and with it the only rule that greyed
+    // the row, while three sentences in the docs went on promising one. A class needs a rule; that is the whole test.
+    expect(treeSvelte).toContain('class:greyed={row.greyed}')
+    const start = treeSvelte.indexOf('.tree button.greyed')
+    expect(start, 'the .greyed class has no styling behind it any more').toBeGreaterThan(-1)
+    const rule = treeSvelte.slice(start, treeSvelte.indexOf('}', start) + 1)
+    expect(rule).toContain('color-mix')
+    expect(rule.toLowerCase()).toContain('italic')
+  })
+
+  it('does not light up under the pointer like an ordinary note', () => {
+    // Hover says "this will do something". np's catalogue row opens read-only, which is worth showing, but it should
+    // not be dressed exactly like a row that will take your typing.
+    expect(treeSvelte).toMatch(/\.tree button:hover:not\(:disabled\):not\(\.greyed\)/)
   })
 })

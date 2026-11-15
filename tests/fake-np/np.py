@@ -181,8 +181,10 @@ for line in sys.stdin:
             write({"error": {"code": fault["code"], "message": fault["message"]}, "id": req_id, "jsonrpc": "2.0"})
             note(req_id, method, "refused", {"code": fault["code"]})
             continue
-        if reply := step.get("reply"):
-            write({"id": req_id, "jsonrpc": "2.0", "result": reply})
+        if "reply" in step:
+            # Membership, not truthiness: a sequence has to be able to answer literal null as well (note-processor#11),
+            # for the same reason `replies` above does.
+            write({"id": req_id, "jsonrpc": "2.0", "result": step["reply"]})
             note(req_id, method, "completed")
             continue
     if fault := SCENARIO.get("faults", {}).get(method):

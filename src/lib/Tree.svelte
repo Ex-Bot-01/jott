@@ -97,17 +97,25 @@
     text-align: start;
     cursor: default;
   }
-  .tree button:hover:not(:disabled) {
+  .tree button:hover:not(:disabled):not(.greyed) {
     background: color-mix(in srgb, currentColor 8%, transparent);
   }
   .tree button.selected {
     background: color-mix(in srgb, currentColor 14%, transparent);
   }
-  .tree button:disabled {
-    /* np's own catalog files: visible so the folder is not mysterious, quiet so nobody edits them. */
+  /* np's own catalog files: visible so the folder is not mysterious, quiet so nobody edits them.
+   *
+   * This used to hang off `:disabled`, which was an attribute doing two jobs — unclickable *and* dimmed. Opening the
+   * catalogue for reading dropped the first job, and the styling went with it silently: the class was still emitted,
+   * no rule matched it, and three sentences in the docs kept promising a greyed row. A class needs its own rule. */
+  .tree button.greyed {
     color: color-mix(in srgb, currentColor 45%, transparent);
     font-style: italic;
-    cursor: default;
+  }
+
+  /* Still clickable — it opens to be read — but quieter about it than a row that will take your typing. */
+  .tree button.greyed:hover {
+    background: color-mix(in srgb, currentColor 4%, transparent);
   }
   .twisty {
     width: 0.85rem;

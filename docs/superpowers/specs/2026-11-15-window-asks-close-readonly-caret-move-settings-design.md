@@ -51,8 +51,9 @@ answer they gave a month ago about embeddings without opening a TOML file.
 **Closing.** There is no close affordance and no `Escape` handler. `selected` changes only when another tree
 row is clicked. So "close" is missing, not hidden.
 
-**`INDEX.md`.** `walk.rs` finds it and marks it generated; the tree greys it with an ownership sentence;
-`files.rs::read_note` refuses it outright:
+**`INDEX.md`.** `walk.rs` finds it and marks it generated; the tree renders the row **`disabled`**, which is why
+clicking it did nothing at all. The refusal a person never saw lived in that markup, not in core: `files.rs::read_note`
+has no catalogue guard, so no command was ever sent. Writes do refuse it, and that is where the guard belongs:
 
 ```rust
 if !rel.contains('/') && !rel.contains('\\') && crate::vault::walk::is_generated_index(name) {
@@ -60,7 +61,12 @@ if !rel.contains('/') && !rel.contains('\\') && crate::vault::walk::is_generated
 }
 ```
 
-Clicking it therefore does nothing visible, which reads as a broken file. The refusal is right for *writing*;
+(`stays_off_np_catalog`, called by `write_note`, `create_note`, `create_folder`, `rename`, `move_entry` and
+`delete_to_trash`. A whole-branch review caught this spec blaming `read_note`; the symptom was real and the diagnosis
+was not, which matters because a design written against the wrong cause would have relaxed a guard that was never in
+the way.)
+
+
 it was never asked to cover reading.
 
 **The caret.** Nothing in the app ever tells CodeMirror it is dark — `grep` for `darkTheme` and `matchMedia`

@@ -258,11 +258,9 @@ export const moveEntry = (from: string, to: string) => invoke<void>('move_entry'
 export const mirrorBuffer = (rel: string, text: string) => invoke<void>('mirror_buffer', { rel, text })
 /** §18.13's "Discard it": without this the draft would reappear next time the note is opened. */
 export const discardMirror = (rel: string) => invoke<void>('discard_mirror', { rel })
-/** `prefix` is the window's "match word beginnings" toggle: always sent, because np's own default would otherwise
-    decide what somebody's search meant. */
-/** Ask note-processor. `mode` and `prefix` are sent every time rather than omitted: both change what the query
- *  *means*, and leaving either out hands the decision to a default in another process, which is how a search ends up
- *  answering a question nobody asked. */
+/** Ask note-processor. `prefix` (the "match word beginnings" toggle) and `mode` (which engine matches) are sent every
+ *  time rather than omitted: both change what the query *means*, and leaving either out hands the decision to a
+ *  default in another process — which is how a search ends up answering a question nobody asked. */
 export const searchVault = (query: string, limit: number, prefix: boolean, mode: SearchMode) =>
   invoke<SearchResults>('search_vault', { query, limit, prefix, mode })
 export const ingestAll = () => invoke<void>('ingest_all')

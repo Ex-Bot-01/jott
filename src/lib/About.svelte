@@ -43,7 +43,8 @@
   }
 </script>
 
-<svelte:window onkeydown={(event) => event.key === 'Escape' && onClose()} />
+<!-- No Escape handler here: the window routes that key in one place (`escapeAction`), so that one press dismisses one
+     thing. A second listener on `window` closed About *and* the note behind it. -->
 
 <div class="scrim" role="presentation" onclick={onClose}>
   <div class="panel" role="dialog" aria-label="About Jott" tabindex="-1">

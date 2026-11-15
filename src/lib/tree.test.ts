@@ -274,3 +274,39 @@ describe('a row\'s menu', () => {
   })
 
 })
+
+describe('a folder cannot be moved somewhere it would have to contain', () => {
+  const folders = ['', 'work/', 'work/2026/', 'ideas/']
+
+  it('refuses a new folder inside the one being moved', () => {
+    // `moveTargets` leaves the row and its subtree out by design, so nothing downstream could see this coming:
+    // typing `work/2026` while moving `work` looked like an ordinary nested name. `create_folder` made it, and only
+    // then did core refuse the move — leaving an empty folder behind a move that never happened.
+    const plan = planMoveInto('work/', 'work/2026', folders)
+    expect(plan.kind).toBe('refuse')
+    if (plan.kind === 'refuse') expect(plan.sentence.toLowerCase()).toContain('inside')
+  })
+
+  it('refuses the folder being moved as the destination too', () => {
+    expect(planMoveInto('work/', 'work', folders).kind).toBe('refuse')
+  })
+
+  it('still allows a genuinely different place', () => {
+    expect(planMoveInto('work/', 'ideas', folders)).toEqual({ kind: 'move', to: 'ideas/work' })
+  })
+})
+
+describe('a folder is moved by its own name', () => {
+  it('does not move an empty name into the destination', () => {
+    // Folders are stored as `work/`. Taking the name after the final slash yields "", and the dialog then asked core
+    // to move `work/` to `ideas/` — a destination with no file in it. This is the same trap for both halves of the
+    // dialog, so both go through one name rule.
+    expect(moveTo('work/', 'ideas/')).toBe('ideas/work')
+    expect(planMoveInto('work/', 'ideas', ['', 'ideas/'])).toEqual({ kind: 'move', to: 'ideas/work' })
+    expect(planMoveInto('work/', 'newdecade', ['', 'ideas/'])).toEqual({
+      kind: 'create-then-move',
+      folder: 'newdecade/',
+      to: 'newdecade/work',
+    })
+  })
+})

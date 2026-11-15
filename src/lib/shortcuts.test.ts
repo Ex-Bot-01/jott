@@ -70,21 +70,21 @@ describe('the bare keys', () => {
   /** Escape is the key people reach for to make something go away, and several things can be "something". */
   describe('what Escape is for', () => {
     it('dismisses the topmost thing first, and closes the note only when nothing covers it', () => {
-      expect(escapeAction({ menuOpen: true, settingsOpen: false, drawerOpen: true, noteOpen: true, typing: false })).toBe('menu')
-      expect(escapeAction({ menuOpen: false, settingsOpen: false, drawerOpen: true, noteOpen: true, typing: false })).toBe('drawer')
-      expect(escapeAction({ menuOpen: false, settingsOpen: false, drawerOpen: false, noteOpen: true, typing: false })).toBe('note')
+      expect(escapeAction({ menuOpen: true, settingsOpen: false, aboutOpen: false, dialogOpen: false, drawerOpen: true, noteOpen: true, typing: false })).toBe('menu')
+      expect(escapeAction({ menuOpen: false, settingsOpen: false, aboutOpen: false, dialogOpen: false, drawerOpen: true, noteOpen: true, typing: false })).toBe('drawer')
+      expect(escapeAction({ menuOpen: false, settingsOpen: false, aboutOpen: false, dialogOpen: false, drawerOpen: false, noteOpen: true, typing: false })).toBe('note')
     })
 
     it('does not close a note out from under someone who is typing', () => {
       // The standing rule for unmodified keys: inside a text target they mean "type this". Dismissing a menu or
       // the drawer still happens from there — that is what Escape is for when something covers the screen — but
       // throwing away the visible note is not a dismissal.
-      expect(escapeAction({ menuOpen: false, settingsOpen: false, drawerOpen: false, noteOpen: true, typing: true })).toBe('nothing')
-      expect(escapeAction({ menuOpen: true, settingsOpen: false, drawerOpen: false, noteOpen: true, typing: true })).toBe('menu')
+      expect(escapeAction({ menuOpen: false, settingsOpen: false, aboutOpen: false, dialogOpen: false, drawerOpen: false, noteOpen: true, typing: true })).toBe('nothing')
+      expect(escapeAction({ menuOpen: true, settingsOpen: false, aboutOpen: false, dialogOpen: false, drawerOpen: false, noteOpen: true, typing: true })).toBe('menu')
     })
 
     it('does nothing when there is nothing to dismiss', () => {
-      expect(escapeAction({ menuOpen: false, settingsOpen: false, drawerOpen: false, noteOpen: false, typing: false })).toBe('nothing')
+      expect(escapeAction({ menuOpen: false, settingsOpen: false, aboutOpen: false, dialogOpen: false, drawerOpen: false, noteOpen: false, typing: false })).toBe('nothing')
     })
   })
 
@@ -106,11 +106,46 @@ describe('the settings key', () => {
 describe('Escape with the settings panel open', () => {
   it('closes the panel before the drawer or the note', () => {
     // Whichever overlay is on top is the thing the person is trying to get out of the way.
-    expect(escapeAction({ menuOpen: false, settingsOpen: true, drawerOpen: true, noteOpen: true, typing: false })).toBe('settings')
-    expect(escapeAction({ menuOpen: true, settingsOpen: true, drawerOpen: true, noteOpen: true, typing: false })).toBe('menu')
+    expect(escapeAction({ menuOpen: false, settingsOpen: true, aboutOpen: false, dialogOpen: false, drawerOpen: true, noteOpen: true, typing: false })).toBe('settings')
+    expect(escapeAction({ menuOpen: true, settingsOpen: true, aboutOpen: false, dialogOpen: false, drawerOpen: true, noteOpen: true, typing: false })).toBe('menu')
   })
 
   it('still stands down on a note when nothing covers the screen', () => {
-    expect(escapeAction({ menuOpen: false, settingsOpen: false, drawerOpen: false, noteOpen: true, typing: true })).toBe('nothing')
+    expect(escapeAction({ menuOpen: false, settingsOpen: false, aboutOpen: false, dialogOpen: false, drawerOpen: false, noteOpen: true, typing: true })).toBe('nothing')
+  })
+})
+
+describe('Escape with the other overlays', () => {
+  it('closes About rather than the note behind it', () => {
+    // The bug this pins: About dismisses itself in its own markup while `escapeAction`, blind to it, also returns
+    // "note". One press, one thing — and the thing is never the note someone was writing.
+    expect(escapeAction({ menuOpen: false, settingsOpen: false, aboutOpen: true, dialogOpen: false, drawerOpen: false, noteOpen: true, typing: false })).toBe('about')
+  })
+
+  it('dismisses a dialog before it closes the note behind it', () => {
+    // Pressing Escape to cancel "Move to…" must not throw away the note visible behind the dialog.
+    expect(escapeAction({ menuOpen: false, settingsOpen: false, aboutOpen: false, dialogOpen: true, drawerOpen: false, noteOpen: true, typing: false })).toBe('dialog')
+  })
+
+  it('still takes one press per thing, topmost first', () => {
+    const order = [
+      'menu', 'settings', 'about', 'dialog', 'drawer', 'note',
+    ] as const
+    for (const [index, expected] of order.entries()) {
+      const facts = {
+        menuOpen: index === 0,
+        settingsOpen: index === 1,
+        aboutOpen: index === 2,
+        dialogOpen: index === 3,
+        drawerOpen: index === 4,
+        noteOpen: true,
+        typing: false,
+      }
+      expect(escapeAction(facts), `only ${expected} is on top`).toBe(expected)
+    }
+  })
+
+  it('does not close a note when only the note would be next and someone is typing', () => {
+    expect(escapeAction({ menuOpen: false, settingsOpen: false, aboutOpen: false, dialogOpen: false, drawerOpen: false, noteOpen: true, typing: true })).toBe('nothing')
   })
 })

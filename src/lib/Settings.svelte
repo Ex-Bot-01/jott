@@ -6,7 +6,7 @@
   // The rules themselves live in `searchSettings` and `consentHelp`, both tested; this file only asks.
 
   import { modeSentence, type SearchMode } from './searchSettings'
-  import { cardSentences, type ConsentFacts } from './consentHelp'
+  import { panelLines, type ConsentFacts } from './consentHelp'
   import { meaningsNotice } from './searchState'
 
   let {
@@ -14,6 +14,10 @@
     prefix,
     vectors,
     cardFacts,
+    /** True while the read that fills `cardFacts` is in flight. Without it, "no lines yet" cannot be told apart from
+     *  "np's settings are complete", and the panel said *Reading…* forever — including after a read that had nothing
+     *  to report, which is the state where somebody most wants to know it finished. */
+    embeddingsLoading = false,
     consentBusy = false,
     onmode,
     onprefix,
@@ -27,6 +31,7 @@
     vectors: boolean | null
     /** Embeddings as core reads them, plus whatever np answered to the button. `null` while that is still in flight. */
     cardFacts: ConsentFacts | null
+    embeddingsLoading?: boolean
     consentBusy?: boolean
     onmode: (mode: SearchMode) => void
     onprefix: (on: boolean) => void
@@ -36,7 +41,7 @@
 
   const MODES: SearchMode[] = ['keyword', 'hybrid', 'semantic']
   const notice = $derived(meaningsNotice(vectors))
-  const embeddingsLines = $derived(cardFacts ? cardSentences(cardFacts) : [])
+  const embeddingsLines = $derived(cardFacts ? panelLines(cardFacts) : [])
 
   let panel = $state<HTMLElement | undefined>()
   $effect(() => {
@@ -95,8 +100,14 @@
       <ul class="lines" data-testid="settings-embeddings">
         {#each embeddingsLines as line}<li>{line}</li>{/each}
       </ul>
-    {:else}
+    {:else if embeddingsLoading}
       <p class="quiet">Reading what note-processor has recorded…</p>
+    {:else}
+      <!-- Nothing to report is its own answer. It used to be drawn as a read still in flight, which stated a state
+           no fact supported — and was what the panel said whenever the read had failed too. -->
+      <p class="quiet" data-testid="settings-embeddings">
+        Jott has not been able to read note-processor’s settings this session; nothing here has changed them.
+      </p>
     {/if}
     <div class="buttons">
       <button

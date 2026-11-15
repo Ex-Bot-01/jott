@@ -176,3 +176,17 @@ export function cardClipboard(facts: ConsentFacts): string {
   )
   return out.join('\n')
 }
+
+/** What the settings panel lists about embeddings.
+ *
+ *  The card stays silent when np's settings are complete: there is nothing missing to explain, and a consent card
+ *  that appears for no reason is its own bug. The panel has the opposite job — somebody opens it precisely to ask
+ *  "what is the state?", so an empty answer reads as a read still in flight. It used to say "Reading what
+ *  note-processor has recorded…" forever, including after a successful read that had nothing to report: a stated
+ *  state with no fact behind it. This is one module answering both surfaces, so they cannot disagree. */
+export function panelLines(facts: ConsentFacts): string[] {
+  const lines = cardSentences(facts)
+  if (lines.length > 0 || facts.help.gap !== 'ready') return lines
+  const model = facts.help.modelId === null ? '' : ` (${facts.help.modelId})`
+  return [`note-processor’s settings are complete${model}: notes can be embedded, and a search can use meanings.`]
+}

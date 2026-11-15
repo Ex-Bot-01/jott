@@ -175,17 +175,30 @@ export function planMoveInto(rel: string, typed: string, folders: string[]): Mov
     return { kind: 'refuse', sentence: 'It is already in that folder — a move needs somewhere else to go.' }
   }
 
+  // A destination inside the row itself. `moveTargets` omits the row and its subtree, so nothing downstream could see
+  // this coming: moving the folder `work/` into `work/2026` reads as an ordinary nested name, gets *created*, and is
+  // refused only by core — after the vault has an empty folder left over from a move that never happened. Saying no
+  // here is what keeps half a plan from being carried out.
+  if (rel.endsWith('/') && (folder === rel || folder.startsWith(rel))) {
+    return { kind: 'refuse', sentence: 'That destination is inside the folder you are moving. Choose somewhere else.' }
+  }
+
   const known = new Set(folders.map((f) => (f.endsWith('/') ? f : `${f}/`)))
   if (known.has(folder)) return { kind: 'move', to: `${folder}${nameOf(rel)}` }
   return { kind: 'create-then-move', folder, to: `${folder}${nameOf(rel)}` }
 }
 
+/** The last segment of a `rel`, without the trailing slash a folder carries. Folders are stored as `work/`, so a
+ *  name taken by slicing after the final slash comes back empty — and a move built from it asks core to put `work/`
+ *  at `ideas/`, which is the destination of its contents rather than of the folder. */
 function nameOf(rel: string): string {
-  return rel.slice(rel.lastIndexOf('/') + 1)
+  const trimmed = rel.endsWith('/') ? rel.slice(0, -1) : rel
+  return trimmed.slice(trimmed.lastIndexOf('/') + 1)
 }
 
 /** Join a `rel` onto a destination folder, keeping it a `rel`. */
 export function moveTo(rel: string, folder: string): string {
-  const name = rel.slice(rel.lastIndexOf('/') + 1)
-  return `${folder}${name}`
+  // One name rule for both halves of the dialog, so picking an existing folder and naming a new one cannot disagree
+  // about what a folder is called.
+  return `${folder}${nameOf(rel)}`
 }

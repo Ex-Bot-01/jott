@@ -22,6 +22,7 @@ Range.prototype.getBoundingClientRect = () => emptyRect
  * window means when it isn't a missing file.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { EditorView } from '@codemirror/view'
 import { unmount, type Component } from 'svelte'
 import { MODE_KEY, PREFIX_KEY } from './lib/searchSettings'
 import type { IngestEvent } from './lib/ipc'
@@ -72,7 +73,7 @@ const media = vi.hoisted(() => {
 /** Every `create_folder` / `move_entry` the window sent, with its arguments, in order. */
 const moveCalls = vi.hoisted(() => ({ current: [] as Record<string, unknown>[] }))
 /** Make `create_folder` refuse, to check what the dialog does when half a plan fails. */
-const moveSays = vi.hoisted(() => ({ createFails: false }))
+const moveSays = vi.hoisted(() => ({ createFails: false, moveFails: false }))
 
 /** Whether `read_note` answers with note-processor's catalogue (read-only) for `INDEX.md`. */
 const readNoteSays = vi.hoisted(() => ({ catalogue: false }))
@@ -343,6 +344,9 @@ vi.mock('@tauri-apps/api/core', () => ({
         return Promise.resolve({ hash: 'b'.repeat(64), mtimeMs: 1_700_000_000_500 })
       case 'move_entry':
         moveCalls.current.push({ cmd, ...(args as Record<string, unknown>) })
+        if (moveSays.moveFails) {
+          return Promise.reject({ kind: 'intoItself', message: 'cannot move a folder into itself' })
+        }
         // A `void` command resolves undefined. Returning null here would be indistinguishable from App's own
         // "the command failed" marker, and the dialog would stay open on a successful move.
         return Promise.resolve(undefined)
@@ -499,6 +503,11 @@ describe('the window mounts', () => {
     focused.current = true
     moveCalls.current = []
     moveSays.createFails = false
+    moveSays.moveFails = false
+    // Reset where they are set: both of these were restored at the *end* of their tests, so a failing assertion left
+    // them moved for every test afterwards — and the ones after that went on passing for a reason nobody could see.
+    searchSays.indexed = null
+    readNoteSays.catalogue = false
     // Both remembered search choices are read at mount, so a leftover from the previous test would decide what this
     // one's first window asks for — and it would look like the feature working.
     localStorage.clear()
@@ -1679,5 +1688,211 @@ describe('the window mounts', () => {
       expect(errors).toEqual([])
     })
   })
+
+  it('dismisses one overlay per Escape press, even the ones that used to listen for the key themselves', async () => {
+    // The bug: About and the drawer each had their own `window` Escape listener while `escapeAction`, which did not
+    // know they existed, answered "close the note". One press closed About *and* threw the note away behind it.
+    scenario.current = 'vault'
+    const { errors } = await start()
+
+    ;(document.querySelector('.tree button[data-kind="Note"]') as HTMLElement).dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await vi.waitFor(() => expect(document.querySelector('.cm > .cm-editor')).not.toBeNull(), { timeout: 2000 })
+
+    ;(document.querySelector('button.about') as HTMLButtonElement).click()
+    const about = await vi.waitFor(() => {
+      const el = document.querySelector('.panel[role="dialog"]') as HTMLElement | null
+      expect(el, 'About opened').not.toBeNull()
+      return el!
+    }, { timeout: 2000 })
+    expect(about).not.toBeNull()
+
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await vi.waitFor(() => expect(document.querySelector('.panel[role="dialog"]')).toBeNull(), { timeout: 2000 })
+    expect(document.querySelector('.cm > .cm-editor'), 'the note behind it is still open').not.toBeNull()
+
+    // And a dialog: Escape cancels what was asked, rather than answering it by closing the note.
+    const row = await vi.waitFor(() => {
+      const el = document.querySelector('.tree button[data-kind="Note"]') as HTMLElement | null
+      expect(el).not.toBeNull()
+      return el!
+    }, { timeout: 2000 })
+    row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 30, clientY: 60 }))
+    const item = await vi.waitFor(() => {
+      const el = [...document.querySelectorAll('.row-menu [role="menuitem"]')].find((b) => b.textContent === 'Move to…')
+      expect(el).not.toBeUndefined()
+      return el as HTMLButtonElement
+    }, { timeout: 2000 })
+    item.click()
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="new-folder-name"]')).not.toBeNull(), { timeout: 2000 })
+
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="new-folder-name"]')).toBeNull(), { timeout: 2000 })
+    expect(document.querySelector('.cm > .cm-editor'), 'cancelling a dialog is not closing a note').not.toBeNull()
+    expect(moveCalls.current, 'and it sent nothing').toEqual([])
+
+    // Now nothing covers the screen, so the next press is the one that closes the note.
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await vi.waitFor(() => expect(document.querySelector('.cm > .cm-editor')).toBeNull(), { timeout: 2000 })
+    expect(errors).toEqual([])
+  })
+
+
+  it('mirrors what was typed when the note is closed inside the mirror window', async () => {
+    // §18.13: half a second of typing is the most a crash may take — so a note closed 200 ms after the last
+    // keystroke still has to leave its text with core. The editor's cleanup used to cancel the pending mirror, which
+    // made the close button and Escape two new ways of losing unsaved work, while the release notes promised the
+    // opposite ("an unsaved buffer keeps its marker if you come back").
+    scenario.current = 'vault'
+    const { errors } = await start()
+
+    ;(document.querySelector('.tree button[data-kind="Note"]') as HTMLElement).dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    const view = await vi.waitFor(() => {
+      const dom = document.querySelector('.cm > .cm-editor') as HTMLElement | null
+      expect(dom).not.toBeNull()
+      const editor = EditorView.findFromDOM(dom!)
+      expect(editor, 'the harness can reach the buffer').not.toBeNull()
+      return editor!
+    }, { timeout: 2000 })
+
+    view.dispatch({ changes: { from: 0, insert: 'a line typed and not yet saved\n' } })
+    // Deliberately no waiting: the mirror tick is 500 ms away, and this test has to finish inside it to prove that
+    // teardown flushed rather than a timer having had time to fire.
+    ;(document.querySelector('[data-testid="close-note"]') as HTMLButtonElement).click()
+
+    await vi.waitFor(() => expect(document.querySelector('.cm > .cm-editor')).toBeNull(), { timeout: 2000 })
+    expect(commands, 'the buffer reached core before the editor was destroyed').toContain('mirror_buffer')
+    // Closing still writes nothing to the note itself: the mirror is core's memory, not a save.
+    expect(commands).not.toContain('save_note')
+    expect(errors).toEqual([])
+  })
+
+
+  it('forgets the search answer and the open note when the folder changes', async () => {
+    // Two claims carried across a folder switch: the settings panel warned "this folder has no vectors yet" from an
+    // answer note-processor gave about the *previous* folder, and the editor kept showing a `rel` that means nothing
+    // in the new one — with a dirty buffer behind it, one autosave away from being written into someone else's file.
+    scenario.current = 'vault'
+    extraRecent.current = 'D:\\other'
+    const { errors } = await start()
+
+    // The note first: a search replaces the tree with results, so this is also the order a person reaches the
+    // situation in — something open, something searched, then yesterday's folder from the recents list.
+    let noteRow!: HTMLElement
+    await vi.waitFor(() => {
+      const el = document.querySelector('.tree button[data-kind="Note"]') as HTMLElement | null
+      expect(el, 'the fixture has a note to open').not.toBeNull()
+      noteRow = el!
+    }, { timeout: 2000 })
+    noteRow.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await vi.waitFor(() => expect(document.querySelector('.cm > .cm-editor')).not.toBeNull(), { timeout: 2000 })
+
+    const box = (await vi.waitFor(() => {
+      const el = document.querySelector('input[type="search"]') as HTMLInputElement | null
+      expect(el).not.toBeNull()
+      return el!
+    }, { timeout: 2000 })) as HTMLInputElement
+    box.value = 'kumquat'
+    box.dispatchEvent(new Event('input', { bubbles: true }))
+    await vi.waitFor(() => expect(document.querySelector('.results')).not.toBeNull(), { timeout: 2000 })
+
+    ;(document.querySelector('button[aria-label="Settings"]') as HTMLButtonElement).click()
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="settings-notice"]')).not.toBeNull(), { timeout: 2000 })
+    ;(document.querySelector('[data-testid="close-settings"]') as HTMLButtonElement).click()
+
+    const menu = document.querySelector('select.recents') as HTMLSelectElement
+    menu.value = 'D:\\other'
+    menu.dispatchEvent(new Event('change', { bubbles: true }))
+
+    await vi.waitFor(() => expect(document.querySelector('.results')).toBeNull(), { timeout: 2000 })
+    expect(document.querySelector('.cm > .cm-editor'), 'the other folder does not have this note open').toBeNull()
+
+    // And the panel has no fact left to speak from: it warns about vectors only where np said there were none, in
+    // *this* folder. Before this fix it repeated the old folder's answer as a property of the new one.
+    ;(document.querySelector('button[aria-label="Settings"]') as HTMLButtonElement).click()
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="settings"]')).not.toBeNull(), { timeout: 2000 })
+    expect(document.querySelector('[data-testid="settings-notice"]'), 'no answer, no warning').toBeNull()
+
+    extraRecent.current = null
+    expect(errors).toEqual([])
+  })
+
+
+  it('does not offer rename and delete for note-processor’s own catalogue', async () => {
+    // The row menu already refuses: `actionsFor` returns nothing for a generated file. Making the catalogue openable
+    // meant its row became selectable, which quietly enabled two toolbar buttons whose commands core will refuse. Two
+    // doors in one window saying opposite things about whether a file is touchable is the thing to fix — the refusal
+    // belongs in front of the click, not only behind it.
+    scenario.current = 'vault'
+    const { errors } = await start()
+
+    let catalogue!: HTMLElement
+    await vi.waitFor(() => {
+      const el = document.querySelector('.tree button[data-kind="Generated"]') as HTMLElement | null
+      expect(el, 'the fixture has np’s catalogue').not.toBeNull()
+      catalogue = el!
+    }, { timeout: 2000 })
+    const toolbar = (label: string) =>
+      [...document.querySelectorAll('button')].find((b) => (b.textContent ?? '').trim() === label) as HTMLButtonElement
+
+    // Nothing selected: both are down.
+    expect(toolbar('rename').disabled, 'nothing is selected').toBe(true)
+    expect(toolbar('delete').disabled).toBe(true)
+
+    catalogue.click()
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="readonly-banner"]') ?? document.querySelector('.cm-editor')).not.toBeNull(), { timeout: 2000 })
+    expect(toolbar('rename').disabled, 'selecting np’s file must not enable rename').toBe(true)
+    expect(toolbar('delete').disabled).toBe(true)
+
+    // And a note of ours still enables both, so this is not the buttons going quiet.
+    const note = document.querySelector('.tree button[data-kind="Note"]') as HTMLElement
+    note.click()
+    await vi.waitFor(() => expect(toolbar('rename').disabled).toBe(false), { timeout: 2000 })
+    expect(toolbar('delete').disabled).toBe(false)
+    expect(errors).toEqual([])
+  })
+
+
+  it('says which folder it made when the move after it failed', async () => {
+    // "Create then move" is two commands, and the first can succeed while the second is refused. Leaving np's
+    // sentence alone in the status line would hide the fact that the vault now has a folder nobody asked for on
+    // their own — so the dialog says what it did before it says what went wrong.
+    scenario.current = 'vault'
+    moveSays.moveFails = true
+    const { errors } = await start()
+
+    let row!: HTMLElement
+    await vi.waitFor(() => {
+      const el = document.querySelector('.tree button[data-kind="Note"]') as HTMLElement | null
+      expect(el).not.toBeNull()
+      row = el!
+    }, { timeout: 2000 })
+    row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 40, clientY: 90 }))
+    const item = await vi.waitFor(() => {
+      const el = [...document.querySelectorAll('.row-menu [role="menuitem"]')].find((b) => b.textContent === 'Move to…')
+      expect(el).not.toBeUndefined()
+      return el as HTMLButtonElement
+    }, { timeout: 2000 })
+    item.click()
+
+    const field = (await vi.waitFor(() => {
+      const el = document.querySelector('[data-testid="new-folder-name"]') as HTMLInputElement | null
+      expect(el).not.toBeNull()
+      return el!
+    }, { timeout: 2000 })) as HTMLInputElement
+    field.value = 'ideas'
+    field.dispatchEvent(new Event('input', { bubbles: true }))
+    ;(document.querySelector('[data-testid="create-and-move"]') as HTMLButtonElement).click()
+
+    await vi.waitFor(() => expect(moveCalls.current.map((c) => c.cmd)).toEqual(['create_folder', 'move_entry']), { timeout: 2000 })
+    await vi.waitFor(() => {
+      const said = document.querySelector('[role="alert"]')?.textContent ?? ''
+      expect(said, 'the dialog owns up to the folder it created').toContain('Created ideas')
+    }, { timeout: 2000 })
+    expect(document.querySelector('[data-testid="new-folder-name"]'), 'and leaves the dialog up').not.toBeNull()
+
+    moveSays.moveFails = false
+    expect(errors).toEqual([])
+  })
+
 
 })

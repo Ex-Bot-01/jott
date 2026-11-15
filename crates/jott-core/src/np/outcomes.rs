@@ -421,8 +421,14 @@ pub fn search_answer(value: &Value) -> Result<SearchAnswer, NpFault> {
         // reads as "could not talk to np" — a contradiction about a program that just replied.
         return Err(NpFault {
             code: -32000,
-            message: "note-processor answered this search with nothing at all — no notes and no reason. It does that                       when asked for meanings only in a folder with no vectors yet (note-processor#11): index the                       folder with embeddings, or search by words as well."
-                .to_string(),
+            // `concat!` rather than one padded literal: this sentence is quoted verbatim into the window, and a
+            // continuation that keeps its indentation prints as a long line with holes in it.
+            message: concat!(
+                "note-processor answered this search with nothing at all — no notes and no reason. ",
+                "It does that when asked for meanings only in a folder with no vectors yet ",
+                "(note-processor#11): index the folder with embeddings, or search by words as well."
+            )
+            .to_string(),
         });
     }
     serde_json::from_value::<RawSearchAnswer>(value.clone())

@@ -99,13 +99,18 @@ export function hitSuffix(matchedExactly: boolean | null): string | null {
     the answer: np says this folder *is* indexed, the whole-word search found nothing, the query is something, and the
     person is not already widening — an offer that cannot help is noise dressed as help (§4). */
 export function suggestPrefix(
-  facts: { indexed: boolean | null; hits: unknown[] },
+  facts: { indexed: boolean | null; hits: unknown[]; keywordUsed?: boolean | null },
   query: string,
   prefixOn: boolean,
 ): boolean {
   if (prefixOn) return false
   if (query.trim().length === 0) return false
   if (facts.hits.length > 0) return false
+  // Word beginnings are a fact about the *word* half of a search. np says which halves ran (0.4.0), so an answer that
+  // came from meanings alone does not get advice about widening words — pressing it could not change anything, and
+  // this module's contract is to offer it only where it can. Silence from an older backend is not evidence that
+  // meanings-only was asked for, so `null` keeps the v0.0.15 behaviour.
+  if (facts.keywordUsed === false) return false
   return facts.indexed === true
 }
 
@@ -126,7 +131,10 @@ export function semanticEmptySentence(facts: { vectors?: boolean | null }, query
   if (facts.vectors === true) {
     return `No note in this folder matches “${query}” by meaning, as far as its vectors can tell.`
   }
-  // np said nothing at all, and the sentence says so. Naming the silence is the only honest option left.
+  // No `vectors` fact to speak from, so the sentence names that rather than filling it in. Current core answers
+  // `vectors` as a plain bool on every search result, so this is the shape of an answer Jott does not produce; np's
+  // mute reply to a meanings-only search (`"result": null`, note-processor#11) never reaches here at all — it faults
+  // in `search_answer` (crates/jott-core/src/np/outcomes.rs) and is quoted as a refusal.
   return (
     `Note-processor returned nothing for “${query}” and gave no reason — a meanings-only search reports no ` +
     'explanation when there are no vectors yet (note-processor#11).'

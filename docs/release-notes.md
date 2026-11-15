@@ -8,8 +8,8 @@ reading about below.
 ## What you'll notice
 
 - **A note can be closed.** There is a **close** button beside the note's name and **Escape** does the same, but only
-  when Escape has nothing above it to dismiss: one press, one thing, topmost first — row menu, settings panel,
-  diagnostics drawer, note. Escape typed inside a note or the search box never closes that note, because in a text
+  when Escape has nothing above it to dismiss: one press, one thing, topmost first — row menu, settings panel, About,
+  whatever dialog was asking you something, diagnostics drawer, note. Escape typed inside a note or the search box never closes that note, because in a text
   field the key already has a job. Closing writes nothing; an unsaved buffer keeps its marker if you come back.
 - **`INDEX.md` opens and says it is read-only.** It used to refuse to open, which looked like a broken file. Now it
   reads normally — still greyed in the tree, with a banner saying it is note-processor's own index — and the refusal
@@ -81,19 +81,50 @@ it is fixed:
   stylesheet guess, and stamps a stable class on its element so a test can see which facet it drew. Forced-colors mode
   and *reduce motion* are handled explicitly.
 - **The Escape order lives in one tested function** (`escapeAction`), not in markup conditions: menu → settings →
-  drawer → note, one per press, with the typing-target rule standing down only the last step.
+  About → dialog → drawer → note, one per press, with the typing-target rule standing down only the last step. Two
+  components used to listen for the key on `window` themselves — which is how one press closed About *and* the note
+  behind it, and how Escape meant to cancel a "Move to…" dialog instead closed the note the dialog was about. Every
+  overlay is now a fact in that one function; nothing else dismisses anything.
 - **One settings key per choice, written from either place.** `jott.search.mode` and `jott.search.prefix`; the prefix
   key is unchanged from 0.0.15 so upgrading keeps somebody's toggle instead of silently turning it off. Anything in
   those keys that this build cannot spell reads as the default — including `SEMANTIC`, which *means* something to a
   person and would switch them to the mode that cannot explain an empty result.
 - **The stand-in np can now answer literal null** (`method in replies`, not `replies.get(method) is not None`). Being
   unable to be wrong in this specific way was the difference between testing the reading and asserting a hope.
-- **Harness honesty, twice over.** The smoke suite clears `localStorage` between tests: a remembered mode leaking from
+- **A catalogue row needs a rule, not an attribute.** These rows used to be `disabled`, which did two jobs at once:
+  unclickable, and — as a side effect nobody wrote down — dimmed. Making the catalogue readable removed the attribute,
+  so `.greyed` was still emitted while no CSS matched it: the row looked exactly like your notes, gained a hover
+  highlight, and three sentences in the docs went on promising it was greyed. It has its own rule now, plus a quieter
+  hover than an editable row gets, pinned by reading the stylesheet rather than by hoping.
+- **Selecting np's file no longer enables rename and delete.** The row menu already refused them; making the row
+  clickable enabled the two toolbar buttons whose commands core would refuse. One derived fact (`selectedIsGenerated`)
+  now agrees with the menu, so the window gives one answer about whether a file is touchable.
+- **Moving a folder used to move an empty name.** Folders are stored as `work/`, and taking "the last segment after the
+  final slash" of that yields `""` — so *Move to…* asked core to put `work/` at `ideas/`. Both halves of the dialog now
+  share one name rule. The same review also caught the planner offering a destination **inside** the folder being
+  moved (`work/2026` while moving `work`), which would have created that folder and then been refused by core, leaving
+  an empty directory behind a move that never happened; it refuses up front now, and when a create succeeds and the
+  move afterwards fails, the dialog says which folder it made.
+- **Closing a note inside the mirror window no longer drops typing.** The editor mirrors an unsaved buffer half a
+  second after the last keystroke, and its teardown cancelled the pending mirror — so the two new ways to close a note
+  were two new ways to lose work, while these notes promised the opposite. Teardown flushes first; it still writes
+  nothing to the note itself.
+- **A folder switch forgets more than it did.** The search answer on screen is np's report about *that* folder —
+  `vectors`, `indexed`, which words it widened. Carried into the next folder, the settings panel warned "this folder has
+  no vectors yet" about a folder Jott had never searched. Results, the query and the open note now go with the other
+  per-folder facts, and an unsaved buffer can no longer be left attached to a session that has moved on.
+- **Sentences the panel prints are sentences someone chose.** It used to answer "Reading what note-processor has
+  recorded…" whenever it had nothing to say — which included the healthy case (np's settings complete) and the failed
+  read, both of which are answers with no fact behind them as drawn. Three states now, and the wording comes from
+  `consentHelp`, beside the card's own.
+- **The widening offer asks whether words were tried.** "Try matching word beginnings" is advice about the word half
+  of a search; np says which halves ran, so an answer that came from meanings alone no longer gets it.
+- **Harness honesty, three times over.** The smoke suite clears `localStorage` between tests: a remembered mode leaking from
   one test into the next made a second window ask for `keyword` and looked exactly like the feature working. And the
   move recorder was pushing to the wrong object, which `call()` swallowed — so the window appeared to send nothing when
   it sent everything.
 
-Tests: **300** Rust, **278** front-end. The CI job prints whether np was on `PATH` (several tests are about np being
+Tests: **301** Rust, **299** front-end. The CI job prints whether np was on `PATH` (several tests are about np being
 absent and pass for the wrong reason on a machine that has it) and fails if the Rust count drops below its floor.
 
 ## What to look at, if you tested 0.0.15
