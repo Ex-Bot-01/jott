@@ -1924,7 +1924,7 @@ dependencies = [
 
 [[package]]
 name = "jott-shell"
-version = "0.0.14"
+version = "0.0.15"
 dependencies = [
  "jott-core",
  "serde_json",

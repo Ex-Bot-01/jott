@@ -139,6 +139,8 @@ Two more things to report on:
 
 ## 2b-iii. Since 0.0.13: the np inside is 0.4.0, and search stopped guessing
 
+*(Historic: Jott ships np 0.5.1 since 0.0.15, so read every `0.4.0` below as `0.5.1`. The behaviours asked for here are unchanged — only the number on the About line moved.)*
+
 Four things to check, all of them about what the window claims:
 
 - **About → the np line should read `0.4.0`.** So should the bottom-left of the window.
@@ -185,6 +187,64 @@ Search still matches whole words: typing *grand* will not find *grandma*. That i
 designed, and the request for prefix matching is
 [#6](https://github.com/Ex-Bot-01/note-processor/issues/6) — Jott deliberately does not bolt its own text search in
 front of np's results.
+
+## 2b-v. Since 0.0.15: the backend is np 0.5.1, and two of its doors are open
+
+The np inside Jott is **0.5.1**. Protocol is still version 1, so nothing about how the two talk changed; what changed
+is that np now answers two questions it used to refuse, and Jott asks them instead of working around them.
+
+- **"Match word beginnings" is a checkbox beside the search box, off by default.** With it off, *grand* still finds
+  only *grand* — the same search you have always got. Turn it on and *grand* reaches *grandmother*, which is
+  [note-processor#6](https://github.com/Ex-Bot-01/note-processor/issues/6) fixed in np itself: Jott sends
+  `{"prefix": true}` and np widens its own index query. It is off because a vault full of identifiers, ticket numbers
+  and partial names reports notes you did not ask for when every term quietly grows. Your choice is remembered per app
+  (not per folder), and survives closing the window.
+- **When it widens, the results say so.** The header gains a line naming the words np widened — *also matched word
+  beginnings (grand)* — using np's own list, never Jott's guess at it. A row that only matched by its first letters is
+  marked *from the start of a word*. A row found by meaning alone gets no mark: np never tested its words, and saying
+  otherwise would be a claim about a test nobody ran.
+- **An empty search can offer the widening without taking it.** In a folder np says is indexed, if whole words found
+  nothing you get *try matching word beginnings*. Pressing it re-runs that one query widened and does **not** move the
+  checkbox: trying something once should not decide all your future searches. It is offered only where pressing it can
+  change the answer — never in a folder that has not been indexed, and never when you are already widening.
+- **"Allow the download" goes through np's door.** Pressing it now calls note-processor's own `embeddings.enable`
+  method; np writes its own two settings and says which ones. The card quotes that answer — *note-processor wrote
+  embeddings.provider and embeddings.model into the file C:\Users\you\AppData\Roaming\note-processor\config.toml*,
+  plus what the download will cost in bytes — and beside it, one line about Jott's own part. If np refuses (an id this
+  build cannot use, a file it cannot read), the card quotes the refusal unchanged and says that Jott left
+  `models.auto_fetch` alone: after a refused *yes*, the download guardrail is exactly where it was, and the window says
+  so instead of implying you had allowed something. The advice to paste lines into `config.toml` is gone; there is
+  nothing left to paste by hand.
+- **Jott still writes exactly one key.** `models.auto_fetch` — that key only, in `%APPDATA%\note-processor\config.toml`.
+  Everything else about embeddings is np's, written by np. If you open that file after allowing a download you should
+  see a comment naming the method that wrote it, over `np serve`, at a date:
+
+  ```toml
+  # note-processor set by the `embeddings.enable` method over `np serve` (np 0.5.1) at 2026-11-15T…
+  [embeddings]
+  provider = "local-model"
+  model = "embeddinggemma-2"
+
+  [models]
+  auto_fetch = true     # <- the one key Jott writes
+  ```
+
+  `auto_fetch` stays there because np does not touch it: measured on 0.5.1, enabling embeddings through the new method
+  leaves `auto_fetch = false` and embed still refuses to fetch. That is the guardrail doing its job — a fresh np
+  defaults to *yes* and would download ~310 MB without asking.
+
+**Five things worth trying:**
+
+1. Type a word stem you know is only inside longer words, search, get nothing, then press **try matching word
+   beginnings**. The header should name the widened word and the row should be marked.
+2. Close Jott and reopen it: the checkbox should still be on. Turn it off and search again — the widened rows should
+   disappear rather than go quiet-but-still-there.
+3. Say no to embeddings in a fresh folder, then press **Set up embeddings** → Allow. The card should read as what np
+   did (keys, file, size), not as lines to copy.
+4. Put `provider = "local-model"` with no `model` line in `%APPDATA%\note-processor\config.toml`, index, and open a
+   note so embedding runs: the card should quote np's sentence about needing a model, and say what Jott did not change.
+5. After allowing a download, read `%APPDATA%\note-processor\config.toml`. You should be able to tell from the file
+   alone which lines np wrote and which one line came from Jott. If you cannot, that is a bug worth reporting.
 
 ## 2c. Since 0.0.11: press **Ctrl+Shift+D** when something is odd
 
