@@ -28,7 +28,8 @@ still version 1 — nothing about how the two programs talk changed, only what n
   changed, into which file, and what the fetch will cost — with one line beside it about Jott's own part. If np refuses
   (an id this build cannot use, a config file it cannot parse), the refusal is quoted unchanged and the card says that
   Jott left `models.auto_fetch` alone. After a refused *yes* the download guardrail is exactly where it was, and the
-  window says so rather than implying you had allowed something.
+  window says so rather than implying you had allowed something. Re-opening the same folder does not undo an answer
+  either: the receipt is about np's one settings file, not about whichever vault was last listed.
 - **"Stay keyword-only" revokes without erasing.** np switches its provider off and keeps which model you had chosen,
   so saying no twice does not make you pick again; the card repeats that, because "off" and "forgotten" are different
   states to a person reading the file later.
@@ -93,11 +94,25 @@ that invents a command is worse than no record.
 - **The stand-in np answers like 0.5.1 by default**, including both consent doors and the `-32602` refusal for a
   parameter it does not take, and `initialize` in the captured handshake fixture was re-recorded from the real binary
   rather than edited by hand — a fixture that keeps saying "0.4.0" tests a refusal nobody ships.
+- **An *answer* has exactly one writer.** Two places in Jott can touch `models.auto_fetch`, and they are different
+  jobs: opening a folder whose answer is still undecided holds it at `false` (it never raises it), and recording your
+  answer writes what the answer means. What used to exist was a third: the ingest queue wrote it whenever an answer
+  arrived, and so did the consent path — unconditionally. A *yes* that note-processor refused therefore ended with
+  `auto_fetch = true` in someone's file while the card said Jott had left it alone — two writers, two answers to the
+  same question, one of them wrong. The queue now only remembers the answer; `consent::answer_consent` writes, and
+  writes our key only when np opened its own door. A
+  *no* still gets its `false` even with no np to ask, because lowering a guardrail needs nothing from a process that
+  failed to start.
+- **np's sentences stay out of the log file, and into the drawer.** The journal line for a consent answer names the
+  method called (`embeddings.enable` / `embeddings.disable`) and what became of Jott's key — from the receipt, never
+  from what the button meant; it used to say "wrote models.auto_fetch = false anyway" for every refusal, including the
+  ones where the write itself had failed. np's own words are quoted on the card and in the drawer row instead, because
+  they name model ids and the log is read by somebody else years later.
 - **Answering consent now spawns np**, which surfaced a harness hazard: `FAKE_NP_SCENARIO` is process-global, so a test
   in the same binary could leave it pointing at a deleted tempdir and hand the next one a Python traceback. The fix was
   ownership (each test that talks to np configures its own stand-in), not clearing the environment somewhere else.
 
-Tests: **289** Rust, **228** front-end. The CI job prints whether np was on `PATH` (several tests are about np being
+Tests: **295** Rust, **231** front-end. The CI job prints whether np was on `PATH` (several tests are about np being
 absent and pass for the wrong reason on a machine that has it) and fails if the Rust count drops below its floor.
 
 ## What to look at, if you tested 0.0.14
@@ -110,7 +125,10 @@ absent and pass for the wrong reason on a machine that has it) and fails if the 
    keys, file, size — with no lines left to copy.
 4. Put `provider = "local-model"` in `%APPDATA%\note-processor\config.toml` with no `model` line and run an embed: the
    card should quote np's sentence about needing a model, and say what Jott did **not** change.
-5. After allowing a download, open that `config.toml`. You should be able to tell from the file alone which lines np
+5. Say no to embeddings in a folder whose settings np will not touch, then quit and reopen Jott and search. The window
+   should still be keyword-only: a decline you gave once must not have to be given again because the answer happened to
+   arrive while np was unreachable.
+6. After allowing a download, open that `config.toml`. You should be able to tell from the file alone which lines np
    wrote and which single line came from Jott. If you cannot, that is a bug worth reporting.
 
 Previous releases are listed at <https://github.com/Ex-Bot-01/jott/releases>. Docs:

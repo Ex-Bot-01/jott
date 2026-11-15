@@ -59,8 +59,13 @@ function outcomeSentences(outcome: ConsentOutcome): string[] {
   }
 
   const kept = outcome.model === null ? '' : ` It remembered the model you chose (${outcome.model}) in case you change your mind.`
-  const moved = outcome.changed.length === 0 ? 'nothing' : outcome.changed.join(' and ')
-  return [`note-processor switched embeddings off: it wrote ${moved} into ${where}.${kept}`, ourKeySentence(outcome)]
+  // "it wrote nothing" is true of the state and odd about the act: enabling what is already off changes no keys, and
+  // np's own wording for that is that embeddings are off. Say that instead.
+  const moved =
+    outcome.changed.length === 0
+      ? 'embeddings were already off, so no setting needed changing'
+      : `it wrote ${outcome.changed.join(' and ')} into ${where}`
+  return [`note-processor switched embeddings off: ${moved}.${kept}`, ourKeySentence(outcome)]
 }
 
 /** The clipboard line for Jott's own key — the same four states as `ourKeySentence`, in the terse form a log wants. */
@@ -102,7 +107,14 @@ export function cardSentences(facts: ConsentFacts): string[] {
   // An answer pressed ten seconds ago outranks the file's state: it says what just happened, in np's words, and it is
   // the only version that can admit a refusal. `configUnreadable` is the exception — np will not rewrite a file it
   // cannot parse, so the sentence about the file stays true whichever button was pressed.
-  if (facts.outcome && help.gap !== 'configUnreadable') return outcomeSentences(facts.outcome)
+  if (facts.outcome && help.gap !== 'configUnreadable') {
+    const lines = outcomeSentences(facts.outcome)
+    // A refusal that arrives *after* the press is a second fact, not a replacement for it: np wrote those settings,
+    // and ten seconds later it refused something else. Clearing the receipt (which this window used to do) put the
+    // paste-advice back over a file np had just written.
+    if (refusal !== null && refusal !== facts.outcome.npRefused) lines.push(refusal)
+    return lines
+  }
 
   if (help.gap === 'ready') return []
 

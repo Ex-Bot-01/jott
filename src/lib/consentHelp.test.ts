@@ -191,3 +191,29 @@ describe('the card once np has answered', () => {
     expect(cardSentences({ help: help({ gap: 'ready', autoFetch: true }), refusal: null, outcome: null })).toEqual([])
   })
 })
+
+  it('keeps the answer on screen when np refuses something afterwards', () => {
+    // Ten seconds after a press, np can refuse the embed pass for its own reason. The card must not revert to
+    // paste-advice about a file np has just written, nor drop the refusal on the floor: both facts are true, and the
+    // window used to lose one of them by clearing the receipt.
+    const later = 'configuration error: config io: embeddings.model names no installed model'
+    const text = cardSentences({
+      help: help({ gap: 'ready', autoFetch: true, linesToAdd: ['provider = "local-model"'] }),
+      refusal: later,
+      outcome: outcome({}),
+    }).join(' ')
+    expect(text).toContain('note-processor wrote embeddings.provider')
+    expect(text).toContain(later)
+    // The paste block is still not offered: those lines are in the file already.
+    expect(text).not.toContain('provider = "local-model"')
+  })
+
+  it('does not print np’s sentence twice when the refusal is the answer', () => {
+    const sentence = 'config io: no pinned model "no-such"'
+    const sentences = cardSentences({
+      help: help({ autoFetch: false }),
+      refusal: sentence,
+      outcome: outcome({ npRefused: sentence, changed: [], provider: null, model: null, persistedTo: null, fetchBytes: null, autoFetch: 'untouched' }),
+    })
+    expect(sentences.filter((line) => line === sentence)).toHaveLength(1)
+  })

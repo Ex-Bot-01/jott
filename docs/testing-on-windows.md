@@ -231,9 +231,9 @@ is that np now answers two questions it used to refuse, and Jott asks them inste
 
   `auto_fetch` stays there because np does not touch it: measured on 0.5.1, enabling embeddings through the new method
   leaves `auto_fetch = false` and embed still refuses to fetch. That is the guardrail doing its job — a fresh np
-  defaults to *yes* and would download ~310 MB without asking.
+  defaults to *yes* and would download about 296 MiB (309,855,456 bytes) without asking.
 
-**Five things worth trying:**
+**Six things worth trying:**
 
 1. Type a word stem you know is only inside longer words, search, get nothing, then press **try matching word
    beginnings**. The header should name the widened word and the row should be marked.
@@ -245,6 +245,15 @@ is that np now answers two questions it used to refuse, and Jott asks them inste
    note so embedding runs: the card should quote np's sentence about needing a model, and say what Jott did not change.
 5. After allowing a download, read `%APPDATA%\note-processor\config.toml`. You should be able to tell from the file
    alone which lines np wrote and which one line came from Jott. If you cannot, that is a bug worth reporting.
+6. Get np to refuse — put `provider = "local-model"` with no `model` line and press **Allow the download**. The card
+   should quote np's refusal and say Jott left `models.auto_fetch` alone, and the file should agree with it: still
+   `false`. Then quit, reopen the same folder and search. It should still be keyword-only. A guardrail you said no to
+   must not come back up because a window listed the folder again.
+
+One rule behind all of this: **Jott writes one key**, `models.auto_fetch`, and only two places ever touch it — opening
+a folder nobody has answered about holds it at `false`, and your answer is recorded once, after np has opened or closed
+its own door. Nothing raises it beside a refusal. So if that file ever says `auto_fetch = true` when you never allowed
+anything, that is a Jott bug, and the log line (`consent · called embeddings.enable …`) will say which button moved it.
 
 ## 2c. Since 0.0.11: press **Ctrl+Shift+D** when something is odd
 

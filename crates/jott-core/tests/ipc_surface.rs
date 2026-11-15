@@ -17,6 +17,7 @@ use jott_core::np::outcomes::{EmbedReport, ScanReport};
 use jott_core::np::resolve::{NpMissing, NpSource, Os};
 use jott_core::np::{NpFeatures, NpInfo};
 use jott_core::vault::walk::EntryKind;
+use jott_core::ingest::consent::AutoFetch;
 use jott_core::ipc::VaultSession;
 use jott_core::vault::stamps::StampState;
 use jott_core::vault::store::Consent;
@@ -1611,4 +1612,155 @@ fn the_consent_receipt_is_named_exactly_as_ipc_ts_says() {
     let value = serde_json::to_value(&failed).expect("failed");
     assert_eq!(value["autoFetch"], json!("failed"));
     assert_eq!(value["autoFetchError"], json!("could not write /x/config.toml: permission denied"));
+}
+
+// ---- answering consent through the session (v0.0.15 review). These exist because the free function was tested and
+// the session was not: `VaultSession::answer_consent` could — and did — let a second writer raise the guardrail after
+// np refused, while the card and the log both said it had been left alone.
+
+/// The button's whole point in one test: np refused, so nothing of ours moved either.
+#[tokio::test]
+async fn a_refused_yes_leaves_the_guardrail_exactly_where_it_was() {
+    let _turn = SERIAL.lock().await;
+    let harness = Harness::new();
+    harness.write("a.md", b"# A\n");
+    let config = harness.data.path().join("np-config.toml");
+    let before = "[models]\nauto_fetch = false\n";
+    std::fs::write(&config, before).expect("np config");
+
+    let sentence = "config io: no pinned model \"no-such\": this build can name \"embeddinggemma-2\"";
+    let (_d, client) = common::spawn(json!({
+        "faults": {"embeddings.enable": {"code": -32000, "message": sentence}}
+    }))
+    .await;
+    let (_sentinel, info) = ipc::np_absent();
+    let session = VaultSession::open_in_with(
+        NpSource::Env(common::repo_root().join("tests/fake-np/np.py")),
+        info,
+        Some(Arc::new(client)),
+        harness.vault.path(),
+        Consent::Undecided,
+        Some(config.clone()),
+        harness.data.path().to_path_buf(),
+    );
+
+    let receipt = session.answer_consent(true).await;
+    assert_eq!(receipt.np_refused.as_deref(), Some(sentence), "np's words survive to the card");
+    assert_eq!(receipt.auto_fetch, AutoFetch::Untouched, "{:?}", receipt.auto_fetch);
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), before, "a refused yes must not raise the guardrail");
+    session.close().await;
+}
+
+/// The other half of the asymmetry: a *no* is Jott's own protection to install, so np refusing to revoke its provider
+/// does not get to leave `auto_fetch = true` behind.
+#[tokio::test]
+async fn a_decline_lowers_the_guardrail_even_when_np_refuses_to_revoke() {
+    let _turn = SERIAL.lock().await;
+    let harness = Harness::new();
+    harness.write("a.md", b"# A\n");
+    let config = harness.data.path().join("np-config.toml");
+    std::fs::write(&config, "[models]\nauto_fetch = true\n").expect("np config");
+
+    let (_d, client) = common::spawn(json!({
+        "faults": {"embeddings.disable": {"code": -32000, "message": "config io: cannot write the config file"}}
+    }))
+    .await;
+    let (_sentinel, info) = ipc::np_absent();
+    let session = VaultSession::open_in_with(
+        NpSource::Env(common::repo_root().join("tests/fake-np/np.py")),
+        info,
+        Some(Arc::new(client)),
+        harness.vault.path(),
+        Consent::Undecided,
+        Some(config.clone()),
+        harness.data.path().to_path_buf(),
+    );
+
+    let receipt = session.answer_consent(false).await;
+    assert!(receipt.np_refused.is_some(), "np's refusal is still reported: {:?}", receipt.np_refused);
+    assert_eq!(receipt.auto_fetch, AutoFetch::Written, "{:?}", receipt.auto_fetch);
+    assert!(!auto_fetch_allowed(&config), "nothing may download after a no");
+    session.close().await;
+}
+
+/// No child to ask, and a person who said no: Jott's key needs no np, so the guardrail still goes down. A grant with
+/// no np is the opposite case — there is no door to open, so nothing of ours moves either.
+#[tokio::test]
+async fn declining_without_np_still_writes_false_and_granting_it_writes_nothing() {
+    let _turn = SERIAL.lock().await;
+    let harness = Harness::new();
+    harness.write("a.md", b"# A\n");
+
+    let (_sentinel, info) = ipc::np_absent();
+
+    let config = harness.data.path().join("declined.toml");
+    std::fs::write(&config, "[models]\nauto_fetch = true\n").expect("np config");
+    let session = VaultSession::open_in_with(
+        common::unreachable_np(),
+        info.clone(),
+        None,
+        harness.vault.path(),
+        Consent::Undecided,
+        Some(config.clone()),
+        harness.data.path().to_path_buf(),
+    );
+    let receipt = session.answer_consent(false).await;
+    assert!(receipt.np_refused.is_some(), "the window says there was no np to ask");
+    assert_eq!(receipt.auto_fetch, AutoFetch::Written, "Jott's own key does not need a child: {:?}", receipt.auto_fetch);
+    assert!(!auto_fetch_allowed(&config));
+    session.close().await;
+
+    let config = harness.data.path().join("granted.toml");
+    let before = "[models]\nauto_fetch = false\n";
+    std::fs::write(&config, before).expect("np config");
+    let session = VaultSession::open_in_with(
+        common::unreachable_np(),
+        info,
+        None,
+        harness.vault.path(),
+        Consent::Undecided,
+        Some(config.clone()),
+        harness.data.path().to_path_buf(),
+    );
+    let receipt = session.answer_consent(true).await;
+    assert!(receipt.np_refused.is_some());
+    assert_eq!(receipt.auto_fetch, AutoFetch::Untouched);
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), before, "no np, no door: our key stays put");
+    session.close().await;
+}
+
+/// An accepted grant is still the ordinary path worth pinning at this level: np's keys by np, ours by us.
+#[tokio::test]
+async fn an_accepted_yes_writes_our_key_once_and_reports_nps() {
+    let _turn = SERIAL.lock().await;
+    let harness = Harness::new();
+    harness.write("a.md", b"# A\n");
+    let config = harness.data.path().join("np-config.toml");
+    std::fs::write(&config, "[models]\nauto_fetch = false\n").expect("np config");
+
+    let (_d, client) = common::spawn(json!({
+        "replies": {"embeddings.enable": {"changed": ["embeddings.provider", "embeddings.model"],
+                                          "fetch": {"bytes_total": 309_855_456, "members": ["main"]},
+                                          "model": "embeddinggemma-2", "provider": "local-model"}}
+    }))
+    .await;
+    let (_sentinel, info) = ipc::np_absent();
+    let session = VaultSession::open_in_with(
+        NpSource::Env(common::repo_root().join("tests/fake-np/np.py")),
+        info,
+        Some(Arc::new(client)),
+        harness.vault.path(),
+        Consent::Undecided,
+        Some(config.clone()),
+        harness.data.path().to_path_buf(),
+    );
+
+    let receipt = session.answer_consent(true).await;
+    assert!(receipt.np_refused.is_none());
+    assert_eq!(receipt.changed, vec!["embeddings.provider".to_string(), "embeddings.model".to_string()]);
+    assert_eq!(receipt.auto_fetch, AutoFetch::Written);
+    let after = std::fs::read_to_string(&config).unwrap();
+    assert!(after.contains("auto_fetch = true"), "{after}");
+    assert!(!after.contains("[embeddings]"), "Jott wrote into `[embeddings]`: {after}");
+    session.close().await;
 }

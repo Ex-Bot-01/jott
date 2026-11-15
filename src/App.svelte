@@ -143,7 +143,12 @@
    *  Carried across they let the window describe yesterday's download as a property of the folder someone just
    *  opened — which is the same class of claim this release exists to stop making. */
   function adopt(next: VaultListing) {
+    const changedFolder = listing !== null && listing.vault !== next.vault
     listing = next
+    // A model was downloaded for one folder's index, and a search widened itself in one folder's results; carried
+    // across they let the window describe yesterday's news as a property of the folder someone just opened — the same
+    // class of claim v0.0.14 exists to stop making.
+    if (!changedFolder) return
     modelReady = null
     consentHelp = null
     lastRefusal = null
@@ -617,8 +622,8 @@
       // and `cardSentences` answers nothing when the settings are fine, so an unrelated refusal in a healthy folder
       // still raises no card.
       if ('refused' in event) {
-        // np has just said something new, and that beats what it said when a button was pressed.
-        consentOutcome = null
+        // Both facts stand: what np answered the button, and what it says now. `cardSentences` prints the receipt and
+        // then this sentence — dropping the receipt put the paste-advice back over a file np had just written.
         lastRefusal = event.refused.message
         void readConsentHelp()
       }

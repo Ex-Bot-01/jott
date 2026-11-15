@@ -906,7 +906,7 @@ impl VaultSession {
     /// log line names the keys and the files and never a model id — a settings decision has to be auditable from
     /// those two facts alone.
     pub async fn answer_consent(&self, granted: bool) -> crate::ingest::consent::ConsentReceipt {
-        use crate::ingest::consent::{answer_consent as record, AutoFetch, ConsentReceipt};
+        use crate::ingest::consent::{answer_consent as record, answer_without_np, AutoFetch};
         // The same id the card is naming, read the same way, so a person clicking a button about one model cannot
         // have a different one enabled behind their back.
         let model = self
@@ -916,16 +916,28 @@ impl VaultSession {
 
         let receipt = match self.pool.writer().await {
             Ok(client) => record(&client, self.np_config.as_deref(), granted, &model).await,
-            // No child to ask: np's words do not exist, so the receipt says that instead of inventing a refusal.
-            Err(why) => ConsentReceipt::unreachable(granted, why.to_string()),
+            // No child to ask. np's words do not exist, so the receipt says that — and a *no* still gets its
+            // guardrail, because writing our own key needs nothing from the process that failed to start.
+            Err(why) => answer_without_np(self.np_config.as_deref(), granted, why.to_string()),
         };
 
         let answer = if granted { "granted" } else { "declined" };
-        let mut detail = String::from(answer);
-        if let Some(sentence) = &receipt.np_refused {
-            // np's sentence verbatim. It names the file and often the line, which is the whole value of keeping it.
-            detail.push_str(&format!(" · note-processor refused: {sentence}"));
-            detail.push_str(if granted { " · models.auto_fetch left as it was" } else { " · wrote models.auto_fetch = false anyway" });
+        // Which door was knocked on is the one fact that tells an audit "allowed" from "revoked", and no key name
+        // carries it.
+        let method = if granted { "embeddings.enable" } else { "embeddings.disable" };
+        let mut detail = format!("{answer} · called {method}");
+        // What happened to Jott's key comes from the receipt, never from what the button meant. This used to say
+        // "wrote models.auto_fetch = false anyway" for every declined answer np refused — including the ones where
+        // the write itself failed, which is a sentence about something that did not happen.
+        let key = match &receipt.auto_fetch {
+            AutoFetch::Written => format!("writes models.auto_fetch = {granted}"),
+            AutoFetch::Untouched => "models.auto_fetch left as it was".to_string(),
+            AutoFetch::NoConfigPath => "wrote no models.auto_fetch: no np config path was found".to_string(),
+            AutoFetch::Failed { sentence } => format!("could not write models.auto_fetch: {sentence}"),
+        };
+        detail.push_str(&format!(" · {key}"));
+        if receipt.np_refused.is_some() {
+            detail.push_str(" · note-processor refused (its words are on screen, not in this file)");
         } else {
             let moved = if receipt.changed.is_empty() {
                 "nothing (already set)".to_string()
@@ -938,15 +950,10 @@ impl VaultSession {
                 .map(|path| path.display().to_string())
                 .unwrap_or_else(|| "a file note-processor did not name".to_string());
             detail.push_str(&format!(" · note-processor wrote {moved} → {where_to}"));
-            let key = match &receipt.auto_fetch {
-                AutoFetch::Written => format!("writes models.auto_fetch = {granted}"),
-                AutoFetch::Untouched => "models.auto_fetch left as it was".to_string(),
-                AutoFetch::NoConfigPath => "wrote no models.auto_fetch: no np config path was found".to_string(),
-                AutoFetch::Failed { sentence } => format!("could not write models.auto_fetch: {sentence}"),
-            };
-            detail.push_str(&format!(" · {key}"));
         }
-        self.local(LocalRecord::new("consent").with_detail(detail));
+        // np's own sentence goes to the drawer row and nowhere else: it names the model ids this build can use, and
+        // the journal is read by somebody else years later. The card quotes it byte for byte while it is on screen.
+        self.local_record(LocalRecord::new("consent").with_detail(detail), receipt.np_refused.clone());
 
         // The queue's own switch flips last, and flips even when np refused: a person who was told no still
         // expects the window to stop asking, and the guardrail question is settled by the receipt above.
@@ -995,6 +1002,14 @@ impl VaultSession {
     /// Both from one call so the two can never disagree about whether a save happened, and neither can fail the
     /// operation it describes: the log's own rule is that a diagnostic must not stop a save (§19).
     fn local(&self, record: LocalRecord) {
+        self.local_record(record, None);
+    }
+
+    /// As [`local`](Self::local), with one extra thing in the **drawer row** and not in the file: a sentence quoted
+    /// from note-processor. The journal keeps its closed, content-free detail because somebody else reads it years
+    /// later and np's sentences name model ids; the trace ring is memory for the person who is looking right now,
+    /// and v0.0.11 promised them np's words byte for byte.
+    fn local_record(&self, record: LocalRecord, np_sentence: Option<String>) {
         let _ = guarded(&self.journal).clone().record_local(&record);
         let mut detail = record.event.to_string();
         if let Some(rel) = &record.rel {
@@ -1004,6 +1019,10 @@ impl VaultSession {
         if let Some(more) = &record.detail {
             detail.push_str(" — ");
             detail.push_str(more);
+        }
+        if let Some(sentence) = np_sentence {
+            // Quoted, so a reader can tell whose words these are.
+            detail.push_str(&format!(" · “{sentence}”"));
         }
         self.trace.push(TraceEvent {
             at_ms: now_ms(),

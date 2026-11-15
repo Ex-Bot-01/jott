@@ -226,20 +226,32 @@ pub struct ConsentReceipt {
     pub auto_fetch: AutoFetch,
 }
 
-impl ConsentReceipt {
-    /// The receipt when there was no np to ask at all — the child would not start, or died mid-answer. np's own words
-    /// are unavailable, so this says that plainly instead of inventing a refusal it never heard.
-    pub fn unreachable(granted: bool, sentence: String) -> ConsentReceipt {
-        ConsentReceipt {
-            granted,
-            np_refused: Some(sentence),
-            changed: Vec::new(),
-            provider: None,
-            model: None,
-            persisted_to: None,
-            fetch_bytes: None,
-            auto_fetch: AutoFetch::Untouched,
+/// The receipt when there was no np to ask at all — the child would not start, or died mid-answer. np's own words do
+/// not exist, so this says that plainly rather than inventing a refusal it never heard.
+///
+/// Our key is still ours to write, and which way depends on the answer: a **no** needs no door, so the guardrail goes
+/// down regardless; a **yes** has no door to open, so raising it would promise a download nothing can serve.
+pub fn answer_without_np(config: Option<&Path>, granted: bool, sentence: String) -> ConsentReceipt {
+    let auto_fetch = if granted {
+        AutoFetch::Untouched
+    } else {
+        match config {
+            None => AutoFetch::NoConfigPath,
+            Some(path) => match set_auto_fetch(path, false) {
+                Ok(()) => AutoFetch::Written,
+                Err(why) => AutoFetch::Failed { sentence: why.to_string() },
+            },
         }
+    };
+    ConsentReceipt {
+        granted,
+        np_refused: Some(sentence),
+        changed: Vec::new(),
+        provider: None,
+        model: None,
+        persisted_to: None,
+        fetch_bytes: None,
+        auto_fetch,
     }
 }
 

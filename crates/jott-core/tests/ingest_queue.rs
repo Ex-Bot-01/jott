@@ -7,7 +7,6 @@ mod common;
 
 use common::{fixture_result, repo_root};
 use jott_core::hashes::sha256_file;
-use jott_core::ingest::consent::auto_fetch_allowed;
 use jott_core::ingest::queue::{backoff_ms, IngestEvent, IngestQueue, StateReason};
 use jott_core::np::pool::NpPool;
 use jott_core::np::{NpFeatures, NpInfo, NpSource};
@@ -438,11 +437,12 @@ async fn no_artifact_and_no_decision_asks_once_and_never_embeds() {
 }
 
 #[tokio::test]
-async fn declining_writes_the_config_and_keeps_indexing() {
+async fn declining_keeps_indexing_and_leaves_nps_file_to_its_one_writer() {
     let _turn = SERIAL.lock().await;
     let h = Harness::new(json!({"replies": {"scan": fixture_result(2), "models.list": models_list_missing()}}))
     .await;
-    std::fs::write(&h.np_config, config_naming("bge-m3")).unwrap();
+    let before = config_naming("bge-m3");
+    std::fs::write(&h.np_config, &before).unwrap();
     let queue = h.queue();
     queue.set_consent(Consent::Declined);
 
@@ -451,8 +451,12 @@ async fn declining_writes_the_config_and_keeps_indexing() {
 
     let calls = h.calls();
     assert_eq!(calls, vec!["scan".to_string()], "keyword search keeps working fully (§11)");
-    assert!(!auto_fetch_allowed(&h.np_config), "the answer goes in np's file, not in env (§11)");
     assert_eq!(h.state("notes/a.md"), StampState::Indexed);
+    // The queue's answer is memory plus released work. `models.auto_fetch` has exactly one writer —
+    // `consent::answer_consent`, reached through `VaultSession::answer_consent` — because a second writer used to
+    // raise the guardrail on every grant, including grants note-processor had just refused. The file half of a
+    // decline is pinned there (`a_decline_lowers_the_guardrail_even_when_np_refuses_to_revoke`).
+    assert_eq!(std::fs::read_to_string(&h.np_config).unwrap(), before, "the queue no longer writes np's config");
 }
 
 #[tokio::test]
@@ -474,7 +478,8 @@ async fn granting_writes_the_config_then_embeds() {
         vec!["scan".to_string(), "embed".to_string()],
         "a decision already made is not asked about again: no `models.list` on this path"
     );
-    assert!(auto_fetch_allowed(&h.np_config), "[Download] means the key is written (§11)");
+    // The key itself was written before this point, by `answer_consent`; what the queue owes an answer is that it
+    // stops asking and runs the pass.
     assert_eq!(h.state("notes/a.md"), StampState::Embedded, "this time the vectors are real");
 }
 
@@ -778,13 +783,12 @@ async fn reopening_a_vault_does_not_rewrite_nps_configuration() {
     queue.seed_consent(Consent::Granted);
     assert_eq!(std::fs::read_to_string(&h.np_config).unwrap(), text, "seeding is memory only");
 
-    // An answer still writes, and writes it once: the second identical answer changes nothing.
+    // An answer through the queue writes nothing either — same rule, one writer. Recording a decision (with the
+    // person's comments preserved, once and only once) is `set_auto_fetch`'s job and is pinned in `np_consent.rs`;
+    // this test keeps the queue honest about staying out of the file.
     queue.set_consent(Consent::Granted);
-    let after_answer = std::fs::read_to_string(&h.np_config).unwrap();
-    assert!(after_answer.contains("auto_fetch"), "the decision is recorded where np reads it: {after_answer}");
-    assert!(after_answer.contains("# mine"), "np's file, with the person's comment still in it: {after_answer}");
     queue.set_consent(Consent::Granted);
-    assert_eq!(std::fs::read_to_string(&h.np_config).unwrap(), after_answer);
+    assert_eq!(std::fs::read_to_string(&h.np_config).unwrap(), text, "the queue leaves np's file byte for byte");
     queue.drain_now().await;
 }
 

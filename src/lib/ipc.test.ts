@@ -89,15 +89,6 @@ describe('the consent receipt', () => {
   })
 })
 
-describe('the consent receipt', () => {
-  it('carries every key Rust sends about what note-processor did', () => {
-    // Since np 0.5.x the answer comes back over the pipe (`embeddings.enable`), and the card quotes it. A key dropped
-    // on this side turns "Jott could not write models.auto_fetch" into `undefined`, which renders as silence about the
-    // one thing the person needs to know: whether the download guardrail actually moved.
-    expect(interfaceKeys(ipcTs, 'ConsentOutcome').sort()).toEqual(rustFields(ipcRust, 'ConsentAnswerDto').sort())
-  })
-})
-
 describe('the consent card payload', () => {
   it('carries every key Rust sends about np’s configuration', () => {
     // The card is the only thing standing between "Allow download" and a person editing np's config by guesswork.
