@@ -142,6 +142,10 @@ pub struct NoteContent {
     /// §18.13: unsaved text mirrored from an earlier session, newer than the file. The window offers it;
     /// it does not paste it over the buffer silently.
     pub mirrored: Option<MirroredText>,
+    /// Jott may show this file and may not write it. True for what note-processor publishes at the vault root
+    /// (`INDEX.md` and its shards), which used to be refused outright — so a person who wondered what the index
+    /// said got nothing at all, and no reason.
+    pub readonly: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -731,7 +735,18 @@ impl VaultSession {
             // the log, because the person looking tomorrow sees only a file they did not write.
             self.local(LocalRecord::new("mirror-replayed").with_rel(rel));
         }
-        Ok(NoteContent { rel: rel.to_string(), text, hash: disk_hash.clone(), disk_hash, disk_mtime_ms: mtime_ms, mirrored })
+        // np's catalogues are readable and not writable. The write refusal lives in `files` (and stays there);
+        // this flag is so the window can say *read-only* instead of offering a buffer that would fail on save.
+        let readonly = !rel.contains('/') && !rel.contains('\\') && crate::vault::walk::is_generated_index(rel);
+        Ok(NoteContent {
+            rel: rel.to_string(),
+            text,
+            hash: disk_hash.clone(),
+            disk_hash,
+            disk_mtime_ms: mtime_ms,
+            mirrored,
+            readonly,
+        })
     }
 
     /// Write the buffer, tell the queue its bytes changed, and drop the mirror that was standing in for it.

@@ -333,6 +333,13 @@
     if (shortcut !== null) {
       // Ctrl+S inside the editor is CodeMirror's own binding and it already prevented this event; asking again
       // would save a second time, which is at best a wasted round trip to np.
+      if (shortcut === 'save' && note?.readonly) {
+        // The refusal is core's to make and it does make it — but a keystroke that appears to do nothing is worse
+        // than one that says why, and "why" here is one sentence about whose file this is.
+        event.preventDefault()
+        notice = `${note.rel} is note-processor's own index; it cannot be edited in Jott.`
+        return
+      }
       if (shortcut === 'save') {
         // Ask before preventing: the editor's own binding has already taken the key when it has focus, and a second
         // save for one keystroke is its own bug.
@@ -984,6 +991,7 @@
       saveSignal={saveSignal}
       highlight={hitQuery}
       highlightPrefix={prefixOn}
+      readonly={note?.readonly ?? false}
       rel={selected}
       {note}
       {external}

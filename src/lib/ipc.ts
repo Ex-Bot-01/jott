@@ -44,6 +44,9 @@ export interface NoteContent {
   /** §18.13's unsaved buffer from an earlier session. `hash` is what the buffer held when it was mirrored,
    * so "this is the text you already have on screen" is checkable rather than assumed. */
   mirrored?: { text: string; mtimeMs: number; hash: string }
+  /** Jott may show this file and may not write it — true for what note-processor publishes at the vault root. The
+   *  window shows a display rather than an editor, so nobody types into a buffer that would fail on save. */
+  readonly?: boolean
 }
 
 export interface WriteResult {

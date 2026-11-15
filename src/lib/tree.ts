@@ -72,7 +72,7 @@ function markerFor(state: StampState | null): { marker: string; title: string } 
 
 /** What the greyed `INDEX.md` row says when you hover it. The file is np's, not yours and not Jott's, and a
     person who has never seen one appear in their folder deserves to be told that in a sentence. */
-export const GENERATED_TITLE = 'Catalogue written by np — Jott never edits it'
+export const GENERATED_TITLE = 'Catalogue written by note-processor — open it to read, Jott never edits it'
 
 /** How many notes still owe their first pass: no stamp at all, or a stamp that says nobody indexed them yet.
     A refused note is not counted — it was tried, and the row already says so. */

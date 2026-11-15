@@ -23,11 +23,13 @@
     onmenu?: (rel: string | null, x: number, y: number) => void
   } = $props()
 
-  /** Folders are chosen by clicking the row; a note opens in the editor. Greyed rows are np's own files,
-   * which have nothing to open here (§9). */
+  /** A folder opens or closes; everything else opens in the editor — including np's own catalogue, which used to
+   * swallow the click. Refusing to *look* was never the point of refusing to *write*: a tester who wondered what
+   * the index said got silence, and silence reads as a broken file. Catalogue rows stay greyed (they are np's, not
+   * yours) and open read-only; `readonly` on the file is what enforces that, not a disabled row. */
   function click(row: Row) {
     if (row.kind === 'Folder') ontoggle(row.rel)
-    else if (row.kind !== 'Generated') onselect(row.rel)
+    else onselect(row.rel)
   }
 </script>
 
@@ -44,12 +46,12 @@
     <li>
       <button
         type="button"
+        data-kind={row.kind}
         class:selected={selected === row.rel}
         class:greyed={row.greyed}
         class:folder={row.kind === 'Folder'}
         style:padding-inline-start={`${0.4 + row.depth * 0.85}rem`}
         title={row.title || row.rel}
-        disabled={row.greyed}
         onclick={() => click(row)}
         oncontextmenu={(event) => {
           event.stopPropagation()
