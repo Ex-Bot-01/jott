@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest'
 
-import { bareKeyFor, isTypingTarget, shortcutFor } from './shortcuts'
+import { bareKeyFor, escapeAction, isTypingTarget, shortcutFor } from './shortcuts'
 
 const key = (
   over: Partial<{ ctrlKey: boolean; metaKey: boolean; shiftKey: boolean; altKey: boolean; key: string }>,
@@ -66,4 +66,26 @@ describe('the bare keys', () => {
     expect(isTypingTarget(document.getElementById('box'))).toBe(true)
     expect(isTypingTarget(document.getElementById('row'))).toBe(false)
   })
+
+  /** Escape is the key people reach for to make something go away, and several things can be "something". */
+  describe('what Escape is for', () => {
+    it('dismisses the topmost thing first, and closes the note only when nothing covers it', () => {
+      expect(escapeAction({ menuOpen: true, drawerOpen: true, noteOpen: true, typing: false })).toBe('menu')
+      expect(escapeAction({ menuOpen: false, drawerOpen: true, noteOpen: true, typing: false })).toBe('drawer')
+      expect(escapeAction({ menuOpen: false, drawerOpen: false, noteOpen: true, typing: false })).toBe('note')
+    })
+
+    it('does not close a note out from under someone who is typing', () => {
+      // The standing rule for unmodified keys: inside a text target they mean "type this". Dismissing a menu or
+      // the drawer still happens from there — that is what Escape is for when something covers the screen — but
+      // throwing away the visible note is not a dismissal.
+      expect(escapeAction({ menuOpen: false, drawerOpen: false, noteOpen: true, typing: true })).toBe('nothing')
+      expect(escapeAction({ menuOpen: true, drawerOpen: false, noteOpen: true, typing: true })).toBe('menu')
+    })
+
+    it('does nothing when there is nothing to dismiss', () => {
+      expect(escapeAction({ menuOpen: false, drawerOpen: false, noteOpen: false, typing: false })).toBe('nothing')
+    })
+  })
+
 })

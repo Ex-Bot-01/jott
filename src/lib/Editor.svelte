@@ -338,7 +338,7 @@
 
 <section class="editor">
   {#if !rel}
-    <p class="placeholder">Choose a note on the left, or make one.</p>
+    <p class="placeholder" data-testid="no-note">Choose a note on the left, or make one.</p>
   {:else}
     {#if phase === 'conflict' && !kept}
       <div class="banner" role="alert">

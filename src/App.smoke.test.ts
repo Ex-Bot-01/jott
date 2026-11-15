@@ -1316,4 +1316,54 @@ describe('the window mounts', () => {
     expect(errors).toEqual([])
   })
 
+
+  it('closes the note that is open', async () => {
+    // The ask: "I see no close or X button where I can close my current note." There was not one, and there was no
+    // other way out either — `selected` only ever changed by clicking another row.
+    scenario.current = 'vault'
+    const { errors } = await start()
+
+    const close = () => document.querySelector('[data-testid="close-note"]') as HTMLButtonElement | null
+    expect(close(), 'the window offers a way to close a note').not.toBeNull()
+    expect(close()!.disabled, 'with nothing open there is nothing to close').toBe(true)
+
+    ;(document.querySelector('.tree button:not(:disabled)') as HTMLElement).dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await vi.waitFor(() => expect(document.querySelector('.cm > .cm-editor')).not.toBeNull(), { timeout: 2000 })
+    expect(close()!.disabled).toBe(false)
+
+    close()!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+
+    await vi.waitFor(() => expect(document.querySelector('.cm > .cm-editor')).toBeNull(), { timeout: 2000 })
+    expect(document.querySelector('[data-testid="no-note"]'), 'an empty editor says what to do next').not.toBeNull()
+    expect(close()!.disabled, 'and the button knows there is nothing open now').toBe(true)
+    // Closing is not saving. Nothing was dirty, and even so: no write went anywhere.
+    expect(commands).not.toContain('save_note')
+
+    // The same key, from the body.
+    ;(document.querySelector('.tree button:not(:disabled)') as HTMLElement).dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await vi.waitFor(() => expect(document.querySelector('.cm > .cm-editor')).not.toBeNull(), { timeout: 2000 })
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await vi.waitFor(() => expect(document.querySelector('.cm > .cm-editor')).toBeNull(), { timeout: 2000 })
+
+    expect(errors).toEqual([])
+  })
+
+  it('leaves the note alone when Escape arrives from inside a text field', async () => {
+    // Escape in the search box is not a request to throw the visible note away — that key belongs to whoever is
+    // typing, same rule as F2 and Delete.
+    scenario.current = 'vault'
+    const { errors } = await start()
+
+    ;(document.querySelector('.tree button:not(:disabled)') as HTMLElement).dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await vi.waitFor(() => expect(document.querySelector('.cm > .cm-editor')).not.toBeNull(), { timeout: 2000 })
+
+    const box = document.querySelector('input[type="search"]') as HTMLInputElement
+    box.focus()
+    box.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await new Promise((resolve) => setTimeout(resolve, 120))
+    expect(document.querySelector('.cm > .cm-editor'), 'the note is still open').not.toBeNull()
+
+    expect(errors).toEqual([])
+  })
+
 })

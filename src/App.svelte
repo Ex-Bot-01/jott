@@ -11,7 +11,7 @@
   import StatusLine from './lib/StatusLine.svelte'
   import { actionsFor, flattenTree, moveTargets, moveTo, notesAwaitingEmbedding, notesAwaitingIndex, targetFolder } from './lib/tree'
   import type { TreeAction } from './lib/tree'
-  import { bareKeyFor, isTypingTarget, shortcutFor } from './lib/shortcuts'
+  import { bareKeyFor, escapeAction, isTypingTarget, shortcutFor } from './lib/shortcuts'
   import {
     emptySearchSentence,
     hitSuffix,
@@ -114,6 +114,9 @@
   /** Bumped to ask the editor to write its buffer now (Ctrl+S with focus outside it). */
   let saveSignal = $state(0)
   let searchBox = $state<HTMLInputElement | null>(null)
+  /** The tree, so closing a note has somewhere to put the focus. Focusable with -1 rather than a tab stop: it is a
+   *  destination for the keyboard, not another thing to tab through on the way to a note. */
+  let treeHost = $state<HTMLElement | undefined>()
 
   const rows = $derived(flattenTree(listing?.nodes ?? [], openFolders))
   /** A folder is "open" only while its parent is; `flattenTree` handles the hiding, this holds the wish. */
@@ -339,7 +342,17 @@
         return
       }
       if (shortcut === 'close-drawer') {
-        menu = null
+        // One press, one thing dismissed, topmost first — the order lives in `escapeAction`, where it is tested.
+        // Closing a note while a menu still covers the vault reads as throwing work away to hide an overlay.
+        const step = escapeAction({
+          menuOpen: menu !== null,
+          drawerOpen: showDiagnostics,
+          noteOpen: selected !== null,
+          typing: isTypingTarget(event.target),
+        })
+        if (step === 'menu') menu = null
+        else if (step === 'drawer') showDiagnostics = false
+        else if (step === 'note') closeNote()
         return
       }
       event.preventDefault()
@@ -415,6 +428,21 @@
     openFolders = new Set()
     selected = null
     note = null
+  }
+
+  /** Stop looking at this note. It writes nothing and forgets nothing: an unsaved buffer stays mirrored in core
+   *  (§18.13), so closing a window is not a decision about somebody's typing — it is only putting it out of sight.
+   *
+   *  One function because the button and Escape must not be able to disagree about what "close" means. */
+  function closeNote() {
+    if (selected === null) return
+    selected = null
+    note = null
+    // The marks came from a search hit; with no note open there is nothing for them to be on.
+    hitQuery = ''
+    // Focus goes back where the next intention is most likely to come from, rather than to nothing at all — which is
+    // also what makes Escape feel like a way out rather than a dead end.
+    treeHost?.focus()
   }
 
   /** §18.13's two answers. Both take the offer off screen; only *discard* touches the mirror file, since
@@ -730,6 +758,17 @@
         <button type="button" title="Move this note to the trash" disabled={selected === null} onclick={() => (confirmDelete = selected)}>
           delete
         </button>
+        <!-- A word, not a ×: an icon button in a toolbar of words reads as decoration, and "close what?" is exactly
+             the question a tester had to ask out loud. -->
+        <button
+          type="button"
+          data-testid="close-note"
+          title="Stop looking at this note (Escape). Nothing is written by closing it."
+          disabled={selected === null}
+          onclick={closeNote}
+        >
+          close
+        </button>
       </span>
     </div>
 
@@ -783,14 +822,16 @@
         {/if}
       </ul>
     {:else}
-      <Tree
-        {rows}
-        open={openFolders}
-        selected={selected}
-        ontoggle={toggleFolder}
-        onselect={(rel) => void openNote(rel)}
-        onmenu={openMenu}
-      />
+      <div class="tree-host" bind:this={treeHost} tabindex="-1">
+        <Tree
+          {rows}
+          open={openFolders}
+          selected={selected}
+          ontoggle={toggleFolder}
+          onselect={(rel) => void openNote(rel)}
+          onmenu={openMenu}
+        />
+      </div>
     {/if}
 
     {#if modelReady}

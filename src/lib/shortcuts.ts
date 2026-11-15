@@ -48,6 +48,24 @@ export function shortcutFor(event: KeyLike): Shortcut | null {
   }
 }
 
+/** What one press of Escape should dismiss, given what is on screen.
+ *
+ *  Several things can be "the thing I want out of my way", and the wrong order makes the key feel broken: closing
+ *  a note while a menu still covers the vault reads as throwing work away to hide an overlay. So the topmost wins,
+ *  one step per press.
+ *
+ *  `typing` stands down only the last step. Escape inside a text target should still dismiss something that covers
+ *  the screen — but it must not close the note someone is writing, which is why the tester's new close button and
+ *  this key share one rule rather than two. */
+export function escapeAction(
+  facts: { menuOpen: boolean; drawerOpen: boolean; noteOpen: boolean; typing: boolean },
+): 'menu' | 'drawer' | 'note' | 'nothing' {
+  if (facts.menuOpen) return 'menu'
+  if (facts.drawerOpen) return 'drawer'
+  if (facts.noteOpen && !facts.typing) return 'note'
+  return 'nothing'
+}
+
 /** Delete and F2 have no modifier, and are the two bindings that must not fire while someone is typing a note. */
 export function bareKeyFor(event: { key: string; ctrlKey: boolean; metaKey: boolean; altKey: boolean }): 'rename' | 'delete' | null {
   if (event.ctrlKey || event.metaKey || event.altKey) return null
