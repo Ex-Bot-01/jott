@@ -22,6 +22,7 @@
   import { notifyBody, shouldNotify, type Permission } from './lib/notify'
   import type { SavePhase } from './lib/saveState'
   import * as ipc from './lib/ipc'
+  import { loadPrefix, savePrefix } from './lib/prefixSearch'
   import type { DiagnosticsSnapshot, TraceEvent } from './lib/diagnostics'
   import type { AboutInfo, ConsentHelp, FetchedRecord, IngestEvent, NoteContent, RegistryInfo, SearchResults, VaultListing } from './lib/ipc'
 
@@ -79,6 +80,9 @@
   let traceRows = $state<TraceEvent[]>([])
 
   let searchQuery = $state('')
+  /** Word-beginning matching (note-processor#6), remembered between runs and off until asked: widening a query
+   * changes what it means, so it is a choice somebody makes once about their own notes, not a default. */
+  let prefixOn = $state(loadPrefix(typeof localStorage === 'undefined' ? null : localStorage))
   /** The query that produced the hit this note was opened from. Kept apart from `searchQuery` on purpose: the
    * box keeps being typed in, and marks should follow the hit that was clicked, not every keystroke after it. */
   let hitQuery = $state('')
@@ -449,12 +453,23 @@
     }
     const seq = ++searchSeq
     searching = true
-    const answer = await call(() => ipc.searchVault(query, 12, false))
+    const answer = await call(() => ipc.searchVault(query, 12, prefixOn))
     // Typing "abc" fires three requests and np is free to answer them in any order. Without this guard the slowest
     // one wins, which reads as the search box ignoring what you typed last.
     if (!searchIsCurrent(seq, searchSeq)) return
     results = answer
     searching = false
+  }
+
+  /** The "match word beginnings" toggle. Saving and re-running are both immediate: someone flipping it wants to see
+   * what changes about *this* query, and a 250 ms debounce would read as the click having done nothing. */
+  function togglePrefix(event: Event) {
+    prefixOn = (event.currentTarget as HTMLInputElement).checked
+    savePrefix(typeof localStorage === 'undefined' ? null : localStorage, prefixOn)
+    // Back to the box afterwards: shortcuts stand down while focus is in any input, so a person who flips this and
+    // then presses Ctrl+S would otherwise find the save key ignored.
+    searchBox?.focus()
+    if (searchQuery.trim()) void runSearch()
   }
 
   function scheduleSearch() {
@@ -646,6 +661,13 @@
         oninput={scheduleSearch}
         aria-label="Search the vault"
       />
+      <label
+        class="prefix-toggle"
+        title="Also match word beginnings: “grand” finds grandmother. note-processor says which words it widened."
+      >
+        <input type="checkbox" checked={prefixOn} onchange={togglePrefix} aria-label="Match word beginnings" />
+        match word beginnings
+      </label>
       <span class="tool-buttons">
         <button type="button" title="New note (Ctrl+N)" onclick={() => runAction('new-note', null)}>+ note</button>
         <button type="button" title="New folder (Ctrl+Shift+N)" onclick={() => runAction('new-folder', null)}>
@@ -964,6 +986,16 @@
     background: none;
     color: inherit;
   }
+.prefix-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.8rem;
+  white-space: nowrap;
+  user-select: none;
+}
+
+
   .tool-buttons {
     display: flex;
     gap: 0.3rem;

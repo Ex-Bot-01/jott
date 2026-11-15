@@ -22,6 +22,8 @@ Range.prototype.getBoundingClientRect = () => emptyRect
  * window means when it isn't a missing file.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { unmount, type Component } from 'svelte'
+import { PREFIX_KEY } from './lib/prefixSearch'
 import type { IngestEvent } from './lib/ipc'
 
 /** Which backend this window believes it is talking to. */
@@ -30,6 +32,8 @@ const scenario = vi.hoisted(() => ({ current: 'empty' as unknown as Scene }))
 /** What the native confirm dialog answers. Tests set it before pressing a button that asks. */
 const confirmed = vi.hoisted(() => ({ current: false }))
 const commands = vi.hoisted(() => [] as string[])
+/** Every argument set the window sent to `search_vault`, so a test can see what actually crossed the wire. */
+const searchCalls = vi.hoisted(() => [] as Record<string, unknown>[])
 /** The backend version every stub reports. One place, because the About assertions below check that this exact
     string travels from `app_info` through the panel to the screen — a second copy of it would pass either way. */
 const NP_STUB_VERSION = '0.4.0'
@@ -103,6 +107,7 @@ vi.mock('@tauri-apps/api/core', () => ({
           diagnostics: `Jott 0.0.5 · https://github.com/Ex-Bot-01/jott\nnp ${NP_STUB_VERSION} from bundled (C:\\Program Files\\Jott\\np\\np.exe)`,
         })
       case 'search_vault': {
+        searchCalls.push({ ...(args ?? {}) })
         const query = String((args as { query?: string } | undefined)?.query ?? '')
         const hit = (path: string, snippet: string) => ({
           hits: [
@@ -328,7 +333,10 @@ function ingest(event: IngestEvent) {
   fire!(event)
 }
 
-async function start(): Promise<{ errors: unknown[] }> {
+/** Mount a fresh window. The returned handle lets a test unmount it and mount another, which is the only honest way
+    to ask "does this survive closing the app?" — `localStorage` outlives the component either way, but an orphaned
+    instance left mounted would keep answering events behind the next window's back. */
+async function start(): Promise<{ errors: unknown[]; app: Component }> {
   document.body.innerHTML = '<div id="app"></div><div id="boot"><p>Jott is starting…</p></div>'
   const errors: unknown[] = []
   vi.spyOn(console, 'error').mockImplementation((...seen: unknown[]) => {
@@ -338,13 +346,15 @@ async function start(): Promise<{ errors: unknown[] }> {
 
   // Reset first: a module imported once would not mount a second time.
   vi.resetModules()
-  await import('./main')
-  return { errors }
+  // `main.ts` default-exports what `mount()` returned, which is exactly what `unmount()` takes.
+  const app = (await import('./main')).default as Component
+  return { errors, app }
 }
 
 describe('the window mounts', () => {
   beforeEach(() => {
     commands.length = 0
+    searchCalls.length = 0
     scenario.current = 'empty'
     incompleteSettings.current = false
     confirmed.current = false
@@ -934,6 +944,44 @@ describe('the window mounts', () => {
     button.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     await new Promise((resolve) => setTimeout(resolve, 60))
     expect(revealed.current).toEqual([])
+  })
+
+
+  it('remembers word beginnings across a relaunch, and says so on the wire', async () => {
+    // note-processor#6 arrived in np 0.5.x: `grand` reaches *grandmother* only when the request asks for it. The
+    // toggle is off by default — widening changes what a query means — so the first thing worth proving is that an
+    // untouched window sends `prefix: false` rather than hoping np's default matches ours.
+    localStorage.removeItem(PREFIX_KEY)
+    const first = await start()
+
+    const box = document.querySelector('input[type="search"]') as HTMLInputElement
+    box.value = 'grand'
+    box.dispatchEvent(new Event('input', { bubbles: true }))
+    await vi.waitFor(() => expect(searchCalls.length).toBeGreaterThan(0))
+    expect(searchCalls.at(-1)?.prefix, 'an untouched window searches whole words').toBe(false)
+
+    const toggle = document.querySelector('input[aria-label="Match word beginnings"]') as HTMLInputElement
+    expect(toggle, 'the window offers the choice').not.toBeNull()
+    expect(toggle.checked).toBe(false)
+
+    toggle.checked = true
+    toggle.dispatchEvent(new Event('change', { bubbles: true }))
+    await vi.waitFor(() => expect(localStorage.getItem(PREFIX_KEY)).toBe('1'))
+    // Flipping it re-runs the query that is already typed, immediately: a debounce here would read as a click that
+    // changed nothing about the results on screen.
+    await vi.waitFor(() => expect(searchCalls.at(-1)?.prefix).toBe(true))
+
+    unmount(first.app)
+    const second = await start()
+
+    const again = document.querySelector('input[aria-label="Match word beginnings"]') as HTMLInputElement
+    expect(again.checked, 'the choice is the app’s memory, not this window’s').toBe(true)
+    const box2 = document.querySelector('input[type="search"]') as HTMLInputElement
+    box2.value = 'grand'
+    box2.dispatchEvent(new Event('input', { bubbles: true }))
+    await vi.waitFor(() => expect(searchCalls.at(-1)?.prefix).toBe(true))
+
+    expect(second.errors).toEqual([])
   })
 
 })
