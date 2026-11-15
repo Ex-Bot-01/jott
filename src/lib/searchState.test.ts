@@ -5,6 +5,8 @@ import { describe, expect, it } from 'vitest'
 
 import {
   emptySearchSentence,
+  hitSuffix,
+  wideningSentence,
   noResultsSentence,
   resultsHeadline,
   searchCaveat,
@@ -91,5 +93,56 @@ describe('the quiet line about what ran', () => {
 
   it('is not shown for an empty list, where the sentence above already explains', () => {
     expect(searchCaveat({ keywordUsed: true, semanticUsed: false }, 0)).toBeNull()
+  })
+})
+
+describe('what np widened', () => {
+  it('names the words note-processor said it widened', () => {
+    // note-processor#6: `grand` reaching *grandmother* is a different search from the one that was typed, and the
+    // header is where that gets admitted. The words come from np's `prefix_terms`, so the sentence cannot promise a
+    // widening np did not report.
+    const sentence = wideningSentence({ prefixUsed: true, prefixTerms: ['grand', 'kestr'] })
+    expect(sentence).toContain('word beginnings')
+    expect(sentence).toContain('grand')
+    expect(sentence).toContain('kestr')
+  })
+
+  it('says nothing when np did not widen', () => {
+    expect(wideningSentence({ prefixUsed: false, prefixTerms: [] })).toBeNull()
+  })
+
+  it('says nothing when an older np did not say', () => {
+    // `null` is "this build has no flag", and printing "did not widen" would be Jott speaking for a backend that
+    // stayed quiet — the same mistake §4 refuses elsewhere.
+    expect(wideningSentence({ prefixUsed: null, prefixTerms: [] })).toBeNull()
+  })
+
+  it('admits the widening even when np did not name the words', () => {
+    // `prefix_used: true` with an empty term list is a real shape: something was widened and np would not say what.
+    // The sentence stays truthful and vaguer — inventing a word here would put Jott's guess in np's mouth.
+    const sentence = wideningSentence({ prefixUsed: true, prefixTerms: [] })
+    expect(sentence).toContain('word beginnings')
+    expect(sentence).not.toMatch(/grand/)
+  })
+
+  it('ignores terms np sent without saying it widened anything', () => {
+    // Both keys have to agree before the header claims a widening.
+    expect(wideningSentence({ prefixUsed: false, prefixTerms: ['grand'] })).toBeNull()
+  })
+})
+
+describe('a row reached by a word beginning', () => {
+  it('is marked when np says it was not an exact match', () => {
+    expect(hitSuffix(false)).toContain('start of a word')
+  })
+
+  it('is unmarked when it matched what was typed', () => {
+    expect(hitSuffix(true)).toBeNull()
+  })
+
+  it('is unmarked when np never word-tested it', () => {
+    // A vector-only hit has no words to compare. Marking it "start of a word" would accuse the reader's typing of
+    // something that was never tested, which is the opposite error from hiding a widened row.
+    expect(hitSuffix(null)).toBeNull()
   })
 })

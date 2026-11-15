@@ -56,3 +56,70 @@ describe('firstMatch', () => {
     expect(firstMatch('a note about pears', 'kumquat')).toBeNull()
   })
 })
+
+describe('word beginnings', () => {
+  it('marks the beginning of a longer word when asked', () => {
+    // note-processor#6: with prefix on, np answers *grandmother* for `grand`. The row and the opened note have to
+    // mark the letters that actually matched — `grand` — rather than the whole word or nothing at all.
+    expect(markTerms('my grandmother kept', 'grand', true)).toEqual([
+      { text: 'my ', matched: false },
+      { text: 'grand', matched: true },
+      { text: 'mother kept', matched: false },
+    ])
+  })
+
+  it('does not mark a word that merely contains the term', () => {
+    // `agrand` is not a word beginning. Marking inside a word is how a prefix mode starts lying about matches, and
+    // it is the one behaviour difference from today, so it gets its own test rather than a comment.
+    const segments = markTerms('the agrand family', 'grand', true)
+    expect(segments.filter((part) => part.matched)).toEqual([])
+  })
+
+  it('marks at the start of a line and after punctuation', () => {
+    for (const text of ['grandmother arrived', '(grandmother)', 'line two\ngrandmother', '“grandmother”']) {
+      const matched = markTerms(text, 'grand', true).filter((part) => part.matched)
+      expect(matched.map((part) => part.text), text).toEqual(['grand'])
+    }
+  })
+
+  it('still marks an exact word in prefix mode', () => {
+    expect(markTerms('the grand design', 'grand', true).filter((part) => part.matched).map((part) => part.text)).toEqual([
+      'grand',
+    ])
+  })
+
+  it('is byte-identical to whole-word marking when the flag is off or missing', () => {
+    // The regression pin: everything shipped before np 0.5.x behaves exactly as it did, and a `prefix` that never
+    // reached the request cannot change what the window paints.
+    const cases: [string, string][] = [
+      ['a kumquat tree', 'kumquat'],
+      ['Grandmother knew about grand pianos', 'grand'],
+      ['agrand and a-grand too', 'grand'],
+      ['kestrels and a kestrel nest', 'kestrel'],
+      ['', 'grand'],
+      ['nothing here matches', 'zzz'],
+    ]
+    for (const [text, query] of cases) {
+      expect(markTerms(text, query, false)).toEqual(markTerms(text, query))
+      if (query !== 'grand') {
+        // The whole-word cases above are chosen so prefix mode differs; the rest must not change at all.
+        expect(markTerms(text, query, true)).toEqual(markTerms(text, query))
+      }
+    }
+  })
+
+  it('scrolls to a word beginning in prefix mode', () => {
+    // Whole-word mode has always marked the first *occurrence*, letters anywhere (see "marks a word inside another
+    // word" above): np's BM25 answers `kumquat` for `kumquats`, and a highlight that disagreed with the row would be
+    // worse than one that is slightly generous. Prefix mode is the opposite trade — it marks what np widened, so it
+    // skips *agrand* and lands on the word that really begins with the term.
+    const text = 'the agrand family kept a grandmother here'
+    expect(firstMatch(text, 'grand')).toBe(text.indexOf('agrand') + 1)
+    expect(firstMatch(text, 'grand', true)).toBe(text.indexOf('grandmother'))
+  })
+
+  it('keeps its minimum term length in prefix mode too', () => {
+    // One keystroke matching half the vault by word beginnings would be worse than today's whole-word behaviour.
+    expect(markTerms('grandmother arrived', 'g', true).filter((part) => part.matched)).toEqual([])
+  })
+})

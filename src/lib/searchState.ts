@@ -77,3 +77,20 @@ export function resultsHeadline(hits: number): string | null {
   if (hits === 0) return null
   return hits === 1 ? '1 result' : `${hits} results`
 }
+
+/** What np widened, in its own words — printed beside the result count. `null` means say nothing: an older backend
+    that has no flag stayed silent, and "did not widen" would be Jott answering for it (§4). */
+export function wideningSentence(facts: { prefixUsed: boolean | null; prefixTerms: string[] }): string | null {
+  if (facts.prefixUsed !== true) return null
+  // `prefix_used` without terms is a real answer — np widened and did not say what — so the sentence gets vaguer
+  // rather than borrowing a word from Jott's own query.
+  const terms = facts.prefixTerms.filter((term) => term.trim().length > 0)
+  return terms.length === 0 ? 'also matched word beginnings' : `also matched word beginnings (${terms.join(', ')})`
+}
+
+/** The mark beside a row that np reached by a word beginning. Only `false` gets one: `true` is an ordinary match, and
+    `null` is a hit np never word-tested — a meaning-only result has no word to compare against, so marking it would
+    accuse the reader's typing of something nobody checked. */
+export function hitSuffix(matchedExactly: boolean | null): string | null {
+  return matchedExactly === false ? 'from the start of a word' : null
+}

@@ -42,6 +42,10 @@ const NP_STUB_VERSION = '0.4.0'
     The fixture's tree markers deliberately disagree with both, so whichever way the window resolves it is a choice. */
 const searchSays: { indexed: boolean | null } = { indexed: null }
 
+/** When on, `search_vault` answers the way np 0.5.1 does with word-beginning matching: the row was reached from
+ *  `grand`, and np says so in `prefix_used`, `prefix_terms` and `matched_exactly`. */
+const widening = vi.hoisted(() => ({ on: false }))
+
 /** Set by one test to make `search_vault` answer a slow query *later* than the query typed after it — the order np
  *  is free to hand back in, and the reason the window has to know which answer belongs on screen. */
 const slowSearch = vi.hoisted(() => ({ on: false }))
@@ -109,6 +113,31 @@ vi.mock('@tauri-apps/api/core', () => ({
       case 'search_vault': {
         searchCalls.push({ ...(args ?? {}) })
         const query = String((args as { query?: string } | undefined)?.query ?? '')
+        if (widening.on) {
+          return Promise.resolve({
+            hits: [
+              {
+                path: 'family.md',
+                snippet: 'my grandmother kept a jar of kumquats',
+                kind: 'note',
+                score: 1.1,
+                bm25: null,
+                cosine: 0.82,
+                matchedExactly: false,
+              },
+            ],
+            mode: 'hybrid',
+            vectors: true,
+            offline: false,
+            reason: null,
+            indexed: true,
+            keywordUsed: true,
+            semanticUsed: true,
+            notice: null,
+            prefixUsed: true,
+            prefixTerms: ['grand'],
+          })
+        }
         const hit = (path: string, snippet: string) => ({
           hits: [
             {
@@ -355,6 +384,7 @@ describe('the window mounts', () => {
   beforeEach(() => {
     commands.length = 0
     searchCalls.length = 0
+    widening.on = false
     scenario.current = 'empty'
     incompleteSettings.current = false
     confirmed.current = false
@@ -982,6 +1012,28 @@ describe('the window mounts', () => {
     await vi.waitFor(() => expect(searchCalls.at(-1)?.prefix).toBe(true))
 
     expect(second.errors).toEqual([])
+  })
+
+
+  it('says which words note-processor widened, and marks the rows it reached that way', async () => {
+    // note-processor#6: a widened answer must not look like an exact one. np names the words it widened and flags
+    // the row; the window prints both, because "3 results" for a search that silently grew is the same family of
+    // lie as a `mode` word that claimed vectors ran when they did not.
+    widening.on = true
+    const { errors } = await start()
+
+    const box = document.querySelector('input[type="search"]') as HTMLInputElement
+    box.value = 'grand'
+    box.dispatchEvent(new Event('input', { bubbles: true }))
+
+    await vi.waitFor(() => expect(document.body.textContent ?? '').toContain('also matched word beginnings (grand)'))
+    expect(document.body.textContent ?? '').toContain('from the start of a word')
+    // The mark covers the letters that matched — `grand` — and not the whole word np widened it into.
+    const marks = [...document.querySelectorAll('.results mark')].map((node) => node.textContent)
+    expect(marks).toEqual(['grand'])
+
+    widening.on = false
+    expect(errors).toEqual([])
   })
 
 })

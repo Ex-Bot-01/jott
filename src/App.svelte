@@ -12,7 +12,7 @@
   import { actionsFor, flattenTree, moveTargets, moveTo, notesAwaitingEmbedding, notesAwaitingIndex, targetFolder } from './lib/tree'
   import type { TreeAction } from './lib/tree'
   import { bareKeyFor, isTypingTarget, shortcutFor } from './lib/shortcuts'
-  import { emptySearchSentence, resultsHeadline, searchCaveat, searchIsCurrent } from './lib/searchState'
+  import { emptySearchSentence, hitSuffix, resultsHeadline, searchCaveat, searchIsCurrent, wideningSentence } from './lib/searchState'
   import { markTerms } from './lib/highlight'
   import { consentSentence, modelReadySentence, statusFor, type Status } from './lib/statusLine'
   import { cardClipboard, cardSentences, NP_ISSUE } from './lib/consentHelp'
@@ -689,6 +689,7 @@
 
     {#if results}
       {@const caveat = searchCaveat(results, results.hits.length)}
+      {@const widened = wideningSentence(results)}
       <ul class="results">
         {#if results.hits.length === 0}
           <!-- An empty list is two different facts and only one of them is about the words. np 0.4.0 answers
@@ -704,10 +705,15 @@
             <button type="button" onclick={() => void openNote(hit.path, searchQuery.trim())}>
               <span class="hit-path">{hit.path}</span>
               <span class="hit-snippet">
-                {#each markTerms(hit.snippet ?? '', searchQuery) as part, index}
+                {#each markTerms(hit.snippet ?? '', searchQuery, prefixOn) as part, index}
                   {#if part.matched}<mark>{part.text}</mark>{:else}{part.text}{/if}
                 {/each}
               </span>
+              {#if hitSuffix(hit.matchedExactly)}
+                <!-- np reached this note by a word beginning, so the row says which kind of match it is. Only rows np
+                     marked `matched_exactly: false` get one — a meaning-only hit was never word-tested (§4). -->
+                <span class="hit-kind">{hitSuffix(hit.matchedExactly)}</span>
+              {/if}
             </button>
           </li>
         {/each}
@@ -716,6 +722,7 @@
                actually ran goes on its own line, in `searchCaveat`'s words or np's own sentence. -->
           <li class="mode">
             {resultsHeadline(results.hits.length)}{searching ? ' · searching…' : ''}
+            {#if widened}<span class="caveat">· {widened}</span>{/if}
             {#if caveat}<span class="caveat">· {caveat}</span>{/if}
           </li>
         {:else}
@@ -875,6 +882,7 @@
     <Editor
       saveSignal={saveSignal}
       highlight={hitQuery}
+      highlightPrefix={prefixOn}
       rel={selected}
       {note}
       {external}
@@ -986,15 +994,14 @@
     background: none;
     color: inherit;
   }
-.prefix-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  font-size: 0.8rem;
-  white-space: nowrap;
-  user-select: none;
-}
-
+  .prefix-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    font-size: 0.8rem;
+    white-space: nowrap;
+    user-select: none;
+  }
 
   .tool-buttons {
     display: flex;
@@ -1034,6 +1041,12 @@
     font-size: 0.75rem;
     color: color-mix(in srgb, currentColor 60%, transparent);
   }
+  .hit-kind {
+    font-size: 0.75rem;
+    opacity: 0.75;
+    white-space: nowrap;
+  }
+
   .hit-snippet {
     display: block;
     white-space: normal;
