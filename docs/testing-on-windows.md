@@ -255,6 +255,73 @@ a folder nobody has answered about holds it at `false`, and your answer is recor
 its own door. Nothing raises it beside a refusal. So if that file ever says `auto_fetch = true` when you never allowed
 anything, that is a Jott bug, and the log line (`consent · called embeddings.enable …`) will say which button moved it.
 
+## 2b-vi. Since 0.0.16: five things the window could not do before
+
+All five came from testing rather than from a plan: closing a note, reading the index Jott used to refuse to open, the
+caret in dark mode, moving a note somewhere that does not exist yet, and finding the settings at all.
+
+- **A note can be closed.** There is a **close** button beside the note's name, and **Escape** does the same thing —
+  but only when Escape has nothing above it to dismiss. One press dismisses one thing, topmost first: the row menu,
+  then the settings panel, then the diagnostics drawer, then the note. Escape typed *inside* a note or the search box
+  never closes that note, because there the key has a job already. Closing is not saving: nothing is written, and an
+  unsaved buffer keeps its "unsaved" marker if you reopen the file.
+- **`INDEX.md` opens, and says it cannot be edited.** It used to refuse to open at all, which read as a broken file.
+  Now it reads like any other note — greyed in the tree, with a banner: *note-processor's own index — read only*. The
+  refusal moved to where it belongs: writes. **Ctrl+S** on it sends no save and says why in one line; core still
+  refuses the write even if something else asks it. The shard files (`INDEX-2.md` and so on, when a vault is big
+  enough to need them) behave the same way. Your own notes are unaffected: they stay editable, marker and all.
+- **The caret should stop disappearing in dark mode.** The real fault was that CodeMirror was never told the window
+  was dark: it drew its default one-pixel grey caret on a near-black page, which is invisible rather than faint. It now
+  gets the scheme from the same place the palette does, draws two pixels of ink, and — because a caret that blinks off
+  *is* gone for as long as it is off — dims instead of switching off. Windows' *show text cursor* setting makes it
+  thicker still, and *high contrast* mode takes the system caret colour. If you still cannot find the caret, say which
+  of these it is: absent entirely, thin and grey, or there but vanishing while you type. Those are three different bugs
+  and the log cannot tell them apart.
+- **"Move to…" can move a note into a folder that is not there yet.** The dialog always listed every folder in the
+  vault, which in a vault with no folders was one entry and looked like an empty field. There is now a second half:
+  *…or a new folder* — type a name, press **create and move**, and the note goes there. Nested names work in one go
+  (`ideas/2026` makes both), either slash direction, because `create_folder` already builds parents. If the folder
+  cannot be made, no move is sent: the dialog stays open with the name still typed in it, and says what went wrong
+  inside itself rather than closing on a "done" that did not happen.
+- **Settings is a panel now: Ctrl+comma, or the header button.** Three controls:
+  1. **How search matches** — *words only*, *both*, or *meanings only*. This is the first release where the choice
+     reaches note-processor: until now Jott asked for `hybrid` whatever you wanted, which means the option you can now
+     see was not previously a thing. Your choice is remembered per app and re-runs the query in the box immediately.
+  2. **Match word beginnings** — the same checkbox that has been beside the search box since 0.0.15, now also in here.
+     It writes one setting, so the two places cannot disagree after a restart.
+  3. **Embeddings** — *Allow the download* and *Keep it keyword-only*, which are the same two answers as the consent
+     card's buttons and go through the same door: note-processor writes its own settings, Jott writes
+     `models.auto_fetch`, and the panel quotes np's answer rather than a hope about what the click did.
+
+**About *meanings only*, which is the one that cannot be honest yet.** Ask note-processor for meanings only in a folder
+with no vectors and it answers with nothing at all — `"result": null`, no hits, no `indexed`, no reason, nothing on
+stderr. That is [note-processor#11](https://github.com/Ex-Bot-01/note-processor/issues/11), filed while building this;
+until it is fixed, Jott says what it can and does not fill the gap in:
+
+- The panel shows a warning under that choice when your last search told it this folder has no vectors: *this folder
+  has no vectors yet, so meanings-only search will find nothing here*. Before you have searched at all it says nothing,
+  because Jott genuinely does not know and "no vectors" from silence would be an invention.
+- An empty meanings-only answer never says *"nothing matched"*. It says either that the folder has no vectors to
+  compare against, or — when np said nothing at all — that np returned nothing and gave no reason.
+- A refusal is quoted with the issue number in it, so you can read why rather than wonder whether Jott broke.
+
+**Six things worth trying:**
+
+1. Open a note, press **Escape**: it closes. Open another, open the settings panel with **Ctrl+,**, press **Escape**:
+   the panel goes and the note stays. Press **Escape** again: *now* the note closes.
+2. Click into the search box and press **Escape**. The note behind it should stay open — the key belongs to the box.
+3. Double-click `INDEX.md`. It should read, be marked read-only, and refuse **Ctrl+S** with a sentence about whose
+   file it is. Then rename it from the tree menu: that should still be refused, because renaming is a write.
+4. In a vault with no folders, right-click a note → **Move to…** → type `ideas` in the new field → **create and move**.
+   The folder appears and the note is inside it. Then do it again with a name that cannot work (`..`) — the dialog
+   should stay open, still holding what you typed.
+5. Open **Settings**, choose *words only*, search something whose only match is a longer word: nothing should come
+   back, and no line should claim the folder was searched by meaning. Choose *both* and the row should return. Quit and
+   reopen Jott: it should still be on *words only*.
+6. In a folder you have indexed but never embedded, search once so Jott learns there are no vectors, then open
+   **Settings** and pick *meanings only*. You should get the warning under that choice, and an empty answer whose
+   sentence blames the missing vectors rather than your notes.
+
 ## 2c. Since 0.0.11: press **Ctrl+Shift+D** when something is odd
 
 A drawer opens at the bottom of the window with what this run has actually been doing:
