@@ -358,9 +358,12 @@ pub async fn search_vault(
     query: String,
     limit: u8,
     prefix: bool,
+    mode: String,
     app: State<'_, App>,
 ) -> Result<SearchResults, IpcError> {
-    app.current()?.search(&query, limit, prefix).await
+    // The label is checked in core rather than here: the verdict and the request belong to the same code, and this
+    // file's job stays "carry it".
+    app.current()?.search(&query, limit, prefix, &mode).await
 }
 
 #[tauri::command]

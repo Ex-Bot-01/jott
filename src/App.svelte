@@ -5,6 +5,7 @@
 
   import { onMount } from 'svelte'
   import About from './lib/About.svelte'
+  import Settings from './lib/Settings.svelte'
   import Diagnostics from './lib/Diagnostics.svelte'
   import Tree from './lib/Tree.svelte'
   import Editor from './lib/Editor.svelte'
@@ -27,6 +28,7 @@
     resultsHeadline,
     searchCaveat,
     searchIsCurrent,
+    semanticEmptySentence,
     suggestPrefix,
     wideningSentence,
   } from './lib/searchState'
@@ -40,7 +42,7 @@
   import { notifyBody, shouldNotify, type Permission } from './lib/notify'
   import type { SavePhase } from './lib/saveState'
   import * as ipc from './lib/ipc'
-  import { loadPrefix, savePrefix } from './lib/prefixSearch'
+  import { loadSettings, saveMode, savePrefix, type SearchMode } from './lib/searchSettings'
   import type { DiagnosticsSnapshot, TraceEvent } from './lib/diagnostics'
   import type { AboutInfo, ConsentHelp, FetchedRecord, IngestEvent, NoteContent, RegistryInfo, SearchResults, VaultListing } from './lib/ipc'
 
@@ -102,9 +104,17 @@
   let traceRows = $state<TraceEvent[]>([])
 
   let searchQuery = $state('')
-  /** Word-beginning matching (note-processor#6), remembered between runs and off until asked: widening a query
-   * changes what it means, so it is a choice somebody makes once about their own notes, not a default. */
-  let prefixOn = $state(loadPrefix(typeof localStorage === 'undefined' ? null : localStorage))
+  /** The two remembered search choices, read once at startup: which engine answers, and whether word beginnings
+   * count (note-processor#6). Both change what a query *means*, so each is decided once and expected to stay; both
+   * default to note-processor's own defaults rather than to an opinion of ours. */
+  const storedSettings = loadSettings(typeof localStorage === 'undefined' ? null : localStorage)
+  let prefixOn = $state(storedSettings.prefix)
+  let searchMode = $state<SearchMode>(storedSettings.mode)
+  /** The settings panel: the tester's "a settings menu to show this, so it isn't hidden". */
+  let showSettings = $state(false)
+  /** While an answer to the embeddings question is in flight, both of its buttons are down. Two presses, two
+   *  `embeddings.enable` calls, and np answers them in whichever order it likes. */
+  let consentBusy = $state(false)
   /** One search with word beginnings matched, asked for from an empty answer. Deliberately not the remembered
    *  preference: pressing "try this" once should not silently decide every future search. */
   let prefixOnce = $state(false)
@@ -372,16 +382,25 @@
         // Closing a note while a menu still covers the vault reads as throwing work away to hide an overlay.
         const step = escapeAction({
           menuOpen: menu !== null,
+          settingsOpen: showSettings,
           drawerOpen: showDiagnostics,
           noteOpen: selected !== null,
           typing: isTypingTarget(event.target),
         })
         if (step === 'menu') menu = null
+        else if (step === 'settings') showSettings = false
         else if (step === 'drawer') showDiagnostics = false
         else if (step === 'note') closeNote()
         return
       }
       event.preventDefault()
+      if (shortcut === 'settings') {
+        // Ctrl+comma, the key every desktop app already uses for this. The panel is where the search choices live, and
+        // a person looking for them should not have to find the checkbox beside the search box first.
+        if (showSettings) showSettings = false
+        else await openSettings()
+        return
+      }
       if (shortcut === 'diagnostics') {
         // Ctrl+Shift+D, because "show me what the backend did" should not need a menu tour — and because the
         // alternative somebody reaches for otherwise is the log file, in a text editor, at 11pm.
@@ -531,7 +550,7 @@
     }
     const seq = ++searchSeq
     searching = true
-    const answer = await call(() => ipc.searchVault(query, 12, prefixOn || prefixOnce))
+    const answer = await call(() => ipc.searchVault(query, 12, prefixOn || prefixOnce, searchMode))
     // Typing "abc" fires three requests and np is free to answer them in any order. Without this guard the slowest
     // one wins, which reads as the search box ignoring what you typed last.
     if (!searchIsCurrent(seq, searchSeq)) return
@@ -548,6 +567,41 @@
     // then presses Ctrl+S would otherwise find the save key ignored.
     searchBox?.focus()
     if (searchQuery.trim()) void runSearch()
+  }
+
+  /** The panel's *how search matches* choice. Saved and re-run at once, for the same reason as the toggle: someone
+   *  changing a search setting wants to see what it does to the query in the box, not to the next one they type. */
+  function chooseMode(mode: SearchMode) {
+    searchMode = mode
+    saveMode(typeof localStorage === 'undefined' ? null : localStorage, mode)
+    // A one-off widening belongs to the answer it was offered against; changing engine is a new question.
+    prefixOnce = false
+    if (searchQuery.trim()) void runSearch()
+  }
+
+  /** The same choice made from the panel rather than the box: one writer per key, one re-run either way. */
+  function choosePrefix(on: boolean) {
+    prefixOn = on
+    savePrefix(typeof localStorage === 'undefined' ? null : localStorage, on)
+    if (searchQuery.trim()) void runSearch()
+  }
+
+  async function openSettings() {
+    showSettings = true
+    // Read what note-processor has recorded when the panel opens rather than trusting an older card: this is the
+    // place somebody comes to find out what is switched on, and the file may have been edited since we last looked.
+    void readConsentHelp()
+  }
+
+  /** The panel's two permission buttons. The same code path as the consent card's own button — one answer, one
+   *  writer — so both places show np's receipt rather than a hope about what the click did. */
+  async function setEmbeddings(granted: boolean) {
+    consentBusy = true
+    try {
+      await answerConsent(granted)
+    } finally {
+      consentBusy = false
+    }
   }
 
   /** A keystroke means a new question, and a new question starts from the remembered setting rather than from a
@@ -768,6 +822,14 @@
       {/if}
       <button
         type="button"
+        aria-label="Settings"
+        title="How search matches, and whether embeddings may download (Ctrl+,)"
+        onclick={() => void openSettings()}
+      >
+        Settings
+      </button>
+      <button
+        type="button"
         class="about"
         aria-label="About Jott"
         title="Versions, which np this is running, and where the files are"
@@ -832,7 +894,9 @@
                `indexed` and settles it (note-processor#5); behind that, the sentence comes from what the tree's own
                markers know — never from silence. -->
           <li class="none">
-            {emptySearchSentence(results, searchQuery.trim(), awaitingIndex)}
+            {searchMode === 'semantic'
+              ? semanticEmptySentence(results, searchQuery.trim())
+              : emptySearchSentence(results, searchQuery.trim(), awaitingIndex)}
             {#if results.offline}(np is offline — keyword search only){/if}
             {#if suggestPrefix(results, searchQuery.trim(), prefixOn || prefixOnce)}
               <!-- np says this folder is indexed and the whole-word search found nothing, so widening is the one
@@ -1090,6 +1154,20 @@
       live={traceRows}
       jottVersion={about?.jottVersion ?? 'unknown'}
       onClose={() => (showDiagnostics = false)}
+    />
+  {/if}
+
+  {#if showSettings}
+    <Settings
+      mode={searchMode}
+      prefix={prefixOn}
+      vectors={results?.vectors ?? null}
+      cardFacts={cardFacts}
+      consentBusy={consentBusy}
+      onmode={chooseMode}
+      onprefix={choosePrefix}
+      onconsent={(granted) => void setEmbeddings(granted)}
+      onClose={() => (showSettings = false)}
     />
   {/if}
 

@@ -57,6 +57,11 @@ pub enum ErrorKind {
     NpRefused,
     /// np answered `-32601`: this build does not implement what Jott asks for, which in practice means too old.
     NpTooOld,
+    /// Jott was asked for a search mode it cannot map to one of note-processor's labels. This is Jott's own verdict,
+    /// raised at the boundary rather than deep in a request: the front end and core are two languages with no
+    /// compiler between them, so an unknown label has to arrive as a sentence naming what is accepted, not as a
+    /// silent `hybrid`.
+    BadMode,
     Io,
 }
 
@@ -77,6 +82,18 @@ impl From<FileError> for IpcError {
 
 impl IpcError {
     /// For the shell's own commands when no vault is open (§9's empty state asks for a folder instead).
+    /// The window asked for a search mode Jott cannot ask np for. The message names every label that works, because
+    /// the person reading it is the one who has to say which they meant.
+    pub fn bad_mode(label: &str) -> IpcError {
+        IpcError {
+            kind: ErrorKind::BadMode,
+            message: format!(
+                "Jott does not know the search mode \"{label}\". It can ask note-processor for: {}.",
+                crate::np::Mode::LABELS.join(", ")
+            ),
+        }
+    }
+
     pub fn no_vault() -> IpcError {
         IpcError { kind: ErrorKind::NoVault, message: "no vault is open".into() }
     }
@@ -829,9 +846,16 @@ impl VaultSession {
     /// Content search. `prefix` is the window's "match word beginnings" toggle (note-processor#6): off unless asked,
     /// because a vault full of identifiers does not want `grand` reporting *grandmother* unbidden — and when it is on,
     /// np says which words it widened so the header can name them.
-    pub async fn search(&self, query: &str, limit: u8, prefix: bool) -> Result<SearchResults, IpcError> {
+    ///
+    /// `mode` is the window's *how search matches* choice (`keyword`, `hybrid`, `semantic`). It arrives as a label
+    /// and is checked here rather than in the shell, so that the verdict lives with the code that has to honour it —
+    /// and so an unknown one is refused before anything reaches np instead of becoming a hybrid search nobody asked
+    /// for. note-processor#11 is why `semantic` needs care on the way back: with no vectors it answers `result: null`,
+    /// which is why the panel only offers that mode where vectors are known to exist.
+    pub async fn search(&self, query: &str, limit: u8, prefix: bool, mode: &str) -> Result<SearchResults, IpcError> {
+        let mode = crate::np::Mode::from_label(mode).ok_or_else(|| IpcError::bad_mode(mode))?;
         let started = std::time::Instant::now();
-        let answer = self.pool.search(&self.vault, query, limit, prefix).await.map_err(|fault| {
+        let answer = self.pool.search(&self.vault, query, limit, prefix, mode).await.map_err(|fault| {
             self.record_fault("search", started.elapsed(), fault.code, &fault.message);
             IpcError::np_fault(&fault)
         })?;

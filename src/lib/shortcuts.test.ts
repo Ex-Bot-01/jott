@@ -70,22 +70,47 @@ describe('the bare keys', () => {
   /** Escape is the key people reach for to make something go away, and several things can be "something". */
   describe('what Escape is for', () => {
     it('dismisses the topmost thing first, and closes the note only when nothing covers it', () => {
-      expect(escapeAction({ menuOpen: true, drawerOpen: true, noteOpen: true, typing: false })).toBe('menu')
-      expect(escapeAction({ menuOpen: false, drawerOpen: true, noteOpen: true, typing: false })).toBe('drawer')
-      expect(escapeAction({ menuOpen: false, drawerOpen: false, noteOpen: true, typing: false })).toBe('note')
+      expect(escapeAction({ menuOpen: true, settingsOpen: false, drawerOpen: true, noteOpen: true, typing: false })).toBe('menu')
+      expect(escapeAction({ menuOpen: false, settingsOpen: false, drawerOpen: true, noteOpen: true, typing: false })).toBe('drawer')
+      expect(escapeAction({ menuOpen: false, settingsOpen: false, drawerOpen: false, noteOpen: true, typing: false })).toBe('note')
     })
 
     it('does not close a note out from under someone who is typing', () => {
       // The standing rule for unmodified keys: inside a text target they mean "type this". Dismissing a menu or
       // the drawer still happens from there — that is what Escape is for when something covers the screen — but
       // throwing away the visible note is not a dismissal.
-      expect(escapeAction({ menuOpen: false, drawerOpen: false, noteOpen: true, typing: true })).toBe('nothing')
-      expect(escapeAction({ menuOpen: true, drawerOpen: false, noteOpen: true, typing: true })).toBe('menu')
+      expect(escapeAction({ menuOpen: false, settingsOpen: false, drawerOpen: false, noteOpen: true, typing: true })).toBe('nothing')
+      expect(escapeAction({ menuOpen: true, settingsOpen: false, drawerOpen: false, noteOpen: true, typing: true })).toBe('menu')
     })
 
     it('does nothing when there is nothing to dismiss', () => {
-      expect(escapeAction({ menuOpen: false, drawerOpen: false, noteOpen: false, typing: false })).toBe('nothing')
+      expect(escapeAction({ menuOpen: false, settingsOpen: false, drawerOpen: false, noteOpen: false, typing: false })).toBe('nothing')
     })
   })
 
+})
+
+describe('the settings key', () => {
+  it('is Ctrl+comma, and Cmd+comma on a Mac tester', () => {
+    expect(shortcutFor(key({ ctrlKey: true, key: ',' }))).toBe('settings')
+    expect(shortcutFor(key({ metaKey: true, key: ',' }))).toBe('settings')
+  })
+
+  it('is not any other comma', () => {
+    // Typing a comma into a note is the commonest comma there is.
+    expect(shortcutFor(key({ key: ',' }))).toBeNull()
+    expect(shortcutFor(key({ ctrlKey: true, shiftKey: true, key: ',' }))).toBeNull()
+  })
+})
+
+describe('Escape with the settings panel open', () => {
+  it('closes the panel before the drawer or the note', () => {
+    // Whichever overlay is on top is the thing the person is trying to get out of the way.
+    expect(escapeAction({ menuOpen: false, settingsOpen: true, drawerOpen: true, noteOpen: true, typing: false })).toBe('settings')
+    expect(escapeAction({ menuOpen: true, settingsOpen: true, drawerOpen: true, noteOpen: true, typing: false })).toBe('menu')
+  })
+
+  it('still stands down on a note when nothing covers the screen', () => {
+    expect(escapeAction({ menuOpen: false, settingsOpen: false, drawerOpen: false, noteOpen: true, typing: true })).toBe('nothing')
+  })
 })

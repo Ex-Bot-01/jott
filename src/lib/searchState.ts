@@ -108,3 +108,39 @@ export function suggestPrefix(
   if (facts.hits.length > 0) return false
   return facts.indexed === true
 }
+
+/** What a meanings-only search that returned nothing can honestly say.
+ *
+ *  note-processor#11: `mode:"semantic"` in a folder with no vectors answers `result: null` — no `indexed`, no
+ *  `reason`, no `note`. Every other empty answer in this file has a fact behind its sentence; this one has the absence
+ *  of one, which is exactly why it needs three branches instead of the friendly "nothing matched". A person who reads
+ *  that in a folder they never embedded will conclude their notes are wrong rather than that the search had nothing to
+ *  work with. */
+export function semanticEmptySentence(facts: { vectors?: boolean | null }, query: string): string {
+  if (facts.vectors === false) {
+    return (
+      `No notes matched “${query}” by meaning — this folder has no vectors yet, so a meanings-only search has ` +
+      'nothing to compare against. Index it with embeddings, or ask for words as well.'
+    )
+  }
+  if (facts.vectors === true) {
+    return `No note in this folder matches “${query}” by meaning, as far as its vectors can tell.`
+  }
+  // np said nothing at all, and the sentence says so. Naming the silence is the only honest option left.
+  return (
+    `Note-processor returned nothing for “${query}” and gave no reason — a meanings-only search reports no ` +
+    'explanation when there are no vectors yet (note-processor#11).'
+  )
+}
+
+/** The line under the *meanings only* choice, from np's own `vectors` fact about the last search.
+ *
+ *  Silence answers with silence: before anyone has searched, Jott does not know whether this folder has vectors, and
+ *  "this folder has no vectors yet" would be a claim about a thing nobody asked about. */
+export function meaningsNotice(vectors: boolean | null | undefined): string | null {
+  if (vectors !== false) return null
+  return (
+    'This folder has no vectors yet, so meanings-only search will find nothing here. ' +
+    'Index it with embeddings first, or keep both engines on.'
+  )
+}

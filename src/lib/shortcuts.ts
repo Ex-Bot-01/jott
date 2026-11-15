@@ -14,6 +14,7 @@ export type Shortcut =
   | 'save'
   | 'search'
   | 'diagnostics'
+  | 'settings'
   | 'close-drawer'
 
 type KeyLike = { ctrlKey: boolean; metaKey: boolean; shiftKey: boolean; key: string }
@@ -41,6 +42,10 @@ export function shortcutFor(event: KeyLike): Shortcut | null {
       return 'rename'
     case 'f':
       return 'search'
+    // Ctrl+, is the conventions' key for preferences. Comma without a modifier is a keystroke in a sentence, and
+    // Ctrl+Shift+, is nobody's binding — both must fall through rather than throw a panel over the note.
+    case ',':
+      return 'settings'
     case 's':
       return 'save'
     default:
@@ -57,10 +62,17 @@ export function shortcutFor(event: KeyLike): Shortcut | null {
  *  `typing` stands down only the last step. Escape inside a text target should still dismiss something that covers
  *  the screen — but it must not close the note someone is writing, which is why the tester's new close button and
  *  this key share one rule rather than two. */
-export function escapeAction(
-  facts: { menuOpen: boolean; drawerOpen: boolean; noteOpen: boolean; typing: boolean },
-): 'menu' | 'drawer' | 'note' | 'nothing' {
+export function escapeAction(facts: {
+  menuOpen: boolean
+  settingsOpen: boolean
+  drawerOpen: boolean
+  noteOpen: boolean
+  typing: boolean
+}): 'menu' | 'settings' | 'drawer' | 'note' | 'nothing' {
   if (facts.menuOpen) return 'menu'
+  // The panel covers the editor and the drawer both, so it goes first; it is also the one thing a person opens
+  // deliberately and closes by reaching for Escape out of habit.
+  if (facts.settingsOpen) return 'settings'
   if (facts.drawerOpen) return 'drawer'
   if (facts.noteOpen && !facts.typing) return 'note'
   return 'nothing'

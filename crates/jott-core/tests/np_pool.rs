@@ -117,12 +117,12 @@ async fn a_scan_spawns_one_child_and_a_search_adds_exactly_one_more() {
     assert!(matches!(pool.scan(&vault()).await.unwrap(), ScanOutcome::Applied(_)));
     wait_for_live_children(1).await;
 
-    pool.search(&vault(), "anything", 8, false).await.unwrap();
+    pool.search(&vault(), "anything", 8, false, Mode::Hybrid).await.unwrap();
     wait_for_live_children(2).await;
 
     // The second search reuses the reader: a child per query would pay np's ~115 MB model map
     // every time (spec §7).
-    pool.search(&vault(), "again", 8, false).await.unwrap();
+    pool.search(&vault(), "again", 8, false, Mode::Hybrid).await.unwrap();
     assert_eq!(live_children(), 2, "a second search must not spawn a third child");
 
     pool.close().await.unwrap();
@@ -161,7 +161,7 @@ async fn a_search_does_not_wait_for_the_embedding_job() {
 
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     let started = std::time::Instant::now();
-    let answer = pool.search(&vault(), "now", 8, false).await.unwrap();
+    let answer = pool.search(&vault(), "now", 8, false, Mode::Hybrid).await.unwrap();
     let waited = started.elapsed();
     assert!(
         waited < std::time::Duration::from_millis(300),
@@ -184,7 +184,7 @@ async fn progress_says_which_connection_a_line_came_from() {
 
     let mut notes = pool.progress();
     pool.scan(&vault()).await.unwrap();
-    pool.search(&vault(), "meaning", 8, false).await.unwrap();
+    pool.search(&vault(), "meaning", 8, false, Mode::Hybrid).await.unwrap();
 
     let mut seen = Vec::new();
     for _ in 0..64 {
@@ -222,13 +222,13 @@ async fn a_reader_that_died_is_replaced_and_the_writer_never_notices() {
     }));
 
     pool.scan(&vault()).await.unwrap();
-    pool.search(&vault(), "first", 8, false).await.unwrap();
+    pool.search(&vault(), "first", 8, false, Mode::Hybrid).await.unwrap();
 
     // Bounded so a regression reports itself: a request that never comes back is the frozen
     // window this task exists to prevent, not a test that runs slowly.
     let second = tokio::time::timeout(
         std::time::Duration::from_secs(3),
-        pool.search(&vault(), "second", 8, false),
+        pool.search(&vault(), "second", 8, false, Mode::Hybrid),
     )
     .await;
     // `Err` here is the timeout itself: no answer, because nothing was left to send one.
@@ -238,7 +238,7 @@ async fn a_reader_that_died_is_replaced_and_the_writer_never_notices() {
     assert!(fault.is_err(), "a dead child is not an empty result: {fault:?}");
 
     // The next search finds a fresh reader and answers. Nothing here asks the user to restart.
-    pool.search(&vault(), "third", 8, false).await.unwrap();
+    pool.search(&vault(), "third", 8, false, Mode::Hybrid).await.unwrap();
     // And the writer was never touched by any of it.
     assert!(matches!(pool.scan(&vault()).await.unwrap(), ScanOutcome::Applied(_)));
 
@@ -256,7 +256,7 @@ async fn a_search_asks_for_hybrid_because_that_is_what_the_overlay_wants() {
                                  "fetched": null, "note": null, "reason": null}}
     }));
 
-    let answer = pool.search(&vault(), "both halves", 12, false).await.unwrap();
+    let answer = pool.search(&vault(), "both halves", 12, false, Mode::Hybrid).await.unwrap();
     assert_eq!(answer.mode, Mode::Hybrid);
     pool.close().await.unwrap();
 }

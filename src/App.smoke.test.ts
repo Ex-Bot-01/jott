@@ -23,7 +23,7 @@ Range.prototype.getBoundingClientRect = () => emptyRect
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { unmount, type Component } from 'svelte'
-import { PREFIX_KEY } from './lib/prefixSearch'
+import { MODE_KEY, PREFIX_KEY } from './lib/searchSettings'
 import type { IngestEvent } from './lib/ipc'
 
 /** Which backend this window believes it is talking to. */
@@ -499,6 +499,9 @@ describe('the window mounts', () => {
     focused.current = true
     moveCalls.current = []
     moveSays.createFails = false
+    // Both remembered search choices are read at mount, so a leftover from the previous test would decide what this
+    // one's first window asks for — and it would look like the feature working.
+    localStorage.clear()
     handlers.clear()
     // The window asks the desktop for its colour scheme; jsdom has no `matchMedia`, so an unstubbed call is an
     // unhandled error after the test finished — which Vitest counts as a failed run over passing tests.
@@ -1520,6 +1523,161 @@ describe('the window mounts', () => {
 
     moveSays.createFails = false
     expect(errors).toEqual([])
+  })
+
+  describe('the settings panel', () => {
+    /** Open the panel the way a person does from the header. */
+    async function openPanel() {
+      const button = await vi.waitFor(() => {
+        const el = document.querySelector('button[aria-label="Settings"]') as HTMLButtonElement | null
+        expect(el, 'the window says where its settings are').not.toBeNull()
+        return el!
+      }, { timeout: 2000 })
+      button.click()
+      await vi.waitFor(() => expect(document.querySelector('[data-testid="settings"]')).not.toBeNull(), { timeout: 2000 })
+    }
+
+    const modeRadio = (mode: string) => document.querySelector(`[data-testid="mode-${mode}"]`) as HTMLInputElement | null
+    const typed = (mode: string) => {
+      const radio = modeRadio(mode)!
+      radio.checked = true
+      radio.dispatchEvent(new Event('change', { bubbles: true }))
+    }
+
+    it('offers all three ways to match, and the remembered choices are the ones ticked', async () => {
+      scenario.current = 'vault'
+      // Written before the window mounts: these are read once, at startup, which is the point of remembering them.
+      localStorage.setItem(MODE_KEY, 'keyword')
+      localStorage.setItem(PREFIX_KEY, '1')
+      const { errors } = await start()
+
+      await openPanel()
+      for (const mode of ['keyword', 'hybrid', 'semantic']) {
+        expect(modeRadio(mode), `it offers ${mode}`).not.toBeNull()
+      }
+      expect(modeRadio('keyword')!.checked, 'what was stored is what is ticked').toBe(true)
+      expect(modeRadio('hybrid')!.checked).toBe(false)
+      // The prefix choice lives in the panel too, and shows its remembered value rather than a default.
+      expect((document.querySelector('[data-testid="settings-prefix"]') as HTMLInputElement).checked).toBe(true)
+      expect(errors).toEqual([])
+    })
+
+    it('remembers the mode it was told and asks note-processor that way', async () => {
+      scenario.current = 'vault'
+      const first = await start()
+      const errors = first.errors
+
+      const box = (await vi.waitFor(() => {
+        const el = document.querySelector('input[type="search"]') as HTMLInputElement | null
+        expect(el).not.toBeNull()
+        return el!
+      }, { timeout: 2000 })) as HTMLInputElement
+      box.value = 'kumquat'
+      box.dispatchEvent(new Event('input', { bubbles: true }))
+      await vi.waitFor(() => expect(searchCalls.length).toBeGreaterThan(0), { timeout: 2000 })
+      // A window with no stored choice asks for both engines: the backend's own default, not our opinion.
+      expect(searchCalls.at(-1)!.mode).toBe('hybrid')
+
+      await openPanel()
+      typed('keyword')
+
+      // Changing the engine re-runs the query that is already in the box.
+      await vi.waitFor(() => expect(searchCalls.at(-1)!.mode).toBe('keyword'), { timeout: 2000 })
+      expect(localStorage.getItem(MODE_KEY), 'and it is kept for the next window').toBe('keyword')
+
+      // The panel and the checkbox beside the box write one key, so they cannot disagree after a restart.
+      unmount(first.app)
+      commands.length = 0
+      searchCalls.length = 0
+      scenario.current = 'vault'
+      const second = await start()
+      const box2 = (await vi.waitFor(() => {
+        const el = document.querySelector('input[type="search"]') as HTMLInputElement | null
+        expect(el).not.toBeNull()
+        return el!
+      }, { timeout: 2000 })) as HTMLInputElement
+      box2.value = 'kumquat'
+      box2.dispatchEvent(new Event('input', { bubbles: true }))
+      await vi.waitFor(() => expect(searchCalls.length).toBeGreaterThan(0), { timeout: 2000 })
+      expect(searchCalls.at(-1)!.mode, 'the second window starts where the first left off').toBe('keyword')
+      expect(second.errors).toEqual([])
+      expect(errors).toEqual([])
+    })
+
+    it('warns about meanings-only where note-processor says there are no vectors', async () => {
+      scenario.current = 'vault'
+      const { errors } = await start()
+
+      // The fixture's search answers `vectors: false`, which is the fact behind the warning. Nothing here invents it.
+      // "grand" is the query this fixture answers with an empty list, so the sentence under test is the one about
+      // there being nothing to find.
+      const box = (await vi.waitFor(() => {
+        const el = document.querySelector('input[type="search"]') as HTMLInputElement | null
+        expect(el).not.toBeNull()
+        return el!
+      }, { timeout: 2000 })) as HTMLInputElement
+      box.value = 'grand'
+      box.dispatchEvent(new Event('input', { bubbles: true }))
+      await vi.waitFor(() => expect(searchCalls.length).toBeGreaterThan(0), { timeout: 2000 })
+
+      await openPanel()
+      const notice = document.querySelector('[data-testid="settings-notice"]')
+      expect(notice, 'the panel says what a meanings-only search would find here').not.toBeNull()
+      expect(notice!.textContent!.toLowerCase()).toContain('no vectors')
+
+      // And an empty meanings-only answer does not claim nothing matched: note-processor#11 leaves it unable to say.
+      typed('semantic')
+      await vi.waitFor(() => expect(searchCalls.at(-1)!.mode).toBe('semantic'), { timeout: 2000 })
+      const none = await vi.waitFor(() => {
+        const el = document.querySelector('.results .none') as HTMLElement | null
+        expect(el, 'an empty answer says something').not.toBeNull()
+        return el!
+      }, { timeout: 2000 })
+      expect(none.textContent!.toLowerCase(), 'the sentence blames the missing vectors, not the notes').toContain('no vectors')
+      expect(errors).toEqual([])
+    })
+
+    it('answers the embeddings question and shows what note-processor wrote', async () => {
+      scenario.current = 'vault'
+      incompleteSettings.current = true
+      const { errors } = await start()
+
+      await openPanel()
+      ;(document.querySelector('[data-testid="embeddings-allow"]') as HTMLButtonElement).click()
+
+      await vi.waitFor(() => expect(commands).toContain('set_consent'), { timeout: 2000 })
+      const panel = await vi.waitFor(() => {
+        const el = document.querySelector('[data-testid="settings-embeddings"]') as HTMLElement | null
+        // The panel quotes np's own record rather than a hope about what the click did.
+        expect(el!.textContent).toContain('embeddings.provider')
+        return el!
+      }, { timeout: 2000 })
+      // …and says which key Jott itself wrote, beside it.
+      expect(panel.textContent).toContain('models.auto_fetch')
+      expect(errors).toEqual([])
+    })
+
+    it('closes on Escape before it closes the note, and opens on Ctrl+comma', async () => {
+      scenario.current = 'vault'
+      const { errors } = await start()
+
+      // Open a note first: Escape with the panel up must dismiss the panel, not throw the note away behind it.
+      ;(document.querySelector('.tree button[data-kind="Note"]') as HTMLElement).dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await vi.waitFor(() => expect(document.querySelector('.cm > .cm-editor')).not.toBeNull(), { timeout: 2000 })
+
+      document.body.dispatchEvent(new KeyboardEvent('keydown', { key: ',', ctrlKey: true, bubbles: true }))
+      await vi.waitFor(() => expect(document.querySelector('[data-testid="settings"]')).not.toBeNull(), { timeout: 2000 })
+
+      document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+      await vi.waitFor(() => expect(document.querySelector('[data-testid="settings"]')).toBeNull(), { timeout: 2000 })
+      expect(document.querySelector('.cm > .cm-editor'), 'the note is still open behind it').not.toBeNull()
+
+      expect(document.querySelector('[data-testid="close-settings"]'), 'the panel is gone').toBeNull()
+      // A second press now has nothing above the note to dismiss, so it closes the note — one thing per press.
+      document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+      await vi.waitFor(() => expect(document.querySelector('.cm > .cm-editor')).toBeNull(), { timeout: 2000 })
+      expect(errors).toEqual([])
+    })
   })
 
 })

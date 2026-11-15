@@ -9,7 +9,8 @@ FAKE_NP_SCENARIO (JSON):
   (default) progress is opt-in: `initialize` answers with `progress: true` and streams
                               `np/progress` only on a connection that sent `"notifications": true`
   initialize_always_progress    answer with `progress: true` and stream regardless, as np 0.3.1 did
-  replies               result object per method
+  replies               result object per method. An explicit `null` answers `"result": null`, which real np does
+                        for a meanings-only search in a folder with no vectors (note-processor#11).
   faults                {method: {code, message}} — an error object instead of a result
   sleep_ms              delay before answering a method
   die_on_call           {method: N} — exit(3) without answering the Nth call: a crashed child
@@ -189,8 +190,13 @@ for line in sys.stdin:
                "id": req_id, "jsonrpc": "2.0"})
         note(req_id, method, "refused", {"code": fault["code"]})
         continue
-    result = SCENARIO.get("replies", {}).get(method)
-    if result is None and method == "embeddings.enable":
+    replies = SCENARIO.get("replies", {})
+    # `method in replies` rather than `replies.get(method) is not None`: a scenario has to be able to answer with
+    # literal null, because that is what note-processor does for a meanings-only search in a folder with no vectors
+    # (note-processor#11). A listed-but-null reply is honoured, not mistaken for "no reply at all".
+    has_reply = method in replies
+    result = replies.get(method)
+    if not has_reply and method == "embeddings.enable":
         # Measured against 0.5.1, including the one door that refuses: a parameter that is not `model` is answered
         # with -32602 rather than `ok`, because ignoring it would report consent that never happened. An id this
         # stand-in has no reason to refuse is accepted; scenarios inject the `-32000 no pinned model …` fault when a
@@ -210,7 +216,7 @@ for line in sys.stdin:
             "persisted_to": "/fake/.config/note-processor/config.toml",
             "provider": "local-model",
         }
-    if result is None and method == "embeddings.disable":
+    if not has_reply and method == "embeddings.disable":
         # Revoking switches the provider off and keeps the model: `changed` naming one key is that decision.
         result = {
             "changed": ["embeddings.provider"],
@@ -219,7 +225,7 @@ for line in sys.stdin:
             "persisted_to": "/fake/.config/note-processor/config.toml",
             "provider": "none",
         }
-    if result is None:
+    if not has_reply and result is None:
         write({"error": {"code": -32601,
                          "message": f"unknown method `{method}`: this build answers status.get, "
                                     "initialize, search, scan, embed, models.list, shutdown"},

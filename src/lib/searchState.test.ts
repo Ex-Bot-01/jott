@@ -6,12 +6,14 @@ import { describe, expect, it } from 'vitest'
 import {
   emptySearchSentence,
   hitSuffix,
-  suggestPrefix,
-  wideningSentence,
+  meaningsNotice,
   noResultsSentence,
   resultsHeadline,
   searchCaveat,
   searchIsCurrent,
+  semanticEmptySentence,
+  suggestPrefix,
+  wideningSentence,
 } from './searchState'
 
 describe('which answer is still current', () => {
@@ -180,5 +182,57 @@ describe('offering the widening', () => {
   it('does not offer it when word beginnings are already on', () => {
     // The empty answer already came from widening. Saying "try widening" would be the window arguing with itself.
     expect(suggestPrefix(empty, 'grand', true)).toBe(false)
+  })
+})
+
+describe('a meanings-only search that found nothing', () => {
+  // note-processor#11: `mode:"semantic"` in a folder with no vectors answers `result: null` — no `indexed`, no
+  // `reason`, no sentence. The window is left holding the question "nothing matched, or nothing to match against?",
+  // and the one thing it must not do is pick the flattering reading.
+
+  it('says there was nothing to match against when np says there are no vectors', () => {
+    const sentence = semanticEmptySentence({ vectors: false }, 'grandmother')
+    expect(sentence.toLowerCase()).toContain('no vectors')
+    // "Nothing matched" alone would read as "your notes do not mention this", which is a different claim entirely.
+    expect(sentence.toLowerCase()).not.toContain('nothing matched')
+  })
+
+  it('says what it did search when np says vectors exist', () => {
+    const sentence = semanticEmptySentence({ vectors: true }, 'grandmother')
+    expect(sentence).toContain('grandmother')
+    expect(sentence.toLowerCase()).toContain('meaning')
+  })
+
+  it('admits the backend said nothing when it said nothing', () => {
+    // `vectors: null` is np's silence, and the honest sentence names that silence rather than filling it in.
+    const sentence = semanticEmptySentence({ vectors: null }, 'grandmother')
+    expect(sentence.toLowerCase()).toContain('no reason')
+    expect(sentence.toLowerCase()).not.toContain('nothing matched')
+  })
+
+  it('names the query it could not answer', () => {
+    for (const facts of [{ vectors: true }, { vectors: false }, { vectors: null }]) {
+      expect(semanticEmptySentence(facts, 'kumquat')).toContain('kumquat')
+    }
+  })
+})
+
+describe('the warning under the meanings-only choice', () => {
+  it('says nothing where vectors are known to exist', () => {
+    expect(meaningsNotice(true)).toBeNull()
+  })
+
+  it('warns where np says there are no vectors', () => {
+    const notice = meaningsNotice(false)
+    expect(notice).not.toBeNull()
+    expect(notice!.toLowerCase()).toContain('no vectors')
+    // It has to say what would help, not just that something is missing.
+    expect(notice!.toLowerCase()).toContain('index')
+  })
+
+  it('says nothing when nobody has asked np yet', () => {
+    // No fact, no claim: "this folder has no vectors" from silence would be the invention this whole file exists to stop.
+    expect(meaningsNotice(null)).toBeNull()
+    expect(meaningsNotice(undefined)).toBeNull()
   })
 })

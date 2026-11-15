@@ -602,6 +602,25 @@ async fn enabling_embeddings_reports_what_np_changed_and_what_it_costs() {
     client.shutdown().await.unwrap();
 }
 
+/// note-processor#11: a meanings-only search in a folder with no vectors answers `"result": null`. That is not a
+/// malformed answer — it is an empty one with no words attached, and the difference decides what a person does next.
+/// The generic shape fault would say np's reply was broken; the useful reading names the known cause and the way out.
+#[tokio::test]
+async fn a_search_answered_with_nothing_at_all_says_why_and_names_the_issue() {
+    let (_d, client) = spawn(json!({"replies": {"search": null}})).await;
+
+    let fault = search(&client, &vault(), "grandmother", 8, Mode::Semantic, false).await.expect_err("null is not an answer");
+    let message = fault.message.to_lowercase();
+    assert!(fault.message.contains("note-processor#11"), "the sentence should point at the open issue: {fault}");
+    assert!(message.contains("vector"), "it should name the known cause: {fault}");
+    assert!(
+        !fault.message.contains("not shaped like one"),
+        "calling np's mute answer malformed blames the wrong thing: {fault}"
+    );
+
+    client.shutdown().await.expect("shutdown");
+}
+
 /// Revoking is not erasing: np switches the provider off and **keeps** which model was chosen, so saying no twice in a
 /// row does not lose the choice someone made once. `changed` naming one key is that fact on the wire.
 #[tokio::test]
