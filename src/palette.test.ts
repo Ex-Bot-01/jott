@@ -19,6 +19,7 @@ import { describe, expect, it } from 'vitest'
 
 const appCss = readFileSync(fileURLToPath(new URL('./app.css', import.meta.url)), 'utf8')
 const shell = readFileSync(fileURLToPath(new URL('../index.html', import.meta.url)), 'utf8')
+const treeSvelte = readFileSync(fileURLToPath(new URL('./lib/Tree.svelte', import.meta.url)), 'utf8')
 
 /** The dark block is the `@media` rule that follows the light one, not a stray mention of the word. */
 function darkBlock(css: string): string {
@@ -75,7 +76,55 @@ describe('the caret is named, not inherited', () => {
     expect(rule).toMatch(/border-left:\s*2px solid var\(--ink\)/)
   })
 
+  it('hands the caret colour to CodeMirror as a theme, not only as CSS', () => {
+    // The rule above wins today by being more specific than what CodeMirror injects at runtime. Winning a race is
+    // not the same as not racing: the same light facet also paints a bright blue selection and a `black` native
+    // caret, and any future CM selector can arrive later and heavier. Through `EditorView.theme` the colours land
+    // inside CodeMirror's own style module, in the facet the window is actually in.
+    const theme = editor.slice(editor.indexOf('EditorView.theme'))
+    expect(theme, 'the editor builds no CodeMirror theme').not.toBe('')
+    expect(theme).toMatch(/borderLeft:\s*['"]2px solid var\(--ink\)['"]/)
+    // The facet itself: without it, CM's `&dark` variants never apply and the light ones contradict the palette.
+    expect(editor).toContain('EditorView.darkTheme.of')
+  })
+
+  it('stops the caret from switching itself off mid-blink', () => {
+    // CodeMirror blinks with `steps(1)` to `opacity: 0`, so the caret is genuinely absent half the time. "Hard to
+    // see where the cursor is" is a fair description of that, in either scheme.
+    expect(editor).toMatch(/@keyframes\s+jott-caret[\s\S]*?opacity:\s*0?\.[1-9]/)
+    expect(editor).toContain('animation-name: jott-caret')
+    // …and stands still for someone who asked their OS for no motion.
+    expect(editor).toMatch(/prefers-reduced-motion:\s*reduce[\s\S]*?animation:\s*none/)
+  })
+
+  it('keeps the caret visible in Windows high-contrast mode', () => {
+    // Forced colours replace custom properties, so `var(--ink)` is exactly what does not survive there. The system
+    // colour for text on the canvas does.
+    expect(editor).toMatch(/forced-colors:\s*active[\s\S]*?border-left-color:\s*CanvasText/)
+  })
+
   it('keeps the native carets in the window on the same ruler', () => {
     expect(appCss).toMatch(/caret-color:\s*var\(--ink\)/)
+  })
+})
+
+/** A row that is not yours has to look different, in a way a test can see. */
+describe('the catalogue row still looks like something you do not edit', () => {
+  it('styles the class the tree actually emits', () => {
+    // These rows used to be `disabled`, which carried the dimming as a side effect of an attribute whose real job was
+    // "unclickable". Making np's catalogue readable removed that attribute — and with it the only rule that greyed
+    // the row, while three sentences in the docs went on promising one. A class needs a rule; that is the whole test.
+    expect(treeSvelte).toContain('class:greyed={row.greyed}')
+    const start = treeSvelte.indexOf('.tree button.greyed')
+    expect(start, 'the .greyed class has no styling behind it any more').toBeGreaterThan(-1)
+    const rule = treeSvelte.slice(start, treeSvelte.indexOf('}', start) + 1)
+    expect(rule).toContain('color-mix')
+    expect(rule.toLowerCase()).toContain('italic')
+  })
+
+  it('does not light up under the pointer like an ordinary note', () => {
+    // Hover says "this will do something". np's catalogue row opens read-only, which is worth showing, but it should
+    // not be dressed exactly like a row that will take your typing.
+    expect(treeSvelte).toMatch(/\.tree button:hover:not\(:disabled\):not\(\.greyed\)/)
   })
 })

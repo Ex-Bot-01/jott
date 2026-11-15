@@ -97,7 +97,8 @@
   }
 </script>
 
-<svelte:window onkeydown={(event) => event.key === 'Escape' && onClose()} />
+<!-- Escape is routed once, by App (`escapeAction`). This drawer used to listen on `window` itself, which meant one
+     press closed the drawer *and* whatever `escapeAction` decided was next. -->
 
 <section class="drawer" aria-label="Jott diagnostics" tabindex="-1" bind:this={drawer}>
   <header>

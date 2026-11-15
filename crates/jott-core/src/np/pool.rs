@@ -136,9 +136,18 @@ impl NpPool {
     /// both halves answer if both are there, and the answer says which ones did.
     /// One search, on the reader connection so a fetch in flight cannot delay it. `prefix` is the caller's
     /// (note-processor#6): word-beginning matching is opt-in per request, and Jott passes what the window asked for.
-    pub async fn search(&self, workspace: &Path, query: &str, limit: u8, prefix: bool) -> Result<SearchAnswer, NpFault> {
+    /// `mode` is the window's choice of how to match (note-processor's own three labels); the pool does not
+    /// pick one, because picking for someone is how a search answers a question nobody asked.
+    pub async fn search(
+        &self,
+        workspace: &Path,
+        query: &str,
+        limit: u8,
+        prefix: bool,
+        mode: Mode,
+    ) -> Result<SearchAnswer, NpFault> {
         let reader = self.reader().await?;
-        methods::search(&reader, workspace, query, limit, Mode::Hybrid, prefix).await
+        methods::search(&reader, workspace, query, limit, mode, prefix).await
     }
 
     /// What models this np knows about and where their artifacts stand, on the reader: it answers in

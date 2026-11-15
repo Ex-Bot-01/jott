@@ -9,6 +9,7 @@
   import { markdown } from '@codemirror/lang-markdown'
   import { bracketMatching, syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language'
   import { markdownStyle } from './markdownStyle'
+  import { currentScheme, watchScheme, type Scheme } from './darkMode'
   import { matchRanges } from './highlight'
   import { saveState, wantsSave, type SavePhase } from './saveState'
   import { hashText } from './hashText'
@@ -27,6 +28,7 @@
     kept = false,
     highlight = '',
     highlightPrefix = false,
+    readonly = false,
     onphase,
     onsave,
     onmirror,
@@ -54,6 +56,10 @@
      *  the marks in the note it opens are answered by the same module with the same flag, or they disagree about what
      *  matched — which is the §18.11 complaint in a new place. */
     highlightPrefix?: boolean
+    /** Show it, do not offer to change it: note-processor's own catalogue (§9). Core also refuses the write, so this
+     *  is not the only thing standing between someone and a damaged index — it is the thing that stops the window
+     *  from looking like an editor when it isn't one. */
+    readonly?: boolean
     /** The parent needs the phase to decide what an outside change means (§14): a clean buffer reloads,
      * a dirty one asks. It is reported, never recomputed there. */
     onphase?: (phase: SavePhase) => void
@@ -69,6 +75,43 @@
    * else, so it cannot disturb the buffer, the caret or the undo history (§4's rule about Ctrl+S applies
    * equally to a keystroke in the search box). */
   const highlighter = new Compartment()
+  const themer = new Compartment()
+  /** Editable or display, per file. A compartment because switching notes must not rebuild the buffer: opening a
+   *  read-only catalogue and then a note again should leave undo history where it belongs. */
+  const editable = new Compartment()
+
+  /** The window's colours, handed to CodeMirror as a theme of the right facet rather than left to a CSS race.
+   *
+   *  Asking CodeMirror for its dark facet is the part that matters. Untold, it paints its light defaults — caret
+   *  `1.2px solid black`, bright blue selection, native caret `black` — while our stylesheet paints near-black
+   *  paper, and a tester reads that as "the cursor is near invisible in dark mode". Through a theme the colours
+   *  arrive inside CM's own style module, where they cannot be out-injected.
+   *
+   *  The palette stays in CSS (`--ink`, `--paper`): this hands over `var(…)`, so dark mode still means one set of
+   *  numbers, in `app.css`, rather than a second copy that can drift. */
+  function jottTheme(scheme: Scheme): Extension {
+    const dark = scheme === 'dark'
+    return [
+      EditorView.darkTheme.of(dark),
+      // CM's own dark/light markers are generated class names (`ͼ2_…`), which is fine for a stylesheet and useless
+      // to a person opening devtools — or to a test. This says, in the DOM, which scheme the editor was told.
+      EditorView.editorAttributes.of({ class: dark ? 'jott-dark' : 'jott-light' }),
+      EditorView.theme(
+        {
+          '&': { backgroundColor: 'var(--paper)', color: 'var(--ink)' },
+          // CM draws the caret itself and hides the native one; both answers come from here, so neither can be a
+          // light-facet default on dark paper.
+          '.cm-content': { caretColor: 'transparent' },
+          '.cm-cursor, .cm-dropCursor': { borderLeft: '2px solid var(--ink)', marginLeft: '-1px' },
+          '.cm-selectionBackground, .cm-content ::selection': {
+            backgroundColor: dark ? '#3a4a5e' : '#cfe3f5',
+          },
+          '.cm-activeLine': { backgroundColor: dark ? '#242221' : '#f2f1ef' },
+        },
+        { dark },
+      ),
+    ]
+  }
 
   /** Where the query's words are in this text, marked. Offsets come from `highlight.ts`, which is also what
    * the result list marks with — the row and the note it opens cannot disagree about what matched (§18.11). */
@@ -110,11 +153,34 @@
 
   $effect(() => onphase?.(phase))
 
+  // The desktop's scheme, tracked rather than sampled once: Windows follows the clock, and a window that painted
+  // light ink on dark paper after 19:00 would be the same bug wearing a different hour.
+  $effect(() => {
+    const stop = watchScheme((next) => (scheme = next))
+    return () => stop()
+  })
+
+  /** A scheme change reconfigures the theme only. The buffer, the caret's history and anything unsaved stay where
+   *  they are — rebuilding the editor to change a colour would be the cure that kills the patient (§18.13). */
+  $effect(() => {
+    const wanted = scheme
+    const viewNow = view
+    if (!viewNow) return
+    untrack(() => viewNow.dispatch({ effects: themer.reconfigure(jottTheme(wanted)) }))
+  })
+
   let mirrorTimer: ReturnType<typeof setTimeout> | undefined
   let saveTimer: ReturnType<typeof setTimeout> | undefined
 
+  /** What scheme the desktop asked for, followed while this window is open. */
+  let scheme = $state<Scheme>(currentScheme())
+
   function extensions() {
     return [
+      themer.of(jottTheme(untrack(() => scheme))),
+      // Note the negation, which is easy to get backwards: `readonly` describes the file, the facet describes
+      // whether typing is accepted. Reading it straight hands out an editor for exactly the file nobody may edit.
+      editable.of(EditorView.editable.of(!untrack(() => readonly))),
       history(),
       bracketMatching(),
       markdown(),
@@ -182,6 +248,9 @@
   }
 
   async function saveNow() {
+    // Nothing to write, and nothing that should ever be written: np's catalogue is regenerated by np. Autosave,
+    // blur and Ctrl+S all funnel through here, so the guard belongs once, in the one path they share.
+    if (readonly) return
     if (!rel || !view || saving) return
     const which = rel
     const gen = generation
@@ -203,6 +272,15 @@
       saving = false
     }
   }
+
+  // A file that arrived read-only, or a note opened after a catalogue: the same view, one facet changed. The text
+  // stays selectable and copyable — refusing to edit was never a reason to withhold what it says.
+  $effect(() => {
+    const writable = !readonly
+    const viewNow = view
+    if (!viewNow) return
+    untrack(() => viewNow.dispatch({ effects: editable.reconfigure(EditorView.editable.of(writable)) }))
+  })
 
   // Ctrl+S from the window. `> 0` so mounting an editor does not save a note nobody touched.
   $effect(() => {
@@ -243,9 +321,18 @@
       if (gen === generation) setBaseline(text, hash)
     })
     open(text)
+    // The `rel` this buffer was opened as, captured rather than read later: the parent changes `rel` to switch notes,
+    // and a teardown flush has to be about the file whose text is on screen.
+    const openedRel = rel
     return () => {
       clearTimeout(mirrorTimer)
       clearTimeout(saveTimer)
+      // A buffer being thrown away mid-tick must not lose typing (§18.13). The mirror tick is half a second after
+      // the last keystroke, and this cleanup used to cancel it — so closing a note, pressing Escape, or switching
+      // folder inside that window left unsaved text with nothing on record about it. Closing still writes nothing to
+      // the note itself: `onmirror` is core's memory of an unsaved buffer, not a save.
+      const leaving = view?.state.doc.toString()
+      if (openedRel && leaving !== undefined && leaving !== baseline) onmirror(openedRel, leaving)
       view?.destroy()
       view = undefined
     }
@@ -282,8 +369,13 @@
 </script>
 
 <section class="editor">
+  {#if readonly && rel}
+    <p class="banner quiet" data-testid="read-only">
+      This is note-processor’s own index. Read it if you like — Jott will not edit it, and np rewrites it on the next pass.
+    </p>
+  {/if}
   {#if !rel}
-    <p class="placeholder">Choose a note on the left, or make one.</p>
+    <p class="placeholder" data-testid="no-note">Choose a note on the left, or make one.</p>
   {:else}
     {#if phase === 'conflict' && !kept}
       <div class="banner" role="alert">
@@ -351,9 +443,42 @@
   .cm :global(.cm-editor .cm-cursor),
   .cm :global(.cm-editor.cm-focused .cm-cursor),
   .cm :global(.cm-editor .cm-dropCursor) {
-    /* Two pixels of ink, spelled in one rule so the focus selector cannot win by arriving later: CodeMirror
-       injects its theme at runtime, after this stylesheet. */
+    /* The same ruler as the theme above, kept as a second answer: if a build ever ships without the theme
+       extension, the caret is still two pixels of ink rather than CodeMirror's 1.2px black. */
     border-left: 2px solid var(--ink);
+  }
+
+  /* CodeMirror blinks with `steps(1)` down to `opacity: 0`, which means the caret is genuinely absent for half of
+     every 1.2 s cycle. That is what "I cannot see where the cursor is" describes even when the colour is right, so
+     here it dims instead of switching off — and stands still for anyone whose OS already said no motion. */
+  .cm :global(.cm-editor.cm-focused > .cm-scroller > .cm-cursorLayer) {
+    animation-name: jott-caret;
+  }
+
+  @keyframes jott-caret {
+    0%,
+    62% {
+      opacity: 1;
+    }
+    63%,
+    100% {
+      opacity: 0.4;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .cm :global(.cm-editor.cm-focused > .cm-scroller > .cm-cursorLayer) {
+      animation: none;
+    }
+  }
+
+  /* Windows high-contrast (forced colors) replaces custom properties, so `var(--ink)` is exactly what does not
+     survive there. The system's text-on-canvas colour does. */
+  @media (forced-colors: active) {
+    .cm :global(.cm-editor .cm-cursor),
+    .cm :global(.cm-editor .cm-dropCursor) {
+      border-left-color: CanvasText !important;
+    }
   }
   /* ---- markdown, styled. The classes come from `markdownStyle.ts`; a class named there and not here renders
         as plain text, which a test refuses. ------------------------------------------------------------- */

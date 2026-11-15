@@ -80,6 +80,14 @@ describe('the search answer', () => {
   })
 })
 
+describe('what a note carries', () => {
+  it('carries every key Rust sends about the file that is open', () => {
+    // `readonly` is the difference between an editor and a display: without it the window offers a buffer for
+    // note-processor's own catalogue, and the save fails after somebody has typed into it.
+    expect(interfaceKeys(ipcTs, 'NoteContent').sort()).toEqual(rustFields(ipcRust, 'NoteContent').sort())
+  })
+})
+
 describe('the consent receipt', () => {
   it('carries every key Rust sends about what note-processor did', () => {
     // Since np 0.5.x the answer comes back over the pipe (`embeddings.enable`), and the card quotes it. A key dropped

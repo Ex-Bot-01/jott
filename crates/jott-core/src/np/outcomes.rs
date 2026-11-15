@@ -26,6 +26,21 @@ pub enum Mode {
 }
 
 impl Mode {
+    /// Every label this build can ask for, in the order a refusal should name them. The list and `label` are two
+    /// halves of one contract, so they sit beside each other and a test reads both.
+    pub const LABELS: [&'static str; 3] = ["keyword", "hybrid", "semantic"];
+
+    /// Read a label back. `None` is a caller's mistake — the front end chose something this build has never heard
+    /// of — and the caller decides the sentence; guessing `hybrid` here would answer a question nobody asked.
+    pub fn from_label(label: &str) -> Option<Mode> {
+        match label {
+            "hybrid" => Some(Mode::Hybrid),
+            "semantic" => Some(Mode::Semantic),
+            "keyword" => Some(Mode::Keyword),
+            _ => None,
+        }
+    }
+
     pub fn label(&self) -> &'static str {
         match self {
             Mode::Hybrid => "hybrid",
@@ -396,6 +411,26 @@ struct RawSearchAnswer {
 }
 
 pub fn search_answer(value: &Value) -> Result<SearchAnswer, NpFault> {
+    if value.is_null() {
+        // note-processor#11, measured on 0.5.1: `mode:"semantic"` in a folder with no vectors answers
+        // `"result": null` — no hits, no `indexed`, no `reason`, nothing on stderr. The shape fault below would call
+        // that "not shaped like a search result", which blames np for a thing it does deliberately and tells the
+        // person nothing they can act on. It answered; it answered with nothing, and there is a known reason.
+        //
+        // `-32000` rather than `-32603` on purpose: our own transport failures flatten to `-32603`, which the surface
+        // reads as "could not talk to np" — a contradiction about a program that just replied.
+        return Err(NpFault {
+            code: -32000,
+            // `concat!` rather than one padded literal: this sentence is quoted verbatim into the window, and a
+            // continuation that keeps its indentation prints as a long line with holes in it.
+            message: concat!(
+                "note-processor answered this search with nothing at all — no notes and no reason. ",
+                "It does that when asked for meanings only in a folder with no vectors yet ",
+                "(note-processor#11): index the folder with embeddings, or search by words as well."
+            )
+            .to_string(),
+        });
+    }
     serde_json::from_value::<RawSearchAnswer>(value.clone())
         .map(|r| SearchAnswer {
             hits: r.hits,

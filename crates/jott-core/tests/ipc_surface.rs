@@ -176,7 +176,7 @@ async fn the_tree_and_editor_work_with_no_np_anywhere_to_be_found() {
 
     session.save_note("b.md", "# B\n").expect("saving needs no np either");
     // Search does need it, and says so in one line the window can show.
-    let error = session.search("anything", 8, false).await.expect_err("np is not installed here");
+    let error = session.search("anything", 8, false, "hybrid").await.expect_err("np is not installed here");
     assert_eq!(error.kind, ErrorKind::NpGone);
 }
 
@@ -196,6 +196,100 @@ async fn nps_own_catalog_is_visible_greyed_and_never_editable() {
 
     // Editing it would be Jott writing into np's output (§9 greys it; the backend enforces that).
     let error = session.save_note("INDEX.md", "# Mine\n").expect_err("Jott does not write np's catalog");
+    assert_eq!(error.kind, ErrorKind::NpGenerated);
+}
+
+/// The settings panel's first control: *how search matches*. Which mode was chosen is only a fact if it reaches
+/// note-processor, and a parameter that silently never sends is a whole feature missing while every other test still
+/// passes — so this reads what crossed the wire rather than trusting the call site.
+#[tokio::test]
+async fn the_search_mode_that_was_chosen_is_the_mode_note_processor_is_asked_for() {
+    let _turn = SERIAL.lock().await;
+    let scenario_dir = scenario(json!({
+        "replies": { "search": serde_json::from_str::<Value>(SEARCH_REPLY).unwrap() }
+    }));
+
+    let harness = Harness::new();
+    let session = harness.session_with(fake_np());
+    for label in ["keyword", "hybrid", "semantic"] {
+        session.search("grandmother", 8, false, label).await.expect("the reader answers");
+    }
+
+    let lines = std::fs::read_to_string(scenario_dir.path().join("calls.ndjson")).expect("the stand-in recorded its calls");
+    let asked: Vec<Value> = lines
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|call: &Value| call["method"] == json!("search"))
+        .collect();
+    assert_eq!(asked.len(), 3, "three searches, three calls: {lines}");
+    for (call, label) in asked.iter().zip(["keyword", "hybrid", "semantic"]) {
+        assert_eq!(call["params"]["mode"], json!(label), "a chosen mode must not be quietly rewritten: {call} in {lines}");
+        assert_eq!(call["params"]["prefix"], json!(false), "{call}");
+    }
+}
+
+/// A label Jott cannot map is its own verdict, said by name. Guessing `hybrid` here would answer a question nobody
+/// asked — the same reason §18 refuses to invent a value that an absent key would have to stand in for.
+#[tokio::test]
+async fn an_unknown_search_mode_is_refused_by_name_and_never_guessed() {
+    let _turn = SERIAL.lock().await;
+    let scenario_dir = scenario(json!({}));
+
+    let harness = Harness::new();
+    let session = harness.session_with(fake_np());
+
+    let error = session.search("grandmother", 8, false, "fuzzy").await.expect_err("nobody can search 'fuzzy'");
+    assert_eq!(error.kind, ErrorKind::BadMode);
+    for label in ["keyword", "hybrid", "semantic"] {
+        assert!(error.message.contains(label), "the sentence should name what it accepts: {:?}", error.message);
+    }
+
+    // And note-processor was never asked: a refusal that still sent a request would be a guess with extra steps.
+    let methods = recorded(scenario_dir.path());
+    assert!(!methods.iter().any(|m| m == "search"), "a mode Jott refused still reached the pipe: {methods:?}");
+}
+
+/// Which kind a mute answer arrives as decides the sentence on screen, and `npGone` would be a contradiction: "could
+/// not talk to note-processor", said about a program that just replied. It answered; it answered with nothing.
+#[tokio::test]
+async fn a_search_that_answered_with_nothing_arrives_as_a_refusal_not_an_absence() {
+    let _turn = SERIAL.lock().await;
+    let _scenario = scenario(json!({ "replies": { "search": null } }));
+
+    let harness = Harness::new();
+    let session = harness.session_with(fake_np());
+
+    let error = session.search("grandmother", 8, false, "semantic").await.expect_err("nothing is not an answer");
+    assert_eq!(error.kind, ErrorKind::NpRefused, "np answered this, so it is not absent: {error:?}");
+    assert!(error.message.contains("note-processor#11"), "the window has to be able to say why: {:?}", error.message);
+}
+
+/// What a tester asked for in their own words: *"I can not open the Index.md file. Can we make it visible but
+/// read only?"* The refusal was doing two jobs — "you may not change np's output" and "you may not look at it" —
+/// and only the first one is ours to keep. `readonly` is how the window knows which editor to hand back.
+#[tokio::test]
+async fn np_s_catalogue_opens_for_reading_and_stays_unwritable() {
+    let _turn = SERIAL.lock().await;
+    let harness = Harness::new();
+    let session = harness.session();
+    harness.write("INDEX.md", b"# INDEX\n_generated by note-processor; do not edit_\n");
+    harness.write("notes/real.md", b"# Real\n");
+    // A folder's own index of its own notes is not np's catalogue: only the vault root's names are.
+    harness.write("projects/2026/INDEX.md", b"# My own index of things\n");
+
+    let catalogue = session.read_note("INDEX.md").expect("looking at np's output is allowed");
+    assert!(catalogue.readonly, "the window has to know not to offer an edit");
+    assert_eq!(catalogue.text, "# INDEX\n_generated by note-processor; do not edit_\n", "shown as it is on disk");
+
+    let note = session.read_note("notes/real.md").expect("read");
+    assert!(!note.readonly, "an ordinary note is ordinary");
+
+    let theirs = session.read_note("projects/2026/INDEX.md").expect("read");
+    assert!(!theirs.readonly, "a name inside a folder is somebody's own note, not np's file");
+
+    // The refusal stays exactly where it was: writing np's output is still not something Jott does.
+    let error = session.save_note("INDEX.md", "# Mine\n").expect_err("reading was never permission to overwrite");
     assert_eq!(error.kind, ErrorKind::NpGenerated);
 }
 
@@ -254,7 +348,7 @@ async fn a_search_answers_while_an_embed_is_still_running() {
     assert!(recorded(scenario_dir.path()).contains(&"embed".to_string()), "no embed was running: {:?}", recorded(scenario_dir.path()));
 
     let started = std::time::Instant::now();
-    let answer = session.search("A", 8, false).await.expect("the reader answers");
+    let answer = session.search("A", 8, false, "hybrid").await.expect("the reader answers");
     let waited = started.elapsed();
     assert!(waited < std::time::Duration::from_millis(400), "the search queued behind the embed: {waited:?}");
     assert_eq!(answer.mode, "keyword", "np's own word for which half answered (§18.11)");
@@ -451,12 +545,13 @@ async fn what_the_window_receives_is_named_exactly_as_ipc_ts_says() {
         disk_hash: "h".into(),
         disk_mtime_ms: 3,
         mirrored: None,
+        readonly: false,
     })
     .expect("note");
     // Sorted, because `serde_json`'s map is a BTreeMap: the names are the contract, their order is not.
     let mut keys: Vec<&str> = note.as_object().expect("object").keys().map(String::as_str).collect();
     keys.sort_unstable();
-    assert_eq!(keys, vec!["diskHash", "diskMtimeMs", "hash", "mirrored", "rel", "text"]);
+    assert_eq!(keys, vec!["diskHash", "diskMtimeMs", "hash", "mirrored", "readonly", "rel", "text"]);
 
     // The status line's events, which `src/lib/statusLine.ts` pattern-matches on.
     let working = IngestEvent::Working { phase: "embedding".into(), done: 3, total: Some(7), member_index: None, member_count: None };
@@ -635,7 +730,7 @@ async fn a_vault_still_opens_when_np_cannot_be_asked_anything() {
 
     assert_eq!(session.listing().expect("the tree needs no np").nodes.len(), 1);
     session.save_note("b.md", "# B\n").expect("neither does a save");
-    assert_eq!(session.search("anything", 8, false).await.expect_err("np is not here").kind, ErrorKind::NpGone);
+    assert_eq!(session.search("anything", 8, false, "hybrid").await.expect_err("np is not here").kind, ErrorKind::NpGone);
 
     // And the `[embed]` button's queue does not spin: it fails its batch and moves on.
     session.ingest_all();
@@ -918,7 +1013,7 @@ async fn the_trace_shows_what_the_session_asked_np() {
         harness.data.path().to_path_buf(),
     );
 
-    session.search("kumquat", 8, false).await.expect("the stand-in answers");
+    session.search("kumquat", 8, false, "hybrid").await.expect("the stand-in answers");
 
     let rows = session.trace().recent();
     let search = rows
@@ -962,7 +1057,7 @@ async fn a_child_that_could_not_be_started_is_a_row_of_its_own() {
         harness.data.path().to_path_buf(),
     );
 
-    let err = session.search("anything", 8, false).await.expect_err("np is not here");
+    let err = session.search("anything", 8, false, "hybrid").await.expect_err("np is not here");
     assert_eq!(err.kind, ErrorKind::NpGone);
 
     let rows = session.trace().recent();
@@ -1010,7 +1105,7 @@ async fn the_snapshot_shows_the_run_so_far() {
         harness.data.path().to_path_buf(),
     );
 
-    session.search("kumquat", 8, false).await.expect("the stand-in answers");
+    session.search("kumquat", 8, false, "hybrid").await.expect("the stand-in answers");
     let snapshot = session.diagnostics().await;
 
     assert!(snapshot.recent.iter().any(|row| row.method.as_deref() == Some("search")));
@@ -1185,7 +1280,7 @@ async fn a_refusal_from_np_is_not_reported_as_np_being_gone() {
         harness.data.path().to_path_buf(),
     );
 
-    let err = session.search("anything", 8, false).await.expect_err("np refused");
+    let err = session.search("anything", 8, false, "hybrid").await.expect_err("np refused");
     assert_eq!(err.kind, ErrorKind::NpRefused, "np answered; nothing is missing");
     assert_eq!(err.message, sentence, "and np's own sentence is the message (§4)");
 
@@ -1216,7 +1311,7 @@ async fn a_method_this_np_does_not_answer_says_which_floor_jott_needs() {
         harness.data.path().to_path_buf(),
     );
 
-    let err = session.search("anything", 8, false).await.expect_err("too old");
+    let err = session.search("anything", 8, false, "hybrid").await.expect_err("too old");
     assert_eq!(err.kind, ErrorKind::NpTooOld);
     assert!(
         err.message.contains(&jott_core::np::resolve::min_version_text()),
@@ -1290,7 +1385,7 @@ async fn np_is_asked_about_the_folder_and_not_one_spelling_of_it() {
         harness.data.path().to_path_buf(),
     );
 
-    session.search("kumquat", 8, false).await.expect("the stand-in answers");
+    session.search("kumquat", 8, false, "hybrid").await.expect("the stand-in answers");
     session.close().await;
 
     let lines = std::fs::read_to_string(&recorded).expect("the stand-in recorded what it was asked");
@@ -1420,7 +1515,7 @@ async fn the_window_is_told_what_ran_and_whether_there_was_an_index() {
         harness.data.path().to_path_buf(),
     );
 
-    let answer = session.search("kumquat", 8, false).await.expect("the stand-in answered");
+    let answer = session.search("kumquat", 8, false, "hybrid").await.expect("the stand-in answered");
     assert_eq!(answer.indexed, Some(false));
     assert_eq!(answer.keyword_used, Some(true));
     assert_eq!(answer.semantic_used, Some(false), "whatever `mode` claims, the vector half did not run");

@@ -72,7 +72,7 @@ function markerFor(state: StampState | null): { marker: string; title: string } 
 
 /** What the greyed `INDEX.md` row says when you hover it. The file is np's, not yours and not Jott's, and a
     person who has never seen one appear in their folder deserves to be told that in a sentence. */
-export const GENERATED_TITLE = 'Catalogue written by np — Jott never edits it'
+export const GENERATED_TITLE = 'Catalogue written by note-processor — open it to read, Jott never edits it'
 
 /** How many notes still owe their first pass: no stamp at all, or a stamp that says nobody indexed them yet.
     A refused note is not counted — it was tried, and the row already says so. */
@@ -128,8 +128,77 @@ export function moveTargets(rows: Row[], rel: string): string[] {
   return [...folders].sort()
 }
 
+/** What the move dialog means by a typed name.
+ *
+ *  The dialog used to list existing folders and nothing else, so in a vault with no folders it was an empty box —
+ *  "I can right click and select Move to…, but I see only an empty field". The fix is not a longer list; it is
+ *  letting the destination be a folder that does not exist yet, which `create_folder` already supports. */
+export type MovePlan =
+  | { kind: 'move'; to: string }
+  | { kind: 'create-then-move'; folder: string; to: string }
+  | { kind: 'refuse'; sentence: string }
+
+/** Turn what somebody typed into a destination, or into a sentence explaining why it is not one.
+ *
+ *  Existing folder → move into it. Anything else → create it, then move. Names that would leave the vault are
+ *  refused here rather than at the backend, because the dialog can say "that name walks out of the folder" while
+ *  the person still has the field in front of them; the guard stays in Rust too, since this function is a courtesy
+ *  and not the security boundary. */
+export function planMoveInto(rel: string, typed: string, folders: string[]): MovePlan {
+  const raw = typed.trim()
+  if (raw === '') return { kind: 'refuse', sentence: 'Name the folder to move it into.' }
+
+  // Split on either separator rather than rewriting one into the other: a Windows path typed with backslashes
+  // means the same thing, and a share path only looks like an ordinary nested name after a substitution has
+  // eaten the distinction.
+  const parts = raw.split(/[/\\]/).filter((part) => part !== '')
+  if (parts.length === 0) return { kind: 'refuse', sentence: 'Name the folder to move it into.' }
+
+  // A leading separator means an absolute path or a share, and neither names a folder inside this vault. Read
+  // from what was typed, before the split dropped it.
+  if (raw.startsWith('/') || raw.startsWith('\\')) {
+    return { kind: 'refuse', sentence: 'That is a path outside the folder. Name a folder inside it, like ideas.' }
+  }
+
+  for (const part of parts) {
+    // `.` and `..` are the walk out; a colon is a drive letter or an alternate data stream.
+    if (part === '.' || part === '..' || part.includes(':')) {
+      return { kind: 'refuse', sentence: 'That name walks out of the folder. Choose a plain name, like ideas.' }
+    }
+  }
+
+  const normalised = parts.join('/')
+
+  const folder = `${normalised}/`
+  const here = rel.includes('/') ? `${rel.slice(0, rel.lastIndexOf('/') + 1)}` : ''
+  if (folder === here) {
+    return { kind: 'refuse', sentence: 'It is already in that folder — a move needs somewhere else to go.' }
+  }
+
+  // A destination inside the row itself. `moveTargets` omits the row and its subtree, so nothing downstream could see
+  // this coming: moving the folder `work/` into `work/2026` reads as an ordinary nested name, gets *created*, and is
+  // refused only by core — after the vault has an empty folder left over from a move that never happened. Saying no
+  // here is what keeps half a plan from being carried out.
+  if (rel.endsWith('/') && (folder === rel || folder.startsWith(rel))) {
+    return { kind: 'refuse', sentence: 'That destination is inside the folder you are moving. Choose somewhere else.' }
+  }
+
+  const known = new Set(folders.map((f) => (f.endsWith('/') ? f : `${f}/`)))
+  if (known.has(folder)) return { kind: 'move', to: `${folder}${nameOf(rel)}` }
+  return { kind: 'create-then-move', folder, to: `${folder}${nameOf(rel)}` }
+}
+
+/** The last segment of a `rel`, without the trailing slash a folder carries. Folders are stored as `work/`, so a
+ *  name taken by slicing after the final slash comes back empty — and a move built from it asks core to put `work/`
+ *  at `ideas/`, which is the destination of its contents rather than of the folder. */
+function nameOf(rel: string): string {
+  const trimmed = rel.endsWith('/') ? rel.slice(0, -1) : rel
+  return trimmed.slice(trimmed.lastIndexOf('/') + 1)
+}
+
 /** Join a `rel` onto a destination folder, keeping it a `rel`. */
 export function moveTo(rel: string, folder: string): string {
-  const name = rel.slice(rel.lastIndexOf('/') + 1)
-  return `${folder}${name}`
+  // One name rule for both halves of the dialog, so picking an existing folder and naming a new one cannot disagree
+  // about what a folder is called.
+  return `${folder}${nameOf(rel)}`
 }

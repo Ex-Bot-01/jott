@@ -602,6 +602,30 @@ async fn enabling_embeddings_reports_what_np_changed_and_what_it_costs() {
     client.shutdown().await.unwrap();
 }
 
+/// note-processor#11: a meanings-only search in a folder with no vectors answers `"result": null`. That is not a
+/// malformed answer — it is an empty one with no words attached, and the difference decides what a person does next.
+/// The generic shape fault would say np's reply was broken; the useful reading names the known cause and the way out.
+#[tokio::test]
+async fn a_search_answered_with_nothing_at_all_says_why_and_names_the_issue() {
+    let (_d, client) = spawn(json!({"replies": {"search": null}})).await;
+
+    let fault = search(&client, &vault(), "grandmother", 8, Mode::Semantic, false).await.expect_err("null is not an answer");
+    let message = fault.message.to_lowercase();
+    assert!(fault.message.contains("note-processor#11"), "the sentence should point at the open issue: {fault}");
+    assert!(message.contains("vector"), "it should name the known cause: {fault}");
+    assert!(
+        !fault.message.contains("not shaped like one"),
+        "calling np's mute answer malformed blames the wrong thing: {fault}"
+    );
+    // This sentence is quoted verbatim into the window's problem line, so it has to survive being read there. A
+    // string continued across source lines by padding each one with spaces arrives as one long line of holes — and
+    // `contains` checks cannot see that, because every word is still present.
+    assert!(!fault.message.contains("  "), "the printed sentence has runs of padding in it: {fault:?}");
+    assert!(!fault.message.contains('\n'), "one sentence, one line: {fault:?}");
+
+    client.shutdown().await.expect("shutdown");
+}
+
 /// Revoking is not erasing: np switches the provider off and **keeps** which model was chosen, so saying no twice in a
 /// row does not lose the choice someone made once. `changed` naming one key is that fact on the wire.
 #[tokio::test]
@@ -821,4 +845,22 @@ async fn a_hit_np_never_word_tested_stays_unknown() {
     assert!(answer.prefix_terms.is_empty());
 
     client.shutdown().await.unwrap();
+}
+
+/// `Mode::LABELS` and `Mode::label` are two halves of one contract, and `from_label` is the third: the list is what a
+/// refusal offers as alternatives, so a variant added to `label()` but not to `LABELS` would leave the sentence
+/// silently omitting a mode the app can actually use. Nothing else reads those three together, hence this.
+#[test]
+fn every_mode_is_listed_where_a_refusal_lists_them() {
+    let modes = [Mode::Keyword, Mode::Hybrid, Mode::Semantic];
+    let labels: Vec<&str> = modes.iter().map(Mode::label).collect();
+    assert_eq!(Mode::LABELS.to_vec(), labels, "the list a refusal prints must name every mode in its own order");
+    for label in Mode::LABELS {
+        let parsed = Mode::from_label(label).unwrap_or_else(|| panic!("{label} is listed but cannot be parsed back"));
+        assert_eq!(parsed.label(), label, "{label} parses into a different mode than it spells");
+    }
+    // And the door stays shut on anything else: `None`, not a quiet default.
+    for junk in ["", "fuzzy", "HYBRID", "auto"] {
+        assert!(Mode::from_label(junk).is_none(), "{junk} is not a mode and must not parse");
+    }
 }

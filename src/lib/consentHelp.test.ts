@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cardClipboard, cardSentences, type ConsentOutcome } from './consentHelp'
+import { cardClipboard, cardSentences, panelLines, type ConsentOutcome } from './consentHelp'
 import type { ConsentHelp } from './ipc'
 
 const FILE = 'C:\\Users\\chris\\AppData\\Roaming\\note-processor\\config.toml'
@@ -217,3 +217,37 @@ describe('the card once np has answered', () => {
     })
     expect(sentences.filter((line) => line === sentence)).toHaveLength(1)
   })
+
+describe('what the settings panel says about embeddings', () => {
+  it('says something true when nothing is missing', () => {
+    // The card has no reason to speak when np's settings are complete — there is nothing to explain. The panel is
+    // different: it is where somebody goes to find out the state, and it used to answer "Reading…" forever, because
+    // an empty list of sentences is indistinguishable from a read still in flight.
+    const facts = { help: help({ gap: 'ready', provider: 'local-model', modelId: 'embeddinggemma-2' }), refusal: null }
+    const lines = panelLines(facts)
+    expect(lines.length, 'a complete settings file is an answer, not a pending question').toBeGreaterThan(0)
+    expect(lines.join(' ').toLowerCase()).toContain('embedding')
+  })
+
+  it('is the card’s sentences plus that one, and nothing else', () => {
+    // One module answering both surfaces, so the panel cannot drift into describing settings the card contradicts.
+    const missing = { help: help({ gap: 'providerMissing' }), refusal: null }
+    expect(panelLines(missing)).toEqual(cardSentences(missing))
+  })
+
+  it('keeps np’s own answer when there is one', () => {
+    const outcome: ConsentOutcome = {
+      granted: true,
+      npRefused: null,
+      changed: ['embeddings.provider', 'embeddings.model'],
+      provider: 'local-model',
+      model: 'embeddinggemma-2',
+      persistedTo: FILE,
+      fetchBytes: 309855456,
+      autoFetch: 'written',
+      autoFetchError: null,
+    }
+    const facts = { help: help({ gap: 'ready' }), refusal: null, outcome }
+    expect(panelLines(facts)).toEqual(cardSentences(facts))
+  })
+})

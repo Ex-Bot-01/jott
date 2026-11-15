@@ -99,12 +99,56 @@ export function hitSuffix(matchedExactly: boolean | null): string | null {
     the answer: np says this folder *is* indexed, the whole-word search found nothing, the query is something, and the
     person is not already widening — an offer that cannot help is noise dressed as help (§4). */
 export function suggestPrefix(
-  facts: { indexed: boolean | null; hits: unknown[] },
+  facts: { indexed: boolean | null; hits: unknown[]; keywordUsed?: boolean | null },
   query: string,
   prefixOn: boolean,
 ): boolean {
   if (prefixOn) return false
   if (query.trim().length === 0) return false
   if (facts.hits.length > 0) return false
+  // Word beginnings are a fact about the *word* half of a search. np says which halves ran (0.4.0), so an answer that
+  // came from meanings alone does not get advice about widening words — pressing it could not change anything, and
+  // this module's contract is to offer it only where it can. Silence from an older backend is not evidence that
+  // meanings-only was asked for, so `null` keeps the v0.0.15 behaviour.
+  if (facts.keywordUsed === false) return false
   return facts.indexed === true
+}
+
+/** What a meanings-only search that returned nothing can honestly say.
+ *
+ *  note-processor#11: `mode:"semantic"` in a folder with no vectors answers `result: null` — no `indexed`, no
+ *  `reason`, no `note`. Every other empty answer in this file has a fact behind its sentence; this one has the absence
+ *  of one, which is exactly why it needs three branches instead of the friendly "nothing matched". A person who reads
+ *  that in a folder they never embedded will conclude their notes are wrong rather than that the search had nothing to
+ *  work with. */
+export function semanticEmptySentence(facts: { vectors?: boolean | null }, query: string): string {
+  if (facts.vectors === false) {
+    return (
+      `No notes matched “${query}” by meaning — this folder has no vectors yet, so a meanings-only search has ` +
+      'nothing to compare against. Index it with embeddings, or ask for words as well.'
+    )
+  }
+  if (facts.vectors === true) {
+    return `No note in this folder matches “${query}” by meaning, as far as its vectors can tell.`
+  }
+  // No `vectors` fact to speak from, so the sentence names that rather than filling it in. Current core answers
+  // `vectors` as a plain bool on every search result, so this is the shape of an answer Jott does not produce; np's
+  // mute reply to a meanings-only search (`"result": null`, note-processor#11) never reaches here at all — it faults
+  // in `search_answer` (crates/jott-core/src/np/outcomes.rs) and is quoted as a refusal.
+  return (
+    `Note-processor returned nothing for “${query}” and gave no reason — a meanings-only search reports no ` +
+    'explanation when there are no vectors yet (note-processor#11).'
+  )
+}
+
+/** The line under the *meanings only* choice, from np's own `vectors` fact about the last search.
+ *
+ *  Silence answers with silence: before anyone has searched, Jott does not know whether this folder has vectors, and
+ *  "this folder has no vectors yet" would be a claim about a thing nobody asked about. */
+export function meaningsNotice(vectors: boolean | null | undefined): string | null {
+  if (vectors !== false) return null
+  return (
+    'This folder has no vectors yet, so meanings-only search will find nothing here. ' +
+    'Index it with embeddings first, or keep both engines on.'
+  )
 }

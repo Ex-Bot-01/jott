@@ -1,135 +1,145 @@
-# Jott 0.0.15 — np writes its own settings, and search can start at the beginning of a word
+# Jott 0.0.16 — five things the window could not do before
 
-Two requests Jott filed against note-processor have been fixed there, so this release is mostly Jott stopping doing
-things it should never have had to do. The backend inside is now **np 0.5.1** (it was 0.4.0), and the wire protocol is
-still version 1 — nothing about how the two programs talk changed, only what np is willing to answer.
+Every change here came from someone using it: a note that could not be closed, an index that would not open, a caret
+that vanished in dark mode, a Move dialog with nothing in it, and a set of settings you had to already know about. The
+backend inside is still **note-processor 0.5.1** on protocol 1 — this release is the window, with one exception worth
+reading about below.
 
 ## What you'll notice
 
-- **There is a *match word beginnings* checkbox beside the search box, and it is off.** With it off, searching *grand*
-  finds *grand* — exactly the search you have always had. Turn it on and *grand* finds *grandmother*, because
-  note-processor now widens its own index query when a request asks it to
-  ([#6](https://github.com/Ex-Bot-01/note-processor/issues/6)). It is off by default for the same reason np ships it
-  off: in a vault of ticket numbers, code identifiers and half-remembered names, a term that quietly grows reports
-  notes nobody asked about. Your choice is remembered per app and survives closing the window.
-- **A widened search admits what it did.** The results header gains a line naming the words note-processor widened —
-  *also matched word beginnings (grand)* — from np's own list rather than from Jott's guess at one, and any row that
-  only matched by its first letters is marked *from the start of a word*. Rows found by meaning alone carry no mark:
-  np never tested their words against your typing, and printing something about them would be a claim about a test
-  nobody ran.
-- **An empty search can offer the widening, without taking it.** In a folder np says is indexed, if whole words found
-  nothing, you get *try matching word beginnings*. Pressing it re-runs that one query widened and deliberately does not
-  move the checkbox: trying something once should not decide every search you make from now on. It appears only where
-  pressing it can change an answer — not in a folder np has never indexed, not on an empty box, not when you are
-  already widening.
-- **Pressing "Allow the download" now ends with note-processor writing its own settings.** Since
-  [#7](https://github.com/Ex-Bot-01/note-processor/issues/7) is fixed, Jott asks np over the pipe
-  (`embeddings.enable`) instead of handing you two lines to paste. The card reports what np said it did — which keys it
-  changed, into which file, and what the fetch will cost — with one line beside it about Jott's own part. If np refuses
-  (an id this build cannot use, a config file it cannot parse), the refusal is quoted unchanged and the card says that
-  Jott left `models.auto_fetch` alone. After a refused *yes* the download guardrail is exactly where it was, and the
-  window says so rather than implying you had allowed something. Re-opening the same folder does not undo an answer
-  either: the receipt is about np's one settings file, not about whichever vault was last listed.
-- **"Stay keyword-only" revokes without erasing.** np switches its provider off and keeps which model you had chosen,
-  so saying no twice does not make you pick again; the card repeats that, because "off" and "forgotten" are different
-  states to a person reading the file later.
+- **A note can be closed.** There is a **close** button beside the note's name and **Escape** does the same, but only
+  when Escape has nothing above it to dismiss: one press, one thing, topmost first — row menu, settings panel, About,
+  whatever dialog was asking you something, diagnostics drawer, note. Escape typed inside a note or the search box never closes that note, because in a text
+  field the key already has a job. Closing writes nothing; an unsaved buffer keeps its marker if you come back.
+- **`INDEX.md` opens and says it is read-only.** It used to refuse to open, which looked like a broken file. Now it
+  reads normally — still greyed in the tree, with a banner saying it is note-processor's own index — and the refusal
+  happens where it belongs, on writes: **Ctrl+S** sends no save and says whose file it is in one line, and core still
+  refuses the write if anything else asks. Shard catalogues (`INDEX-2.md` and friends) behave the same; your own notes
+  are untouched.
+- **The caret should stop disappearing in dark mode.** The real fault was that CodeMirror was never told the window was
+  dark, so it drew its default one-pixel grey caret on a near-black page — invisible rather than faint. It now takes the
+  scheme from the same source as the palette, draws two pixels of ink, and dims instead of switching off while it
+  blinks, because a caret that is *off* is gone for as long as it is off. Windows' *show text cursor* setting still makes
+  it thicker and *high contrast* mode takes the system caret colour. If you still cannot see it, tell us which of the
+  three it is — absent, thin and grey, or there but vanishing while you type — because those are three bugs and a log
+  file cannot tell them apart.
+- **"Move to…" can move a note into a folder that does not exist yet.** The dialog listed every folder in the vault,
+  which in a vault with none was a single entry that read as an empty field. It has a second half now: type a name
+  under *…or a new folder* and press **create and move**. Nested names work in one go (`ideas/2026` makes both levels,
+  either slash direction) because `create_folder` already builds parents. If the folder cannot be made, no move is sent:
+  the dialog stays open with your name still in it and says what went wrong inside itself, rather than closing on a
+  "done" that did not happen.
+- **Settings is a panel: Ctrl+comma, or the header button.** Three controls — **how search matches** (*words only*,
+  *both*, *meanings only*), **match word beginnings** (the same remembered choice as the checkbox beside the search
+  box; one setting, so the two cannot disagree), and **embeddings** (*Allow the download* / *Keep it keyword-only*, the
+  same two answers as the consent card, through the same door: np writes its settings, Jott writes `models.auto_fetch`,
+  and the panel quotes np's answer). The engine choice is remembered per app and re-runs whatever is in the search box
+  immediately.
 
-## Jott still writes one setting, and now there is a file to prove it
+## The one control that cannot be honest yet
 
-`models.auto_fetch`, that key only, in `%APPDATA%\note-processor\config.toml`. Everything else about embeddings is
-written by note-processor itself, and it leaves its own provenance comment behind:
+*Meanings only* is new, and it is the one place where Jott has to say "the backend will not tell me". Ask note-processor
+for meanings only in a folder with no vectors and it answers `"result": null` — no hits, no `indexed`, no `reason`,
+nothing on stderr. That is
+[note-processor#11](https://github.com/Ex-Bot-01/note-processor/issues/11), filed while building this release, and until
+it is fixed:
 
-```toml
-# note-processor set by the `embeddings.enable` method over `np serve` (np 0.5.1) at 2026-11-15T…
-[embeddings]
-provider = "local-model"
-model = "embeddinggemma-2"
+- The panel warns under that choice when your last search showed the folder has no vectors: *this folder has no vectors
+  yet, so meanings-only search will find nothing here*. Before you have searched it says nothing, because Jott does not
+  know, and "no vectors" inferred from silence would be an invention.
+- An empty meanings-only answer never says *"nothing matched"*. It says either that there are no vectors to compare
+  against, or — when np said nothing at all — that np returned nothing and gave no reason.
+- A mute answer arrives as a refusal naming the issue, so you can read why instead of wondering whether Jott broke.
 
-[models]
-auto_fetch = true     # <- the one key Jott writes
-```
+## Measured, on np 0.5.1
 
-`auto_fetch` stays Jott's because np does not touch it, which was measured rather than assumed: on 0.5.1, calling
-`embeddings.enable` with `auto_fetch = false` in the file leaves the key where it is and `embed` still refuses to fetch
-anything — no bytes move. Flip the key to `true` and the same request starts fetching 309,855,456 bytes (about 296 MiB)
-for its built-in default model. A fresh np defaults that key to *yes*, so until you answer Jott holds it at `false`;
-that is the whole guardrail, and it is the reason Jott still writes something at all.
-
-The floor moved to 0.5.1 rather than 0.5.0 for one reason of its own: the provenance line above names *the method over
-`np serve`* instead of a terminal command nobody ran
-([#10](https://github.com/Ex-Bot-01/note-processor/issues/10)). Jott quotes that line as an audit trail, and a record
-that invents a command is worse than no record.
-
-## Measured, on the released 0.5.1 binaries
-
-- `initialize` answers ten methods — the eight of 0.4.0 plus `embeddings.enable` and `embeddings.disable`. Protocol: 1.
-- One note containing *grandmother*, *grandfather*, *kestrel*: `search "grand"` → no hits, `prefix_used: false`. The
-  same request with `"prefix": true` → that note, `matched_exactly: false`, `prefix_terms: ["grand"]`. Same for
-  `kestr`. So the widening is np's, and np says which words it widened.
-- `embeddings.enable {"model":"embeddinggemma-2"}` answered
-  `changed: ["embeddings.provider","embeddings.model"]`, `provider: "local-model"`,
-  `fetch.bytes_total: 309_855_456`, and `persisted_to` naming the config file it had just written. An id this build does
-  not pin is refused by name, naming the ids it will accept; a parameter that is not `model` is refused with `-32602`
-  rather than answered `ok`; a config file np cannot parse is left byte-for-byte as it was and refused in words that
-  name the line.
-- `embeddings.disable {}` changed only `embeddings.provider`, to `"none"`, and kept the model.
+- Same folder, same query, one second apart: `mode:"hybrid"` → hits plus `indexed:true`, `keyword_used:true`,
+  `semantic_used:false`, `vectors:false`, `reason:"fetch-disabled"` and a sentence explaining it; `mode:"keyword"` →
+  the same keys with `reason:null`; **`mode:"semantic"` → `"result": null`**. Nothing on stderr, and no fault: np is
+  answering, with nothing.
+- The three modes are otherwise real: `keyword` and `hybrid` both return hits in a folder whose model was never fetched,
+  and what crossed the wire was checked by reading what the stand-in recorded being asked, per label — not by trusting
+  the call site.
+- Embedding numbers are unchanged from 0.0.15: the built-in default is 309,855,456 bytes (about 296 MiB), and Jott still
+  writes exactly one key, `models.auto_fetch`, in `%APPDATA%\note-processor\config.toml`.
 
 ## Not user-visible, but worth knowing
 
-- **`prefix` is always sent, as a boolean.** np's default is off and Jott's toggle is off until asked; sending an
-  omitted key would let a backend's default decide what somebody's search meant. Two tests read what actually crossed
-  the wire rather than trusting the call site, because a parameter silently never sent is the whole feature missing
-  while every other test still passes.
-- **The consent answer comes back as data.** `set_consent` now returns which keys np moved, into which file, what the
-  fetch costs, and one of four words about Jott's own key — `written`, `untouched`, `noConfigPath`, `failed`. "Jott
-  wrote it" and "Jott could not write it" are different instructions to a person, so the wire has to tell them apart.
-  The keys are pinned twice: exactly in Rust, and against `src/lib/ipc.ts` in the front-end suite.
-- **Prefix marking requires a word start.** In prefix mode *grand* lights up inside *grandmother* and stays dark inside
-  *agrand*. Whole-word marking is unchanged from 0.0.13 — it still marks the first occurrence, letters anywhere,
-  because np's BM25 answers `kumquat` for `kumquats` and a highlight that disagrees with the row it opened is worse than
-  a slightly generous one. That difference is pinned by tests on both sides rather than left to memory.
-- **The editor marks with the same flag as the list.** A note opened from a widened row is marked with prefix rules;
-  flipping the toggle re-marks the open note, because the words that matched genuinely changed and leftovers would
-  describe a search you are no longer running.
-- **The stand-in np answers like 0.5.1 by default**, including both consent doors and the `-32602` refusal for a
-  parameter it does not take, and `initialize` in the captured handshake fixture was re-recorded from the real binary
-  rather than edited by hand — a fixture that keeps saying "0.4.0" tests a refusal nobody ships.
-- **An *answer* has exactly one writer.** Two places in Jott can touch `models.auto_fetch`, and they are different
-  jobs: opening a folder whose answer is still undecided holds it at `false` (it never raises it), and recording your
-  answer writes what the answer means. What used to exist was a third: the ingest queue wrote it whenever an answer
-  arrived, and so did the consent path — unconditionally. A *yes* that note-processor refused therefore ended with
-  `auto_fetch = true` in someone's file while the card said Jott had left it alone — two writers, two answers to the
-  same question, one of them wrong. The queue now only remembers the answer; `consent::answer_consent` writes, and
-  writes our key only when np opened its own door. A
-  *no* still gets its `false` even with no np to ask, because lowering a guardrail needs nothing from a process that
-  failed to start.
-- **np's sentences stay out of the log file, and into the drawer.** The journal line for a consent answer names the
-  method called (`embeddings.enable` / `embeddings.disable`) and what became of Jott's key — from the receipt, never
-  from what the button meant; it used to say "wrote models.auto_fetch = false anyway" for every refusal, including the
-  ones where the write itself had failed. np's own words are quoted on the card and in the drawer row instead, because
-  they name model ids and the log is read by somebody else years later.
-- **Answering consent now spawns np**, which surfaced a harness hazard: `FAKE_NP_SCENARIO` is process-global, so a test
-  in the same binary could leave it pointing at a deleted tempdir and hand the next one a Python traceback. The fix was
-  ownership (each test that talks to np configures its own stand-in), not clearing the environment somewhere else.
+- **The search mode is a parameter that used to be a constant.** `NpPool::search` asked for `hybrid` regardless of what
+  the window wanted, so the control would have been missing while every other test still passed. An unknown label is now
+  refused by core with a sentence naming the labels it accepts (`ErrorKind::BadMode`, pinned in Rust and against
+  `src/lib/ipc.ts`) instead of quietly becoming `hybrid`: guessing is how a search ends up answering a question nobody
+  asked, which is the failure this project keeps having to design against.
+- **A mute answer is a refusal, not an absence.** np's `result: null` used to surface as "np's search result is not
+  shaped like one" (blaming np for doing the thing it does) and its code mapped to *could not talk to np* — a
+  contradiction about a program that had just replied. It now faults with `-32000` and a sentence naming
+  note-processor#11, which the surface reads as a refusal and quotes.
+- **Read-only is a fact on the wire, not a guess in markup.** `read_note` answers `readonly: true` for the root-level
+  catalogues; the editor mounts non-editable, Ctrl+S is intercepted with a sentence, and the write guard is unchanged —
+  so the file is refused by core even if the window were tricked. The key is pinned on both sides.
+- **CodeMirror learns the colour scheme when the palette changes**, through its own `darkTheme` extension rather than a
+  stylesheet guess, and stamps a stable class on its element so a test can see which facet it drew. Forced-colors mode
+  and *reduce motion* are handled explicitly.
+- **The Escape order lives in one tested function** (`escapeAction`), not in markup conditions: menu → settings →
+  About → dialog → drawer → note, one per press, with the typing-target rule standing down only the last step. Two
+  components used to listen for the key on `window` themselves — which is how one press closed About *and* the note
+  behind it, and how Escape meant to cancel a "Move to…" dialog instead closed the note the dialog was about. Every
+  overlay is now a fact in that one function; nothing else dismisses anything.
+- **One settings key per choice, written from either place.** `jott.search.mode` and `jott.search.prefix`; the prefix
+  key is unchanged from 0.0.15 so upgrading keeps somebody's toggle instead of silently turning it off. Anything in
+  those keys that this build cannot spell reads as the default — including `SEMANTIC`, which *means* something to a
+  person and would switch them to the mode that cannot explain an empty result.
+- **The stand-in np can now answer literal null** (`method in replies`, not `replies.get(method) is not None`). Being
+  unable to be wrong in this specific way was the difference between testing the reading and asserting a hope.
+- **A catalogue row needs a rule, not an attribute.** These rows used to be `disabled`, which did two jobs at once:
+  unclickable, and — as a side effect nobody wrote down — dimmed. Making the catalogue readable removed the attribute,
+  so `.greyed` was still emitted while no CSS matched it: the row looked exactly like your notes, gained a hover
+  highlight, and three sentences in the docs went on promising it was greyed. It has its own rule now, plus a quieter
+  hover than an editable row gets, pinned by reading the stylesheet rather than by hoping.
+- **Selecting np's file no longer enables rename and delete.** The row menu already refused them; making the row
+  clickable enabled the two toolbar buttons whose commands core would refuse. One derived fact (`selectedIsGenerated`)
+  now agrees with the menu, so the window gives one answer about whether a file is touchable.
+- **Moving a folder used to move an empty name.** Folders are stored as `work/`, and taking "the last segment after the
+  final slash" of that yields `""` — so *Move to…* asked core to put `work/` at `ideas/`. Both halves of the dialog now
+  share one name rule. The same review also caught the planner offering a destination **inside** the folder being
+  moved (`work/2026` while moving `work`), which would have created that folder and then been refused by core, leaving
+  an empty directory behind a move that never happened; it refuses up front now, and when a create succeeds and the
+  move afterwards fails, the dialog says which folder it made.
+- **Closing a note inside the mirror window no longer drops typing.** The editor mirrors an unsaved buffer half a
+  second after the last keystroke, and its teardown cancelled the pending mirror — so the two new ways to close a note
+  were two new ways to lose work, while these notes promised the opposite. Teardown flushes first; it still writes
+  nothing to the note itself.
+- **A folder switch forgets more than it did.** The search answer on screen is np's report about *that* folder —
+  `vectors`, `indexed`, which words it widened. Carried into the next folder, the settings panel warned "this folder has
+  no vectors yet" about a folder Jott had never searched. Results, the query and the open note now go with the other
+  per-folder facts, and an unsaved buffer can no longer be left attached to a session that has moved on.
+- **Sentences the panel prints are sentences someone chose.** It used to answer "Reading what note-processor has
+  recorded…" whenever it had nothing to say — which included the healthy case (np's settings complete) and the failed
+  read, both of which are answers with no fact behind them as drawn. Three states now, and the wording comes from
+  `consentHelp`, beside the card's own.
+- **The widening offer asks whether words were tried.** "Try matching word beginnings" is advice about the word half
+  of a search; np says which halves ran, so an answer that came from meanings alone no longer gets it.
+- **Harness honesty, three times over.** The smoke suite clears `localStorage` between tests: a remembered mode leaking from
+  one test into the next made a second window ask for `keyword` and looked exactly like the feature working. And the
+  move recorder was pushing to the wrong object, which `call()` swallowed — so the window appeared to send nothing when
+  it sent everything.
 
-Tests: **295** Rust, **231** front-end. The CI job prints whether np was on `PATH` (several tests are about np being
+Tests: **301** Rust, **299** front-end. The CI job prints whether np was on `PATH` (several tests are about np being
 absent and pass for the wrong reason on a machine that has it) and fails if the Rust count drops below its floor.
 
-## What to look at, if you tested 0.0.14
+## What to look at, if you tested 0.0.15
 
-1. Search a stem you know lives only inside longer words, get nothing, press **try matching word beginnings**. The
-   header should name the widened word and the row should be marked *from the start of a word*.
-2. Close Jott and reopen it: the checkbox should still be on. Turn it off and search again — the widened rows should go
-   away, not sit there unlabelled.
-3. Say no to embeddings in a fresh folder, then **Set up embeddings → Allow**. The card should read as what np did —
-   keys, file, size — with no lines left to copy.
-4. Put `provider = "local-model"` in `%APPDATA%\note-processor\config.toml` with no `model` line and run an embed: the
-   card should quote np's sentence about needing a model, and say what Jott did **not** change.
-5. Say no to embeddings in a folder whose settings np will not touch, then quit and reopen Jott and search. The window
-   should still be keyword-only: a decline you gave once must not have to be given again because the answer happened to
-   arrive while np was unreachable.
-6. After allowing a download, open that `config.toml`. You should be able to tell from the file alone which lines np
-   wrote and which single line came from Jott. If you cannot, that is a bug worth reporting.
+1. Open a note, press **Escape** — it closes. Reopen one, open **Settings** with Ctrl+comma, press **Escape**: the
+   panel goes, the note stays. Press again: now the note closes.
+2. Click into the search box and press **Escape**. The note behind it should stay.
+3. Open `INDEX.md`. It should read, say it is read-only, and refuse **Ctrl+S** in words. Renaming it from the tree menu
+   should still be refused — renaming is a write.
+4. In a vault with no folders, right-click a note → **Move to…** → type `ideas` → **create and move**. Then try a name
+   that cannot work (`..`): the dialog should stay open holding what you typed.
+5. Set *words only*, search something whose only match is a longer word, get nothing with no line claiming meanings ran;
+   set *both* and watch the row come back. Restart Jott: still on *words only*.
+6. In an indexed-but-never-embedded folder, search once, then open **Settings** → *meanings only*. You should get the
+   warning under that choice and an empty answer whose sentence blames the missing vectors rather than your notes.
 
 Previous releases are listed at <https://github.com/Ex-Bot-01/jott/releases>. Docs:
 [testing on Windows](https://github.com/Ex-Bot-01/jott/blob/main/docs/testing-on-windows.md) ·

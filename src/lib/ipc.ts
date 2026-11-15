@@ -6,6 +6,7 @@
 // and §18 says to show np's words instead of a translation of them.
 
 import { invoke } from '@tauri-apps/api/core'
+import type { SearchMode } from './searchSettings'
 import { listen } from '@tauri-apps/api/event'
 import { confirm, open } from '@tauri-apps/plugin-dialog'
 // The drawer's shapes live with the drawer (`lib/diagnostics.ts`), which pins them against the Rust key sets.
@@ -44,6 +45,9 @@ export interface NoteContent {
   /** §18.13's unsaved buffer from an earlier session. `hash` is what the buffer held when it was mirrored,
    * so "this is the text you already have on screen" is checkable rather than assumed. */
   mirrored?: { text: string; mtimeMs: number; hash: string }
+  /** Jott may show this file and may not write it — true for what note-processor publishes at the vault root. The
+   *  window shows a display rather than an editor, so nobody types into a buffer that would fail on save. */
+  readonly?: boolean
 }
 
 export interface WriteResult {
@@ -190,6 +194,10 @@ export interface IpcError {
     | 'npGone'
     | 'npRefused'
     | 'npTooOld'
+    /** Jott was asked for a search mode it cannot spell to note-processor. Its own verdict, raised at the boundary:
+     *  the two sides are different languages with no compiler between them, so an unknown label has to come back as a
+     *  sentence naming what is accepted rather than as a quiet `hybrid`. */
+    | 'badMode'
     | 'io'
   message: string
 }
@@ -250,10 +258,11 @@ export const moveEntry = (from: string, to: string) => invoke<void>('move_entry'
 export const mirrorBuffer = (rel: string, text: string) => invoke<void>('mirror_buffer', { rel, text })
 /** §18.13's "Discard it": without this the draft would reappear next time the note is opened. */
 export const discardMirror = (rel: string) => invoke<void>('discard_mirror', { rel })
-/** `prefix` is the window's "match word beginnings" toggle: always sent, because np's own default would otherwise
-    decide what somebody's search meant. */
-export const searchVault = (query: string, limit: number, prefix: boolean) =>
-  invoke<SearchResults>('search_vault', { query, limit, prefix })
+/** Ask note-processor. `prefix` (the "match word beginnings" toggle) and `mode` (which engine matches) are sent every
+ *  time rather than omitted: both change what the query *means*, and leaving either out hands the decision to a
+ *  default in another process — which is how a search ends up answering a question nobody asked. */
+export const searchVault = (query: string, limit: number, prefix: boolean, mode: SearchMode) =>
+  invoke<SearchResults>('search_vault', { query, limit, prefix, mode })
 export const ingestAll = () => invoke<void>('ingest_all')
 /** What np answered when the consent button was pressed (`ConsentAnswerDto` in Rust). The four words of `autoFetch`
  *  are the whole difference between "the guardrail is down" and "Jott could not lower it", so they travel as data. */

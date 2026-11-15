@@ -14,6 +14,7 @@ export type Shortcut =
   | 'save'
   | 'search'
   | 'diagnostics'
+  | 'settings'
   | 'close-drawer'
 
 type KeyLike = { ctrlKey: boolean; metaKey: boolean; shiftKey: boolean; key: string }
@@ -41,11 +42,48 @@ export function shortcutFor(event: KeyLike): Shortcut | null {
       return 'rename'
     case 'f':
       return 'search'
+    // Ctrl+, is the conventions' key for preferences. Comma without a modifier is a keystroke in a sentence, and
+    // Ctrl+Shift+, is nobody's binding — both must fall through rather than throw a panel over the note.
+    case ',':
+      return 'settings'
     case 's':
       return 'save'
     default:
       return null
   }
+}
+
+/** What one press of Escape should dismiss, given what is on screen.
+ *
+ *  Several things can be "the thing I want out of my way", and the wrong order makes the key feel broken: closing
+ *  a note while a menu still covers the vault reads as throwing work away to hide an overlay. So the topmost wins,
+ *  one step per press.
+ *
+ *  `typing` stands down only the last step. Escape inside a text target should still dismiss something that covers
+ *  the screen — but it must not close the note someone is writing, which is why the tester's new close button and
+ *  this key share one rule rather than two. */
+export function escapeAction(facts: {
+  menuOpen: boolean
+  settingsOpen: boolean
+  aboutOpen: boolean
+  /** A dialog or the trash confirmation: something was asked, and Escape is how people say "neither". */
+  dialogOpen: boolean
+  drawerOpen: boolean
+  noteOpen: boolean
+  typing: boolean
+}): 'menu' | 'settings' | 'about' | 'dialog' | 'drawer' | 'note' | 'nothing' {
+  // Every overlay in the window is a fact here, not a handler of its own. Two components each listening on `window`
+  // for Escape means one press dismisses several things — and because this function did not know About or the dialogs
+  // existed, it went on to answer "close the note" behind them. One press, one thing, topmost first, decided once.
+  if (facts.menuOpen) return 'menu'
+  // The panel covers the editor and the drawer both, so it goes first; it is also the one thing a person opens
+  // deliberately and closes by reaching for Escape out of habit.
+  if (facts.settingsOpen) return 'settings'
+  if (facts.aboutOpen) return 'about'
+  if (facts.dialogOpen) return 'dialog'
+  if (facts.drawerOpen) return 'drawer'
+  if (facts.noteOpen && !facts.typing) return 'note'
+  return 'nothing'
 }
 
 /** Delete and F2 have no modifier, and are the two bindings that must not fire while someone is typing a note. */

@@ -5,19 +5,30 @@
 
   import { onMount } from 'svelte'
   import About from './lib/About.svelte'
+  import Settings from './lib/Settings.svelte'
   import Diagnostics from './lib/Diagnostics.svelte'
   import Tree from './lib/Tree.svelte'
   import Editor from './lib/Editor.svelte'
   import StatusLine from './lib/StatusLine.svelte'
-  import { actionsFor, flattenTree, moveTargets, moveTo, notesAwaitingEmbedding, notesAwaitingIndex, targetFolder } from './lib/tree'
+  import {
+  actionsFor,
+  flattenTree,
+  moveTargets,
+  moveTo,
+  notesAwaitingEmbedding,
+  notesAwaitingIndex,
+  planMoveInto,
+  targetFolder,
+} from './lib/tree'
   import type { TreeAction } from './lib/tree'
-  import { bareKeyFor, isTypingTarget, shortcutFor } from './lib/shortcuts'
+  import { bareKeyFor, escapeAction, isTypingTarget, shortcutFor } from './lib/shortcuts'
   import {
     emptySearchSentence,
     hitSuffix,
     resultsHeadline,
     searchCaveat,
     searchIsCurrent,
+    semanticEmptySentence,
     suggestPrefix,
     wideningSentence,
   } from './lib/searchState'
@@ -31,7 +42,7 @@
   import { notifyBody, shouldNotify, type Permission } from './lib/notify'
   import type { SavePhase } from './lib/saveState'
   import * as ipc from './lib/ipc'
-  import { loadPrefix, savePrefix } from './lib/prefixSearch'
+  import { loadSettings, saveMode, savePrefix, type SearchMode } from './lib/searchSettings'
   import type { DiagnosticsSnapshot, TraceEvent } from './lib/diagnostics'
   import type { AboutInfo, ConsentHelp, FetchedRecord, IngestEvent, NoteContent, RegistryInfo, SearchResults, VaultListing } from './lib/ipc'
 
@@ -93,12 +104,27 @@
   let traceRows = $state<TraceEvent[]>([])
 
   let searchQuery = $state('')
-  /** Word-beginning matching (note-processor#6), remembered between runs and off until asked: widening a query
-   * changes what it means, so it is a choice somebody makes once about their own notes, not a default. */
-  let prefixOn = $state(loadPrefix(typeof localStorage === 'undefined' ? null : localStorage))
+  /** The two remembered search choices, read once at startup: which engine answers, and whether word beginnings
+   * count (note-processor#6). Both change what a query *means*, so each is decided once and expected to stay; both
+   * default to note-processor's own defaults rather than to an opinion of ours. */
+  const storedSettings = loadSettings(typeof localStorage === 'undefined' ? null : localStorage)
+  let prefixOn = $state(storedSettings.prefix)
+  let searchMode = $state<SearchMode>(storedSettings.mode)
+  /** The settings panel: the tester's "a settings menu to show this, so it isn't hidden". */
+  let showSettings = $state(false)
+  /** While an answer to the embeddings question is in flight, both of its buttons are down. Two presses, two
+   *  `embeddings.enable` calls, and np answers them in whichever order it likes. */
+  let consentBusy = $state(false)
+  /** True while np's settings are being read for the panel. */
+  let embeddingsLoading = $state(false)
   /** One search with word beginnings matched, asked for from an empty answer. Deliberately not the remembered
    *  preference: pressing "try this" once should not silently decide every future search. */
   let prefixOnce = $state(false)
+  /** Which folder the open buffer belongs to, captured when the note is opened. Core stores unsaved buffers per
+   *  folder, and a teardown flush can arrive after the window has moved on to another one — filing A's text under
+   *  B's name would give B an "unsaved changes" notice about words never typed into it. So a write that no longer
+   *  matches the folder on screen is dropped rather than guessed about. */
+  let bufferVault = $state<string | null>(null)
   /** The query that produced the hit this note was opened from. Kept apart from `searchQuery` on purpose: the
    * box keeps being typed in, and marks should follow the hit that was clicked, not every keystroke after it. */
   let hitQuery = $state('')
@@ -107,17 +133,34 @@
   let searchTimer: ReturnType<typeof setTimeout> | undefined
 
   /** `folder` is where a new note or folder lands; `rel` is what is being moved. */
-  let dialog = $state<{ kind: 'new' | 'rename' | 'folder' | 'move'; value: string; folder?: string; rel?: string } | null>(null)
+  let dialog = $state<{
+    kind: 'new' | 'rename' | 'folder' | 'move'
+    value: string
+    folder?: string
+    rel?: string
+    /** The move dialog's second half: a destination that does not exist yet. */
+    newFolder?: string
+  } | null>(null)
+  /** A refusal about the dialog itself, shown inside it: "that name walks out of the folder" is not a backend
+   *  failure and must not look like one — and it is useless if the dialog has already closed. */
+  let dialogSaid = $state<string | null>(null)
   let confirmDelete = $state<string | null>(null)
   /** The row menu: where it was opened, and for what. `null` means empty ground — only creating is on offer there. */
   let menu = $state<{ rel: string | null; x: number; y: number } | null>(null)
   /** Bumped to ask the editor to write its buffer now (Ctrl+S with focus outside it). */
   let saveSignal = $state(0)
   let searchBox = $state<HTMLInputElement | null>(null)
+  /** The tree, so closing a note has somewhere to put the focus. Focusable with -1 rather than a tab stop: it is a
+   *  destination for the keyboard, not another thing to tab through on the way to a note. */
+  let treeHost = $state<HTMLElement | undefined>()
 
   const rows = $derived(flattenTree(listing?.nodes ?? [], openFolders))
   /** A folder is "open" only while its parent is; `flattenTree` handles the hiding, this holds the wish. */
   const vaultName = $derived(listing ? basename(listing.vault) : null)
+  /** Whether what is selected belongs to note-processor rather than to the person. The row menu already refuses these
+   *  (`actionsFor` answers nothing); the toolbar has to agree with it, or the window offers two opposite answers
+   *  about whether a file is touchable — and core's refusal, though correct, arrives only after the click. */
+  const selectedIsGenerated = $derived(rows.find((row) => row.rel === selected)?.greyed ?? false)
 
   function actionLabel(action: TreeAction): string {
     switch (action) {
@@ -155,6 +198,17 @@
     consentOutcome = null
     cardClipFailed = false
     prefixOnce = false
+    // The search answer on screen is note-processor's report about the folder it was asked in — `vectors`, `indexed`,
+    // which words it widened. Carried across, the settings panel warns "this folder has no vectors yet" about a
+    // folder Jott has never searched, and the results pane lists files that are not in this vault. The open note goes
+    // with them: a `rel` means nothing in another folder, and leaving a dirty buffer attached after core switched
+    // sessions is how one folder's typing ends up written into another's file.
+    results = null
+    searchQuery = ''
+    hitQuery = ''
+    selected = null
+    note = null
+    bufferVault = null
   }
 
   async function openRecent(folder: string) {
@@ -226,7 +280,14 @@
   const cardText = $derived(cardFacts ? cardClipboard(cardFacts) : '')
 
   async function readConsentHelp() {
-    consentHelp = await call(ipc.embeddingsHelp)
+    // The panel distinguishes "still reading" from "read, and there is nothing to say": the two looked identical, and
+    // the panel printed the first one forever — including after a failed read.
+    embeddingsLoading = true
+    try {
+      consentHelp = await call(ipc.embeddingsHelp)
+    } finally {
+      embeddingsLoading = false
+    }
   }
 
   async function copyCardSettings() {
@@ -275,6 +336,7 @@
     if (!content) return
     note = content
     selected = rel
+    bufferVault = listing?.vault ?? null
     // The announcement did its job once the person moved on to working again (§4: say it, then get out of the way).
     modelReady = null
     // The marks follow the hit that was clicked. Clicking a row in the tree clears them, even though the
@@ -295,7 +357,19 @@
    * A write that came from the editor. Deliberately not wrapped in `call`: the editor has to see a failed
    * save to keep its own state honest, and the sentence travels back with the rejection (§4).
    */
+  /** Whether a write from the editor still belongs to the folder on screen (§18.13's per-folder mirror, §9's
+   *  "write it where it lives"). Opening another folder clears the selection, so this is a second line of defence
+   *  rather than the only one — and the ordering that makes it necessary is real: `open_vault` switches core's
+   *  session before the new listing arrives, so an editor destroyed by that switch would otherwise file its text in
+   *  the wrong folder. */
+  function bufferStillInPlace(): boolean {
+    return bufferVault === null || listing === null || bufferVault === listing.vault
+  }
+
   async function saveThroughCommand(rel: string, text: string) {
+    // No folder check is needed here because switching folders destroys the editor (`adopt` clears the selection),
+    // and a destroyed view cannot reach this function — `saveNow` returns as soon as it has no view. The mirror path
+    // below does need one: it fires from teardown, which is exactly the moment the session has already moved on.
     const result = await ipc.saveNote(rel, text)
     // The answer's hash is of the bytes that landed, so the buffer can stop calling itself unsaved.
     if (selected === rel && note) note = { ...note, diskHash: result.hash, diskMtimeMs: result.mtimeMs }
@@ -330,6 +404,13 @@
     if (shortcut !== null) {
       // Ctrl+S inside the editor is CodeMirror's own binding and it already prevented this event; asking again
       // would save a second time, which is at best a wasted round trip to np.
+      if (shortcut === 'save' && note?.readonly) {
+        // The refusal is core's to make and it does make it — but a keystroke that appears to do nothing is worse
+        // than one that says why, and "why" here is one sentence about whose file this is.
+        event.preventDefault()
+        notice = `${note.rel} is note-processor's own index; it cannot be edited in Jott.`
+        return
+      }
       if (shortcut === 'save') {
         // Ask before preventing: the editor's own binding has already taken the key when it has focus, and a second
         // save for one keystroke is its own bug.
@@ -339,10 +420,38 @@
         return
       }
       if (shortcut === 'close-drawer') {
-        menu = null
+        // One press, one thing dismissed, topmost first — the order lives in `escapeAction`, where it is tested.
+        // Closing a note while a menu still covers the vault reads as throwing work away to hide an overlay.
+        const step = escapeAction({
+          menuOpen: menu !== null,
+          settingsOpen: showSettings,
+          aboutOpen: showAbout,
+          // Both kinds of asking count: a rename dialog and the trash confirmation are dismissed the same way.
+          dialogOpen: dialog !== null || confirmDelete !== null,
+          drawerOpen: showDiagnostics,
+          noteOpen: selected !== null,
+          typing: isTypingTarget(event.target),
+        })
+        if (step === 'menu') menu = null
+        else if (step === 'settings') showSettings = false
+        else if (step === 'about') showAbout = false
+        else if (step === 'dialog') {
+          // The dialog's own refusal, not the note's: cancelling "Move to…" must leave what was open behind it open.
+          dialog = null
+          confirmDelete = null
+          dialogSaid = null
+        } else if (step === 'drawer') showDiagnostics = false
+        else if (step === 'note') closeNote()
         return
       }
       event.preventDefault()
+      if (shortcut === 'settings') {
+        // Ctrl+comma, the key every desktop app already uses for this. The panel is where the search choices live, and
+        // a person looking for them should not have to find the checkbox beside the search box first.
+        if (showSettings) showSettings = false
+        else await openSettings()
+        return
+      }
       if (shortcut === 'diagnostics') {
         // Ctrl+Shift+D, because "show me what the backend did" should not need a menu tour — and because the
         // alternative somebody reaches for otherwise is the log file, in a text editor, at 11pm.
@@ -387,7 +496,8 @@
         return
       case 'move':
         if (selected === null) return
-        dialog = { kind: 'move', value: '', rel: selected }
+        dialog = { kind: 'move', value: '', rel: selected, newFolder: '' }
+        dialogSaid = null
         return
       case 'delete':
         if (selected === null) return
@@ -415,6 +525,21 @@
     openFolders = new Set()
     selected = null
     note = null
+  }
+
+  /** Stop looking at this note. It writes nothing and forgets nothing: an unsaved buffer stays mirrored in core
+   *  (§18.13), so closing a window is not a decision about somebody's typing — it is only putting it out of sight.
+   *
+   *  One function because the button and Escape must not be able to disagree about what "close" means. */
+  function closeNote() {
+    if (selected === null) return
+    selected = null
+    note = null
+    // The marks came from a search hit; with no note open there is nothing for them to be on.
+    hitQuery = ''
+    // Focus goes back where the next intention is most likely to come from, rather than to nothing at all — which is
+    // also what makes Escape feel like a way out rather than a dead end.
+    treeHost?.focus()
   }
 
   /** §18.13's two answers. Both take the offer off screen; only *discard* touches the mirror file, since
@@ -476,7 +601,7 @@
     }
     const seq = ++searchSeq
     searching = true
-    const answer = await call(() => ipc.searchVault(query, 12, prefixOn || prefixOnce))
+    const answer = await call(() => ipc.searchVault(query, 12, prefixOn || prefixOnce, searchMode))
     // Typing "abc" fires three requests and np is free to answer them in any order. Without this guard the slowest
     // one wins, which reads as the search box ignoring what you typed last.
     if (!searchIsCurrent(seq, searchSeq)) return
@@ -493,6 +618,37 @@
     // then presses Ctrl+S would otherwise find the save key ignored.
     searchBox?.focus()
     if (searchQuery.trim()) void runSearch()
+  }
+
+  /** The panel's *how search matches* choice. Saved and re-run at once, for the same reason as the toggle: someone
+   *  changing a search setting wants to see what it does to the query in the box, not to the next one they type. */
+  function chooseMode(mode: SearchMode) {
+    searchMode = mode
+    saveMode(typeof localStorage === 'undefined' ? null : localStorage, mode)
+    // A one-off widening belongs to the answer it was offered against; changing engine is a new question.
+    prefixOnce = false
+    if (searchQuery.trim()) void runSearch()
+  }
+
+  /** The same choice made from the panel rather than the box: one writer per key, one re-run either way. */
+  function choosePrefix(on: boolean) {
+    prefixOn = on
+    savePrefix(typeof localStorage === 'undefined' ? null : localStorage, on)
+    if (searchQuery.trim()) void runSearch()
+  }
+
+  async function openSettings() {
+    showSettings = true
+    // Read what note-processor has recorded when the panel opens rather than trusting an older card: this is the
+    // place somebody comes to find out what is switched on, and the file may have been edited since we last looked.
+    void readConsentHelp()
+  }
+
+  /** The panel's two permission buttons. The same code path as the consent card's own button — one answer, one
+   *  writer — so both places show np's receipt rather than a hope about what the click did. */
+  async function setEmbeddings(granted: boolean) {
+    // The same path as the card's buttons, including its in-flight guard.
+    await answerConsent(granted)
   }
 
   /** A keystroke means a new question, and a new question starts from the remembered setting rather than from a
@@ -528,11 +684,45 @@
 
   async function moveEntry(from: string, to: string) {
     const moved = await call(() => ipc.moveEntry(from, to))
+    // A failed move leaves the dialog up. Closing it would say "done" about something that did not happen, and the
+    // note is still where it was — `problem` already carries the sentence about why.
+    if (moved === null) return
     dialog = null
-    if (moved !== null) {
-      await refresh()
-      if (selected === from) selected = to
+    await refresh()
+    if (selected === from) selected = to
+  }
+
+  /** Move this note into a folder, making the folder first when somebody named one that is not there yet.
+   *
+   *  The vault may have no folders at all — which is how the dialog read as "only an empty field" — and `create_folder`
+   *  already makes parents, so a nested name needs nothing special. Half a plan is the failure to design for: if the
+   *  folder could not be made, no move is sent and the dialog stays open with the name still in it. */
+  async function createAndMove(rel: string, typed: string) {
+    const plan = planMoveInto(rel, typed, moveTargets(rows, rel))
+    if (plan.kind === 'refuse') {
+      dialogSaid = plan.sentence
+      return
     }
+    let created: string | null = null
+    if (plan.kind === 'create-then-move') {
+      const made = await call(() => ipc.createFolder(plan.folder.replace(/\/$/, '')))
+      if (made === null) return
+      created = plan.folder
+    }
+    const moved = await call(() => ipc.moveEntry(rel, plan.to))
+    if (moved === null) {
+      // Two commands, and the first one worked. np's refusal lands in the status line wherever it goes, but a folder
+      // now exists in their vault that nobody asked for on its own — so the dialog says what it did before it says
+      // what went wrong, rather than leaving an unexplained directory behind.
+      if (created !== null) {
+        dialogSaid = `Created ${created.replace(/\/$/, '')}, but the move was refused. The empty folder is still there.`
+      }
+      return
+    }
+    dialog = null
+    dialogSaid = null
+    await refresh()
+    if (selected === rel) selected = plan.to
   }
 
   async function createNote(rel: string) {
@@ -571,6 +761,19 @@
   }
 
   async function answerConsent(granted: boolean) {
+    // Two doors ask the same question — the status-line card and the settings panel — and a second press while np is
+    // still answering would send a second `embeddings.enable` whose answer can arrive in either order. The guard
+    // lives here, on the one path both doors share, rather than in either button's markup.
+    if (consentBusy) return
+    consentBusy = true
+    try {
+      await recordConsentAnswer(granted)
+    } finally {
+      consentBusy = false
+    }
+  }
+
+  async function recordConsentAnswer(granted: boolean) {
     consent = null
     embeddingsOffer = null
     offerAskedFor = null
@@ -689,6 +892,14 @@
       {/if}
       <button
         type="button"
+        aria-label="Settings"
+        title="How search matches, and whether embeddings may download (Ctrl+,)"
+        onclick={() => void openSettings()}
+      >
+        Settings
+      </button>
+      <button
+        type="button"
         class="about"
         aria-label="About Jott"
         title="Versions, which np this is running, and where the files are"
@@ -722,13 +933,29 @@
         <button
           type="button"
           title="Rename this note"
-          disabled={selected === null}
+          disabled={selected === null || selectedIsGenerated}
           onclick={() => selected && (dialog = { kind: 'rename', value: selected })}
         >
           rename
         </button>
-        <button type="button" title="Move this note to the trash" disabled={selected === null} onclick={() => (confirmDelete = selected)}>
+        <button
+          type="button"
+          title="Move this note to the trash"
+          disabled={selected === null || selectedIsGenerated}
+          onclick={() => (confirmDelete = selected)}
+        >
           delete
+        </button>
+        <!-- A word, not a ×: an icon button in a toolbar of words reads as decoration, and "close what?" is exactly
+             the question a tester had to ask out loud. -->
+        <button
+          type="button"
+          data-testid="close-note"
+          title="Stop looking at this note (Escape). Nothing is written by closing it."
+          disabled={selected === null}
+          onclick={closeNote}
+        >
+          close
         </button>
       </span>
     </div>
@@ -742,7 +969,9 @@
                `indexed` and settles it (note-processor#5); behind that, the sentence comes from what the tree's own
                markers know — never from silence. -->
           <li class="none">
-            {emptySearchSentence(results, searchQuery.trim(), awaitingIndex)}
+            {searchMode === 'semantic'
+              ? semanticEmptySentence(results, searchQuery.trim())
+              : emptySearchSentence(results, searchQuery.trim(), awaitingIndex)}
             {#if results.offline}(np is offline — keyword search only){/if}
             {#if suggestPrefix(results, searchQuery.trim(), prefixOn || prefixOnce)}
               <!-- np says this folder is indexed and the whole-word search found nothing, so widening is the one
@@ -783,14 +1012,16 @@
         {/if}
       </ul>
     {:else}
-      <Tree
-        {rows}
-        open={openFolders}
-        selected={selected}
-        ontoggle={toggleFolder}
-        onselect={(rel) => void openNote(rel)}
-        onmenu={openMenu}
-      />
+      <div class="tree-host" bind:this={treeHost} tabindex="-1">
+        <Tree
+          {rows}
+          open={openFolders}
+          selected={selected}
+          ontoggle={toggleFolder}
+          onselect={(rel) => void openNote(rel)}
+          onmenu={openMenu}
+        />
+      </div>
     {/if}
 
     {#if modelReady}
@@ -912,6 +1143,28 @@
               <option value={folder}>{folder === '' ? 'the vault root' : folder}</option>
             {/each}
           </select>
+          <!-- A vault with no folders used to offer an empty list and nothing else. The destination can be a folder
+               that does not exist yet: name it, and this makes it and moves the note in — one intention, two commands. -->
+          <span class="new-folder">
+            <label for="newfolder" class="quiet">…or a new folder:</label>
+            <input
+              id="newfolder"
+              type="text"
+              data-testid="new-folder-name"
+              bind:value={dialog.newFolder}
+              placeholder="ideas"
+              spellcheck="false"
+              autocomplete="off"
+            />
+            <button
+              type="button"
+              data-testid="create-and-move"
+              onclick={() => dialog?.rel && void createAndMove(dialog.rel, dialog.newFolder ?? '')}
+            >
+              create and move
+            </button>
+          </span>
+          {#if dialogSaid !== null}<p class="warn" role="alert">{dialogSaid}</p>{/if}
         {:else}
           <label for="rel">
             {dialog.kind === 'new'
@@ -943,13 +1196,19 @@
       saveSignal={saveSignal}
       highlight={hitQuery}
       highlightPrefix={prefixOn}
+      readonly={note?.readonly ?? false}
       rel={selected}
       {note}
       {external}
       kept={keptRel === selected}
       onphase={reportPhase}
       onsave={saveThroughCommand}
-      onmirror={(rel, text) => void ipc.mirrorBuffer(rel, text)}
+      onmirror={(rel, text) => {
+        // A flush from a folder that is no longer on screen is dropped: the mirror is stored per folder, and this is
+        // the one write path that can still fire after `open_vault` has moved core to another session.
+        if (!bufferStillInPlace()) return
+        void ipc.mirrorBuffer(rel, text)
+      }}
       onusemirror={useMirror}
       ondiscardmirror={discardMirror}
       onreload={() => {
@@ -975,6 +1234,21 @@
       live={traceRows}
       jottVersion={about?.jottVersion ?? 'unknown'}
       onClose={() => (showDiagnostics = false)}
+    />
+  {/if}
+
+  {#if showSettings}
+    <Settings
+      mode={searchMode}
+      prefix={prefixOn}
+      vectors={results?.vectors ?? null}
+      cardFacts={cardFacts}
+      embeddingsLoading={embeddingsLoading}
+      consentBusy={consentBusy}
+      onmode={chooseMode}
+      onprefix={choosePrefix}
+      onconsent={(granted) => void setEmbeddings(granted)}
+      onClose={() => (showSettings = false)}
     />
   {/if}
 
