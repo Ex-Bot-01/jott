@@ -1,4 +1,4 @@
-use jott_core::np::resolve::{install_hint, resolve_np, NpMissing, NpSource, Os};
+use jott_core::np::resolve::{install_hint, min_version_text, resolve_np, NpMissing, NpSource, Os};
 use std::fs;
 use std::path::Path;
 
@@ -94,7 +94,9 @@ fn hints_name_the_asset_for_that_platform() {
     let linux = install_hint(&NpMissing::NotFound, Os::Linux);
     assert!(linux.contains("sha256sum -c SHA256SUMS.txt"), "{linux}");
     let old = install_hint(&NpMissing::TooOld { found: "0.2.3".into() }, Os::Linux);
-    assert!(old.contains("0.2.3") && old.contains("0.4.0"), "{old}");
+    // Names what was found and what is needed, both from constants — a hint quoting a floor the code does not enforce
+    // sends someone to fetch a build Jott would then refuse.
+    assert!(old.contains("0.2.3") && old.contains(&min_version_text()), "{old}");
 }
 
 /// Two files state which np Jott wants and nothing but this test makes them agree: `packaging/np-pin.json` is what
@@ -122,20 +124,55 @@ fn the_hint_names_the_np_the_installer_ships() {
 #[test]
 fn version_floor_is_compared_numerically() {
     use jott_core::np::handshake::{check_version, MIN_NP};
-    assert_eq!(MIN_NP, (0, 4, 0));
-    assert!(check_version("0.4.0").is_ok());
+    assert_eq!(MIN_NP, (0, 5, 1));
+    assert!(check_version("0.5.1").is_ok());
     assert!(check_version("0.10.0").is_ok(), "string compare would reject this");
     assert!(matches!(check_version("0.2.9"), Err(NpMissing::TooOld { .. })));
     assert!(matches!(check_version("nightly-2026"), Err(NpMissing::NoProtocol)));
 }
 
-/// 0.3.1 is behind now, and not for tidiness. It could not say whether a folder had ever been indexed or which half
-/// of a search ran (note-processor#5), it re-indexed a whole vault over a trailing backslash (#4), and it quoted no
-/// price for the download a consent prompt has to name (#3). Jott still *reads* its older answers — every 0.4.0 key
-/// is optional on the wire — but a build that cannot answer those questions is not one to install by default.
+/// Every release below 0.5.1 is behind, each for its own measured reason: 0.3.1 could not say whether a folder had
+/// ever been indexed or which half of a search ran (#5), re-indexed a whole vault over one trailing backslash (#4) and
+/// quoted no price for the download a consent prompt has to name (#3); 0.4.0 fixed all three but had neither
+/// `embeddings.enable` (#7) nor prefix matching (#6). Jott still *reads* an older answer — every newer key is optional
+/// on the wire — but a backend that cannot take a consent answer is not one to install by default.
 #[test]
-fn np_0_3_1_is_now_below_the_floor() {
+fn every_release_below_the_floor_is_refused_by_name() {
     use jott_core::np::handshake::check_version;
-    assert!(matches!(check_version("0.3.1"), Err(NpMissing::TooOld { .. })));
-    assert!(check_version("0.4.0").is_ok());
+    for version in ["0.3.1", "0.4.0", "0.5.0"] {
+        let Err(NpMissing::TooOld { found }) = check_version(version) else {
+            panic!("{version} is below the floor and must be refused, not accepted");
+        };
+        assert_eq!(found, version, "the refusal names what it found: {found}");
+    }
+}
+
+/// 0.5.1 is the floor because two things Jott used to work around became np's own job, and a build that cannot do them
+/// would leave the window explaining settings it could have written itself:
+///
+/// - `embeddings.enable` / `embeddings.disable` (note-processor#7) — measured on 0.5.1: the answer names which keys it
+///   changed, the price of the fetch, and the file it wrote; an id this build does not pin is refused rather than
+///   half-applied.
+/// - prefix matching (#6) — `{"prefix": true}` reaches *grandmother* from `grand` and says so in `prefix_used`,
+///   `prefix_terms` and each hit's `matched_exactly`.
+/// - and 0.5.1 specifically, not 0.5.0: the provenance comment it writes into someone's `config.toml` names the method
+///   over `np serve` instead of a terminal command nobody typed (#10). An audit trail that quotes a lie is worse than
+///   no audit trail, and Jott quotes it.
+#[test]
+fn np_0_5_0_is_below_the_floor_and_says_which_version_to_get() {
+    use jott_core::np::handshake::check_version;
+    assert!(matches!(check_version("0.5.0"), Err(NpMissing::TooOld { .. })));
+    assert!(check_version("0.5.1").is_ok());
+    assert!(check_version("0.6.0").is_ok(), "a newer np is still np");
+
+    let floor = jott_core::np::resolve::min_version_text();
+    assert_eq!(floor, "0.5.1", "the sentence a refusal quotes and the constant must be one number");
+}
+
+#[test]
+fn the_bundled_asset_names_the_release_we_require() {
+    use jott_core::np::resolve::{asset_for, NP_RELEASE_VERSION};
+    assert_eq!(NP_RELEASE_VERSION, "0.5.1");
+    assert_eq!(asset_for(Os::Windows).as_deref(), Some("np-0.5.1-x86_64-pc-windows-gnu-cross.zip"));
+    assert_eq!(asset_for(Os::Linux).as_deref(), Some("np-0.5.1-x86_64-unknown-linux-gnu.tar.gz"));
 }

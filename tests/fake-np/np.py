@@ -37,10 +37,25 @@ if path := os.environ.get("FAKE_NP_SCENARIO"):
 INITIALIZE = SCENARIO.get("initialize", {
     "data_dir": "/fake/data",
     "features": {"fetch": True, "local_model": True, "vision": False},
-    "methods": ["status.get", "initialize", "search", "scan", "embed", "models.list", "links.list", "shutdown"],
+    # Ten methods as of 0.5.x: the eight of 0.4.0 plus the two consent doors (#7). A client that reads this list to
+    # decide what it may ask must see what the real binary answers, or Jott's feature-detection is tested against a
+    # backend nobody ships.
+    "methods": [
+        "status.get",
+        "initialize",
+        "search",
+        "scan",
+        "embed",
+        "models.list",
+        "links.list",
+        "embeddings.enable",
+        "embeddings.disable",
+        "shutdown",
+    ],
     # What this stand-in emulates. Bump it with `packaging/np-pin.json`, and read the release notes before you do:
-    # 0.4.0 changed when `progress` appears (below) and added keys to `search` and `models.list`.
-    "np": "0.4.0",
+    # 0.4.0 changed when `progress` appears (below) and added keys to `search` and `models.list`; 0.5.0 opened
+    # `embeddings.enable`/`embeddings.disable` and prefix matching; 0.5.1 fixed the provenance line those doors write.
+    "np": "0.5.1",
     "protocol": 1,
 })
 
