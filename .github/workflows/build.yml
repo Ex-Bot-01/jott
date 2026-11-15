@@ -23,7 +23,10 @@ jobs:
           npm run build
           npx svelte-check --tsconfig ./tsconfig.app.json --output human
       - uses: dtolnay/rust-toolchain@stable
-        with: { components: rustfmt, clippy }
+        # Quoted as one value: `{ components: rustfmt, clippy }` parsed as two inputs and the runner
+        # answered "Unexpected input(s) 'clippy'" — the component was never asked for, and a gate that is not
+        # installed cannot fail.
+        with: { components: "rustfmt,clippy" }
       # Several tests are about what happens when np is *not installed*, and they can pass for the wrong reason on
       # a machine that has it. The runner has no np; this says so in the log, so "the suite was green" also carries
       # the evidence that the absence tests were honest.
