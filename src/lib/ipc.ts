@@ -255,7 +255,26 @@ export const discardMirror = (rel: string) => invoke<void>('discard_mirror', { r
 export const searchVault = (query: string, limit: number, prefix: boolean) =>
   invoke<SearchResults>('search_vault', { query, limit, prefix })
 export const ingestAll = () => invoke<void>('ingest_all')
-export const setConsent = (granted: boolean) => invoke<void>('set_consent', { granted })
+/** What np answered when the consent button was pressed (`ConsentAnswerDto` in Rust). The four words of `autoFetch`
+ *  are the whole difference between "the guardrail is down" and "Jott could not lower it", so they travel as data. */
+export interface ConsentOutcome {
+  granted: boolean
+  /** np's refusal sentence, byte for byte. Non-null means np did not do the thing. */
+  npRefused: string | null
+  /** Which settings np moved itself, in the order it named them. Empty after an accepted yes: already recorded. */
+  changed: string[]
+  provider: string | null
+  /** The model np kept in mind. A decline keeps naming it — revoking permission is not erasing a choice. */
+  model: string | null
+  /** The file np says it wrote. Null means np did not say, which is not the same as "the file you would guess". */
+  persistedTo: string | null
+  fetchBytes: number | null
+  autoFetch: 'written' | 'untouched' | 'noConfigPath' | 'failed'
+  /** The sentence naming the file when `autoFetch` is `failed`. */
+  autoFetchError: string | null
+}
+
+export const setConsent = (granted: boolean) => invoke<ConsentOutcome>('set_consent', { granted })
 
 /** Whether setting embeddings up is still on the table: np's model id and folder when it can name them, and
     `null` when there is nothing to offer (`ConsentOffer` mirrors `jott_core::ingest::queue::ConsentOffer`). */

@@ -222,6 +222,52 @@ pub struct HitDto {
     pub matched_exactly: Option<bool>,
 }
 
+/// The receipt a consent button got back, in the shape the window can render (0.5.x, note-processor#7).
+///
+/// `auto_fetch` is one of four words — `written`, `untouched`, `noConfigPath`, `failed` — because "Jott wrote its key"
+/// and "Jott could not write its key" are different instructions to a person, and the wire has to be able to tell them
+/// apart. The TypeScript union in `ipc.ts` is pinned against these keys by `ipc.test.ts`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ConsentAnswerDto {
+    pub granted: bool,
+    /// np's own refusal sentence, unchanged. Non-null means np did not do the thing.
+    pub np_refused: Option<String>,
+    /// Which settings np moved itself, in the order it named them.
+    pub changed: Vec<String>,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    /// The file np says it wrote, as a path string. `None` means np did not say — not "the file you would guess".
+    pub persisted_to: Option<String>,
+    pub fetch_bytes: Option<u64>,
+    pub auto_fetch: String,
+    /// The sentence naming the file when `auto_fetch` is `failed`.
+    pub auto_fetch_error: Option<String>,
+}
+
+impl From<crate::ingest::consent::ConsentReceipt> for ConsentAnswerDto {
+    fn from(receipt: crate::ingest::consent::ConsentReceipt) -> ConsentAnswerDto {
+        use crate::ingest::consent::AutoFetch;
+        let (auto_fetch, auto_fetch_error) = match &receipt.auto_fetch {
+            AutoFetch::Written => ("written".to_string(), None),
+            AutoFetch::Untouched => ("untouched".to_string(), None),
+            AutoFetch::NoConfigPath => ("noConfigPath".to_string(), None),
+            AutoFetch::Failed { sentence } => ("failed".to_string(), Some(sentence.clone())),
+        };
+        ConsentAnswerDto {
+            granted: receipt.granted,
+            np_refused: receipt.np_refused,
+            changed: receipt.changed,
+            provider: receipt.provider,
+            model: receipt.model,
+            persisted_to: receipt.persisted_to.map(|path| path.display().to_string()),
+            fetch_bytes: receipt.fetch_bytes,
+            auto_fetch,
+            auto_fetch_error,
+        }
+    }
+}
+
 /// What `np://missing` carries: the reason, and the instructions for *this* platform (§2).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]

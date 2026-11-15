@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest'
 import {
   emptySearchSentence,
   hitSuffix,
+  suggestPrefix,
   wideningSentence,
   noResultsSentence,
   resultsHeadline,
@@ -144,5 +145,40 @@ describe('a row reached by a word beginning', () => {
     // A vector-only hit has no words to compare. Marking it "start of a word" would accuse the reader's typing of
     // something that was never tested, which is the opposite error from hiding a widened row.
     expect(hitSuffix(null)).toBeNull()
+  })
+})
+
+describe('offering the widening', () => {
+  const empty = { indexed: true as boolean | null, hits: [] as unknown[] }
+
+  it('offers it when a folder that could answer said nothing', () => {
+    // np says this workspace is indexed, the whole-word search came back empty, and the person is not already
+    // widening: that is the one moment where "try word beginnings" is a suggestion rather than a shrug.
+    expect(suggestPrefix(empty, 'grand', false)).toBe(true)
+  })
+
+  it('does not offer it when np says the folder has never been indexed', () => {
+    // Nothing to widen yet. Offering the toggle here would teach somebody to press a button that cannot help.
+    expect(suggestPrefix({ indexed: false, hits: [] }, 'grand', false)).toBe(false)
+  })
+
+  it('does not offer it when np did not say', () => {
+    // An older backend's silence is not evidence that an index exists.
+    expect(suggestPrefix({ indexed: null, hits: [] }, 'grand', false)).toBe(false)
+  })
+
+  it('does not offer it when something matched', () => {
+    expect(suggestPrefix({ indexed: true, hits: ['a.md'] }, 'grand', false)).toBe(false)
+  })
+
+  it('does not offer it on a blank query', () => {
+    for (const query of ['', '   ', '\t\n']) {
+      expect(suggestPrefix(empty, query, false), JSON.stringify(query)).toBe(false)
+    }
+  })
+
+  it('does not offer it when word beginnings are already on', () => {
+    // The empty answer already came from widening. Saying "try widening" would be the window arguing with itself.
+    expect(suggestPrefix(empty, 'grand', true)).toBe(false)
   })
 })

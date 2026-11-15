@@ -46,6 +46,9 @@ const searchSays: { indexed: boolean | null } = { indexed: null }
  *  `grand`, and np says so in `prefix_used`, `prefix_terms` and `matched_exactly`. */
 const widening = vi.hoisted(() => ({ on: false }))
 
+/** What `set_consent` hands back: np's own answer to the button (np 0.5.x). */
+const consentAnswer = vi.hoisted(() => ({ current: 'accepted' as 'accepted' | 'refused' }))
+
 /** Set by one test to make `search_vault` answer a slow query *later* than the query typed after it — the order np
  *  is free to hand back in, and the reason the window has to know which answer belongs on screen. */
 const slowSearch = vi.hoisted(() => ({ on: false }))
@@ -200,6 +203,32 @@ vi.mock('@tauri-apps/api/core', () => ({
         // reject into the void, and Vitest reads one unhandled rejection as a failed run even when every assertion
         // passed — so every command the window can legitimately send gets a stub, not just the ones a test waits on.
         return Promise.resolve()
+      case 'set_consent':
+        return Promise.resolve(
+          consentAnswer.current === 'accepted'
+            ? {
+                granted: true,
+                npRefused: null,
+                changed: ['embeddings.provider', 'embeddings.model'],
+                provider: 'local-model',
+                model: 'embeddinggemma-2',
+                persistedTo: 'C:\\Users\\chris\\AppData\\Roaming\\note-processor\\config.toml',
+                fetchBytes: 309_855_456,
+                autoFetch: 'written',
+                autoFetchError: null,
+              }
+            : {
+                granted: true,
+                npRefused: 'config io: no pinned model "no-such": this build can name "embeddinggemma-2"',
+                changed: [],
+                provider: null,
+                model: null,
+                persistedTo: null,
+                fetchBytes: null,
+                autoFetch: 'untouched',
+                autoFetchError: null,
+              },
+        )
       case 'embeddings_help':
         // What np's settings actually say. `incompleteSettings` is the state behind a tester's report: consent was
         // given, and np still has no embedding engine turned on.
@@ -385,6 +414,7 @@ describe('the window mounts', () => {
     commands.length = 0
     searchCalls.length = 0
     widening.on = false
+    consentAnswer.current = 'accepted'
     scenario.current = 'empty'
     incompleteSettings.current = false
     confirmed.current = false
@@ -1033,6 +1063,99 @@ describe('the window mounts', () => {
     expect(marks).toEqual(['grand'])
 
     widening.on = false
+    expect(errors).toEqual([])
+  })
+
+
+  it('lets note-processor’s own answer fill the card', async () => {
+    // The point of np 0.5.x (`embeddings.enable`, note-processor#7): pressing Allow gets an *answer*, and the card
+    // should quote that answer instead of going on telling somebody to paste lines into a file that was just written
+    // for them.
+    incompleteSettings.current = true
+    scenario.current = 'needs-embedding'
+    confirmed.current = true
+    const { errors } = await start()
+
+    await vi.waitFor(() => expect(document.body.textContent ?? '').toContain('indexed but not embedded'))
+    const button = [...document.querySelectorAll('button')].find((b) => b.textContent === 'Set up embeddings')
+    button!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+
+    const card = await vi.waitFor(() => {
+      const el = document.querySelector('[data-testid="consent-card"]')
+      expect(el, 'an answer from np belongs on the card').not.toBeNull()
+      return el as HTMLElement
+    }, { timeout: 2000 })
+
+    expect(card.textContent).toContain('note-processor wrote embeddings.provider and embeddings.model')
+    expect(card.textContent).toContain('AppData')
+    // The paste block is gone: two contradictory instructions on one screen read as a window that did not hear itself.
+    expect(card.textContent).not.toContain('provider = "local-model"')
+    expect(card.textContent).toContain('Copy what happened')
+    // Jott's part, stated beside np's — the card does not claim credit for settings it never wrote.
+    expect(card.textContent).toContain('models.auto_fetch = true')
+
+    incompleteSettings.current = false
+    expect(errors).toEqual([])
+  })
+
+  it('says what np refused and that Jott changed nothing of its own', async () => {
+    // A refusal has to be legible as a refusal. The important half is the guardrail: after a refused Yes,
+    // `models.auto_fetch` must read as untouched rather than as allowed.
+    incompleteSettings.current = true
+    scenario.current = 'needs-embedding'
+    confirmed.current = true
+    consentAnswer.current = 'refused'
+    const { errors } = await start()
+
+    await vi.waitFor(() => expect(document.body.textContent ?? '').toContain('indexed but not embedded'))
+    const button = [...document.querySelectorAll('button')].find((b) => b.textContent === 'Set up embeddings')
+    button!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+
+    const card = await vi.waitFor(() => {
+      const el = document.querySelector('[data-testid="consent-card"]')
+      expect(el, 'a refusal is the one thing the card must never soften').not.toBeNull()
+      return el as HTMLElement
+    }, { timeout: 2000 })
+
+    expect(card.textContent).toContain('no pinned model "no-such"')
+    expect(card.textContent).toContain('left models.auto_fetch alone')
+    expect(card.textContent).not.toContain('provider = "local-model"')
+
+    incompleteSettings.current = false
+    expect(errors).toEqual([])
+  })
+
+  it('offers word beginnings on an empty answer, once, without deciding for anybody', async () => {
+    // np says the folder is indexed and the whole-word search came back empty: the one moment where offering the
+    // widening can change the answer. Pressing it widens *this* query and leaves the remembered preference alone.
+    localStorage.removeItem(PREFIX_KEY)
+    searchSays.indexed = true
+    const { errors } = await start()
+
+    const box = document.querySelector('input[type="search"]') as HTMLInputElement
+    box.value = 'zzz'
+    box.dispatchEvent(new Event('input', { bubbles: true }))
+
+    const offer = await vi.waitFor(() => {
+      const el = document.querySelector('[data-testid="widen-offer"]') as HTMLButtonElement | null
+      expect(el, 'an indexed folder with no whole-word hits should offer the widening').not.toBeNull()
+      return el!
+    }, { timeout: 2000 })
+
+    searchCalls.length = 0
+    offer.click()
+    await vi.waitFor(() => expect(searchCalls.at(-1)?.prefix).toBe(true))
+    // The remembered choice is untouched — that is what the checkbox beside the box is for.
+    expect(localStorage.getItem(PREFIX_KEY)).toBeNull()
+    const toggle = document.querySelector('input[aria-label="Match word beginnings"]') as HTMLInputElement
+    expect(toggle.checked, 'a one-off offer must not move the toggle').toBe(false)
+
+    // Typing a new question starts from the remembered setting again.
+    box.value = 'zzzu'
+    box.dispatchEvent(new Event('input', { bubbles: true }))
+    await vi.waitFor(() => expect(searchCalls.at(-1)?.prefix).toBe(false))
+
+    searchSays.indexed = null
     expect(errors).toEqual([])
   })
 

@@ -94,3 +94,17 @@ export function wideningSentence(facts: { prefixUsed: boolean | null; prefixTerm
 export function hitSuffix(matchedExactly: boolean | null): string | null {
   return matchedExactly === false ? 'from the start of a word' : null
 }
+
+/** Should the empty answer offer word-beginning matching? Only in the one situation where pressing it can change
+    the answer: np says this folder *is* indexed, the whole-word search found nothing, the query is something, and the
+    person is not already widening — an offer that cannot help is noise dressed as help (§4). */
+export function suggestPrefix(
+  facts: { indexed: boolean | null; hits: unknown[] },
+  query: string,
+  prefixOn: boolean,
+): boolean {
+  if (prefixOn) return false
+  if (query.trim().length === 0) return false
+  if (facts.hits.length > 0) return false
+  return facts.indexed === true
+}

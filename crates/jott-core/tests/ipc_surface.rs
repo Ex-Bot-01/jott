@@ -9,7 +9,10 @@ use common::repo_root;
 use jott_core::diagnostics::{TraceEvent, TraceKind};
 use jott_core::ingest::consent::auto_fetch_allowed;
 use jott_core::ingest::queue::{IngestEvent, StateReason};
-use jott_core::ipc::{self, ConnectionState, ConsentHelp, ErrorKind, HitDto, NoteContent, RenameOutcome, SearchResults, VaultListing, WriteResult};
+use jott_core::ipc::{
+    self, ConnectionState, ConsentAnswerDto, ConsentHelp, ErrorKind, HitDto, NoteContent, RenameOutcome, SearchResults,
+    VaultListing, WriteResult,
+};
 use jott_core::np::outcomes::{EmbedReport, ScanReport};
 use jott_core::np::resolve::{NpMissing, NpSource, Os};
 use jott_core::np::{NpFeatures, NpInfo};
@@ -1550,4 +1553,62 @@ fn an_embed_report_that_fetched_a_model_pins_its_wire_keys() {
         value["embedded"]["fetched"],
         json!({ "id": "embeddinggemma-2", "bytesTotal": 309_855_456 })
     );
+}
+
+/// The consent receipt is the card’s whole claim about what just happened, so its keys are a contract with
+/// `src/lib/ipc.ts` like every other payload: renamed here, the card would say "np said nothing" where np said plenty.
+#[test]
+fn the_consent_receipt_is_named_exactly_as_ipc_ts_says() {
+    use jott_core::ingest::consent::{AutoFetch, ConsentReceipt};
+    let accepted = ConsentAnswerDto::from(ConsentReceipt {
+        granted: true,
+        np_refused: None,
+        changed: vec!["embeddings.provider".into(), "embeddings.model".into()],
+        provider: Some("local-model".into()),
+        model: Some("embeddinggemma-2".into()),
+        persisted_to: Some("/home/you/.config/note-processor/config.toml".into()),
+        fetch_bytes: Some(309_855_456),
+        auto_fetch: AutoFetch::Written,
+    });
+    assert_eq!(
+        serde_json::to_value(&accepted).expect("receipt"),
+        json!({ "granted": true, "npRefused": null,
+                "changed": ["embeddings.provider", "embeddings.model"],
+                "provider": "local-model", "model": "embeddinggemma-2",
+                "persistedTo": "/home/you/.config/note-processor/config.toml",
+                "fetchBytes": 309_855_456, "autoFetch": "written", "autoFetchError": null })
+    );
+
+    // A refusal carries np's sentence and the word `untouched`: the card must be able to say "Jott changed nothing"
+    // without inferring it from an absent field.
+    let refused = ConsentAnswerDto::from(ConsentReceipt {
+        granted: true,
+        np_refused: Some("config io: no pinned model".into()),
+        changed: vec![],
+        provider: None,
+        model: None,
+        persisted_to: None,
+        fetch_bytes: None,
+        auto_fetch: AutoFetch::Untouched,
+    });
+    assert_eq!(refused.auto_fetch, "untouched");
+    let value = serde_json::to_value(&refused).expect("refusal");
+    assert_eq!(value["npRefused"], json!("config io: no pinned model"));
+    assert_eq!(value["autoFetch"], json!("untouched"));
+    assert_eq!(value["changed"], json!([]));
+
+    // And the fourth state names the file it could not write, because "written" would be a lie about the guardrail.
+    let failed = ConsentAnswerDto::from(ConsentReceipt {
+        granted: true,
+        np_refused: None,
+        changed: vec![],
+        provider: Some("local-model".into()),
+        model: Some("embeddinggemma-2".into()),
+        persisted_to: None,
+        fetch_bytes: None,
+        auto_fetch: AutoFetch::Failed { sentence: "could not write /x/config.toml: permission denied".into() },
+    });
+    let value = serde_json::to_value(&failed).expect("failed");
+    assert_eq!(value["autoFetch"], json!("failed"));
+    assert_eq!(value["autoFetchError"], json!("could not write /x/config.toml: permission denied"));
 }
