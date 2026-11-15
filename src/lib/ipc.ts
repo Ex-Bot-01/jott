@@ -64,6 +64,10 @@ export interface SearchHit {
   score: number
   bm25: number | null
   cosine: number | null
+  /** Did this row match a word that was typed? `false` means np reached it by a **word beginning** (0.5.x,
+      note-processor#6) and the row says so beside the snippet. `null` means np never word-tested it — a meaning-only
+      hit — which is a different answer from a yes, and must not be rendered as one. */
+  matchedExactly: boolean | null
 }
 
 export interface SearchResults {
@@ -80,6 +84,11 @@ export interface SearchResults {
   semanticUsed: boolean | null
   /** np's sentence about this answer, byte for byte (§4): a refusal, a fetch, a workspace it never scanned. */
   notice: string | null
+  /** Did np widen any term to word beginnings? `null` from an older backend with no such flag: "did not widen" and
+      "did not say" are two different sentences to show somebody (§4). */
+  prefixUsed: boolean | null
+  /** Which words np widened, as it named them. The header may print these words and no others. */
+  prefixTerms: string[]
 }
 
 /** np's `models.list` cannot report an artifact size in 0.3.1, so `bytes` is null until something does. */
@@ -241,7 +250,10 @@ export const moveEntry = (from: string, to: string) => invoke<void>('move_entry'
 export const mirrorBuffer = (rel: string, text: string) => invoke<void>('mirror_buffer', { rel, text })
 /** §18.13's "Discard it": without this the draft would reappear next time the note is opened. */
 export const discardMirror = (rel: string) => invoke<void>('discard_mirror', { rel })
-export const searchVault = (query: string, limit: number) => invoke<SearchResults>('search_vault', { query, limit })
+/** `prefix` is the window's "match word beginnings" toggle: always sent, because np's own default would otherwise
+    decide what somebody's search meant. */
+export const searchVault = (query: string, limit: number, prefix: boolean) =>
+  invoke<SearchResults>('search_vault', { query, limit, prefix })
 export const ingestAll = () => invoke<void>('ingest_all')
 export const setConsent = (granted: boolean) => invoke<void>('set_consent', { granted })
 

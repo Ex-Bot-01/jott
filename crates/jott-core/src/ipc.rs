@@ -197,6 +197,11 @@ pub struct SearchResults {
     /// np's own sentence about this answer ("never been scanned", "the model was fetched by this search"). Named
     /// `notice` rather than `note` because everywhere else in Jott a note is somebody's file.
     pub notice: Option<String>,
+    /// 0.5.x+: did np widen any term to word beginnings? `None` from an older np that has no such flag — the window
+    /// prints "did not widen" and "did not say" as different sentences (§4).
+    pub prefix_used: Option<bool>,
+    /// Which words np widened, in its own words. The header may name these and nothing else.
+    pub prefix_terms: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -212,6 +217,9 @@ pub struct HitDto {
     pub score: f64,
     pub bm25: Option<f64>,
     pub cosine: Option<f64>,
+    /// Did this row match a word that was typed? `false` means np reached it by a **word beginning** and the row says
+    /// so. `null` means np never word-tested it — a meaning-only hit — which is not the same as a yes.
+    pub matched_exactly: Option<bool>,
 }
 
 /// What `np://missing` carries: the reason, and the instructions for *this* platform (§2).
@@ -757,9 +765,12 @@ impl VaultSession {
     /// Content search. Reader connection, so it answers while an embed is running — §18.1 measured
     /// 102.1 s for a search queued behind an embed on one connection, and a frozen overlay is the whole
     /// reason there are two connections.
-    pub async fn search(&self, query: &str, limit: u8) -> Result<SearchResults, IpcError> {
+    /// Content search. `prefix` is the window's "match word beginnings" toggle (note-processor#6): off unless asked,
+    /// because a vault full of identifiers does not want `grand` reporting *grandmother* unbidden — and when it is on,
+    /// np says which words it widened so the header can name them.
+    pub async fn search(&self, query: &str, limit: u8, prefix: bool) -> Result<SearchResults, IpcError> {
         let started = std::time::Instant::now();
-        let answer = self.pool.search(&self.vault, query, limit).await.map_err(|fault| {
+        let answer = self.pool.search(&self.vault, query, limit, prefix).await.map_err(|fault| {
             self.record_fault("search", started.elapsed(), fault.code, &fault.message);
             IpcError::np_fault(&fault)
         })?;
@@ -777,6 +788,8 @@ impl VaultSession {
             keyword_used: answer.keyword_used,
             semantic_used: answer.semantic_used,
             notice: answer.note,
+            prefix_used: answer.prefix_used,
+            prefix_terms: answer.prefix_terms,
         })
     }
 
@@ -1015,7 +1028,15 @@ impl From<crate::vault::files::LinkRef> for LinkRefDto {
 
 impl From<crate::np::outcomes::Hit> for HitDto {
     fn from(hit: crate::np::outcomes::Hit) -> HitDto {
-        HitDto { path: hit.path, snippet: hit.snippet, kind: hit.kind, score: hit.score, bm25: hit.bm25, cosine: hit.cosine }
+        HitDto {
+            path: hit.path,
+            snippet: hit.snippet,
+            kind: hit.kind,
+            score: hit.score,
+            bm25: hit.bm25,
+            cosine: hit.cosine,
+            matched_exactly: hit.matched_exactly,
+        }
     }
 }
 

@@ -71,6 +71,13 @@ describe('the search answer', () => {
     // what an older np sends — so the window would lose the fact and keep the doubt.
     expect(interfaceKeys(ipcTs, 'SearchResults').sort()).toEqual(rustFields(ipcRust, 'SearchResults').sort())
   })
+
+  it('carries every key Rust sends about one hit', () => {
+    // `matchedExactly` is the difference between a row that matched what somebody typed and a row np reached by a word
+    // beginning. Dropped on this side it becomes `undefined`, which renders exactly like a hit whose exactness nobody
+    // knows — so the widening would go unmarked on screen while every other test still passed.
+    expect(interfaceKeys(ipcTs, 'SearchHit').sort()).toEqual(rustFields(ipcRust, 'HitDto').sort())
+  })
 })
 
 describe('the consent card payload', () => {

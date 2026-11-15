@@ -57,11 +57,16 @@ pub async fn search(
     query: &str,
     limit: u8,
     mode: Mode,
+    // Widen terms to word beginnings (0.5.x, note-processor#6). Always sent, always a boolean: np's own default is
+    // off and Jott's toggle is off until asked, so `false` is the honest value rather than an omitted key that lets
+    // somebody else's default decide what a person's search meant.
+    prefix: bool,
 ) -> Result<SearchAnswer, NpFault> {
     let mut params = workspace_params(workspace);
     params["query"] = json!(query);
     params["limit"] = json!(limit);
     params["mode"] = json!(mode.label());
+    params["prefix"] = json!(prefix);
     let value = client.request("search", params).await?;
     search_answer(&value)
 }

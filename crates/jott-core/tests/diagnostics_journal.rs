@@ -183,7 +183,7 @@ async fn a_search_through_the_session_writes_exactly_one_line() {
     let session = VaultSession::open_in(fake_np(), info(), vault.path(), Consent::Declined, None, app_data.path().to_path_buf())
         .with_journal(journal.clone());
 
-    session.search("A", 8).await.expect("the reader answers");
+    session.search("A", 8, false).await.expect("the reader answers");
 
     let lines = journal.read_lines().expect("log reads back");
     assert_eq!(lines.len(), 1, "one request, one line: {lines:?}");
@@ -212,7 +212,7 @@ async fn a_refused_search_is_recorded_as_a_fault_with_np_words() {
     )
     .with_journal(journal.clone());
 
-    session.search("anything", 8).await.expect_err("no np here");
+    session.search("anything", 8, false).await.expect_err("no np here");
     let lines = journal.read_lines().expect("log");
     assert_eq!(lines.len(), 1);
     assert_eq!(lines[0]["outcome"], "fault");

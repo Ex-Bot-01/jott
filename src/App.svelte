@@ -449,7 +449,7 @@
     }
     const seq = ++searchSeq
     searching = true
-    const answer = await call(() => ipc.searchVault(query, 12))
+    const answer = await call(() => ipc.searchVault(query, 12, false))
     // Typing "abc" fires three requests and np is free to answer them in any order. Without this guard the slowest
     // one wins, which reads as the search box ignoring what you typed last.
     if (!searchIsCurrent(seq, searchSeq)) return

@@ -190,7 +190,7 @@ async fn an_outcome_this_build_does_not_know_still_arrives_as_a_state() {
 async fn a_keyword_only_search_keeps_mode_vectors_and_reason_together() {
     let (_d, client) = spawn(json!({"replies": {"search": fixture_result(3)}})).await;
 
-    let answer = search(&client, &vault(), "hash", 8, Mode::Hybrid).await.unwrap();
+    let answer = search(&client, &vault(), "hash", 8, Mode::Hybrid, false).await.unwrap();
     assert_eq!(answer.mode, Mode::Keyword, "np answered which half ran, in `mode`");
     assert!(!answer.vectors);
     assert!(!answer.offline);
@@ -216,7 +216,7 @@ async fn a_search_that_names_why_a_half_was_missing_says_so() {
     }}}))
     .await;
 
-    let answer = search(&client, &vault(), "anything", 8, Mode::Hybrid).await.unwrap();
+    let answer = search(&client, &vault(), "anything", 8, Mode::Hybrid, false).await.unwrap();
     assert_eq!(answer.mode, Mode::Hybrid);
     assert!(!answer.vectors);
     assert_eq!(answer.reason.as_deref(), Some("provider-disabled"));
@@ -239,7 +239,7 @@ async fn a_semantic_only_hit_stays_distinguishable_from_a_zero_bm25() {
     }}}))
     .await;
 
-    let answer = search(&client, &vault(), "meaning", 8, Mode::Hybrid).await.unwrap();
+    let answer = search(&client, &vault(), "meaning", 8, Mode::Hybrid, false).await.unwrap();
     assert_eq!(answer.hits[0].bm25, None, "a hit only the vector list held has no bm25 at all");
     assert_eq!(answer.hits[0].snippet, None);
     assert_eq!(answer.hits[1].bm25, Some(0.0), "a real zero is a number np computed");
@@ -261,7 +261,7 @@ async fn a_newline_in_a_snippet_does_not_split_the_frame() {
     }}))
     .await;
 
-    let answer = search(&client, &vault(), "one\ntwo", 5, Mode::Keyword).await.unwrap();
+    let answer = search(&client, &vault(), "one\ntwo", 5, Mode::Keyword, false).await.unwrap();
     assert_eq!(answer.hits[0].snippet.as_deref(), Some("one\ntwo\nthree"));
     // The stream is still aligned: the next request gets its own answer, not the tail of that one.
     assert!(matches!(scan(&client, &vault()).await.unwrap(), ScanOutcome::Applied(_)));
@@ -352,7 +352,7 @@ async fn both_flavours_of_bad_params_keep_their_own_sentence() {
     }}))
     .await;
 
-    let mode = search(&client, &vault(), "q", 5, Mode::Keyword).await.unwrap_err();
+    let mode = search(&client, &vault(), "q", 5, Mode::Keyword, false).await.unwrap_err();
     assert_eq!((mode.code, mode.message.as_str()), (-32602, "unknown mode `telepathy`: write hybrid, semantic or keyword"));
     let query = scan(&client, &vault()).await.unwrap_err();
     assert_eq!((query.code, query.message.as_str()), (-32602, "params need a \"query\" string"));
@@ -431,7 +431,7 @@ async fn a_search_answer_says_whether_the_folder_was_ever_indexed() {
     }}}))
     .await;
 
-    let answer = search(&client, &vault(), "kumquat", 8, Mode::Hybrid).await.unwrap();
+    let answer = search(&client, &vault(), "kumquat", 8, Mode::Hybrid, false).await.unwrap();
     assert_eq!(answer.indexed, Some(false), "nothing matched and nothing *could* have: different sentences");
     assert_eq!(answer.keyword_used, Some(true));
     assert_eq!(answer.semantic_used, Some(false), "the meaning half did not run, whatever `mode` says");
@@ -445,7 +445,7 @@ async fn a_search_answer_says_whether_the_folder_was_ever_indexed() {
 async fn an_older_np_leaves_the_new_keys_absent_rather_than_false() {
     let (_d, client) = spawn(json!({"replies": {"search": fixture_result(3)}})).await;
 
-    let answer = search(&client, &vault(), "hash", 8, Mode::Hybrid).await.unwrap();
+    let answer = search(&client, &vault(), "hash", 8, Mode::Hybrid, false).await.unwrap();
     assert_eq!(answer.indexed, None);
     assert_eq!(answer.keyword_used, None);
     assert_eq!(answer.semantic_used, None);
@@ -721,6 +721,104 @@ async fn the_stand_in_refuses_a_parameter_np_would_refuse() {
         panic!("a misspelled parameter must not be reported as consent recorded");
     };
     assert_eq!(fault.code, -32602, "{fault}");
+
+    client.shutdown().await.unwrap();
+}
+
+// ---- prefix matching (note-processor#6). Measured against np 0.5.1 on a vault holding "grandmother":
+// `grand` finds nothing until the request asks for word beginnings, and then np says which words it widened.
+
+fn grand_note_reply(prefix: bool) -> serde_json::Value {
+    if prefix {
+        json!({"hits": [{"path": "a.md", "snippet": "\u{2026}my [grandmother] kept\u{2026}", "kind": "note",
+                          "score": 1.1, "bm25": null, "cosine": 0.82, "matched_exactly": false}],
+               "mode": "semantic", "vectors": true, "offline": false, "reason": null,
+               "indexed": true, "keyword_used": true, "semantic_used": true,
+               "prefix_used": true, "prefix_terms": ["grand"]})
+    } else {
+        json!({"hits": [], "mode": "hybrid", "vectors": true, "offline": false, "reason": null,
+               "indexed": true, "keyword_used": true, "semantic_used": true,
+               "prefix_used": false, "prefix_terms": []})
+    }
+}
+
+/// The default answer says plainly that nothing was widened. Jott must be able to tell "np did not widen" from
+/// "np did not say", because the first is a fact to print and the second is silence about an older build.
+#[tokio::test]
+async fn an_ordinary_search_says_nothing_was_widened() {
+    let record = std::env::temp_dir().join(format!("jott-prefix-off-{}.ndjson", std::process::id()));
+    let _ = std::fs::remove_file(&record);
+    let (_d, client) = spawn(json!({
+        "record": record.display().to_string(),
+        "replies": {"search": grand_note_reply(false)}
+    }))
+    .await;
+
+    let answer = search(&client, &vault(), "grand", 8, Mode::Hybrid, false).await.expect("np answered");
+    assert_eq!(answer.prefix_used, Some(false), "np said it did not widen");
+    assert_eq!(answer.prefix_terms, Vec::<String>::new());
+
+    // The parameter went out. A `prefix` that is never sent is the whole feature missing with every assertion above
+    // still passing, which is precisely why this test reads the wire rather than trusting the call site.
+    let lines = std::fs::read_to_string(&record).unwrap();
+    let sent: Vec<serde_json::Value> = lines
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("one call per line"))
+        .collect();
+    let search = sent.iter().find(|call| call["method"] == json!("search")).expect("a search was recorded");
+    assert_eq!(search["params"]["prefix"], json!(false), "{search}");
+
+    let _ = std::fs::remove_file(&record);
+    client.shutdown().await.unwrap();
+}
+
+/// With the flag on, np widens and **says** which words it widened. `prefix_terms` is what lets the window say
+/// "`grand` → grandmother" instead of claiming the note matched the typing.
+#[tokio::test]
+async fn a_widened_search_names_the_words_np_used() {
+    let record = std::env::temp_dir().join(format!("jott-prefix-on-{}.ndjson", std::process::id()));
+    let _ = std::fs::remove_file(&record);
+    let (_d, client) = spawn(json!({
+        "record": record.display().to_string(),
+        "replies": {"search": grand_note_reply(true)}
+    }))
+    .await;
+
+    let answer = search(&client, &vault(), "grand", 8, Mode::Hybrid, true).await.expect("np widened");
+    assert_eq!(answer.prefix_used, Some(true));
+    assert_eq!(answer.prefix_terms, vec!["grand".to_string()]);
+    assert_eq!(answer.hits.len(), 1);
+    assert_eq!(answer.hits[0].matched_exactly, Some(false), "this row was reached by a word beginning");
+
+    let lines = std::fs::read_to_string(&record).unwrap();
+    let search = lines
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("one call per line"))
+        .find(|call| call["method"] == json!("search"))
+        .expect("a search was recorded");
+    assert_eq!(search["params"]["prefix"], json!(true), "{search}");
+
+    let _ = std::fs::remove_file(&record);
+    client.shutdown().await.unwrap();
+}
+
+/// A hit with no `matched_exactly` key has never been word-tested — a vector-only hit. `None`, not `true`: reading
+/// absence as exactness would mark a meaning-match as a word match, which is the same lie in the other direction.
+#[tokio::test]
+async fn a_hit_np_never_word_tested_stays_unknown() {
+    let (_d, client) = spawn(json!({"replies": {"search": json!({
+        "hits": [{"path": "b.md", "snippet": null, "kind": "note", "score": 0.6, "bm25": null, "cosine": 0.71}],
+        "mode": "semantic", "vectors": true, "offline": false, "reason": null
+    })}}))
+    .await;
+
+    let answer = search(&client, &vault(), "grand", 8, Mode::Semantic, false).await.expect("answered");
+    assert_eq!(answer.hits[0].matched_exactly, None, "absence is not exactness");
+    // An np that predates the flag answers nothing about widening — and that stays unknown rather than "did not".
+    assert_eq!(answer.prefix_used, None, "silence from an older np is not a No");
+    assert!(answer.prefix_terms.is_empty());
 
     client.shutdown().await.unwrap();
 }

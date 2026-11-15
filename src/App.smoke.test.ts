@@ -113,6 +113,8 @@ vi.mock('@tauri-apps/api/core', () => ({
               score: 1.4,
               bm25: 1.4,
               cosine: null,
+              // This stub stands for a backend that has no word-beginning flag: unknown, not "matched exactly".
+              matchedExactly: null,
             },
           ],
           mode: 'keyword',
@@ -125,6 +127,8 @@ vi.mock('@tauri-apps/api/core', () => ({
           keywordUsed: true,
           semanticUsed: false,
           notice: null,
+          prefixUsed: null,
+          prefixTerms: [],
         })
         if (slowSearch.on && query === 'kumquat') {
           return new Promise((resolve) => setTimeout(() => resolve(hit('stale.md', '…an old kumquat page…')), 400))
@@ -141,6 +145,8 @@ vi.mock('@tauri-apps/api/core', () => ({
             keywordUsed: true,
             semanticUsed: false,
             notice: null,
+            prefixUsed: null,
+            prefixTerms: [],
           })
         }
         return Promise.resolve(hit('inbox.md', '…a kumquat tree in the corner…'))

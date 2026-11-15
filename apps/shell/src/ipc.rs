@@ -354,8 +354,13 @@ pub fn discard_mirror(rel: String, app: State<'_, App>) -> Result<(), IpcError> 
 }
 
 #[tauri::command]
-pub async fn search_vault(query: String, limit: u8, app: State<'_, App>) -> Result<SearchResults, IpcError> {
-    app.current()?.search(&query, limit).await
+pub async fn search_vault(
+    query: String,
+    limit: u8,
+    prefix: bool,
+    app: State<'_, App>,
+) -> Result<SearchResults, IpcError> {
+    app.current()?.search(&query, limit, prefix).await
 }
 
 #[tauri::command]

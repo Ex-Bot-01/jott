@@ -337,6 +337,11 @@ pub struct Hit {
     /// `None` means the keyword half did not answer this hit — not that it scored zero.
     pub bm25: Option<f64>,
     pub cosine: Option<f64>,
+    /// 0.5.x (note-processor#6): did this row match a word the person typed? `Some(false)` means np reached it by a
+    /// **word beginning**, which the window says rather than letting the row look like an exact match. `None` means np
+    /// never word-tested it — a vector-only hit — and is not the same answer as `true`.
+    #[serde(default)]
+    pub matched_exactly: Option<bool>,
 }
 
 /// A search answer plus its provenance: the four keys that let an empty or half list explain
@@ -361,6 +366,12 @@ pub struct SearchAnswer {
     /// np's own sentence about what happened to this answer — e.g. "this workspace has never been scanned", or that
     /// it fetched a model while searching. Kept verbatim (§4); shown as Jott's words around it, never rewritten.
     pub note: Option<String>,
+    /// 0.5.x (note-processor#6): did np widen any term to word beginnings? `None` on an older np that has no flag —
+    /// "did not widen" and "did not say" are different things to print.
+    pub prefix_used: Option<bool>,
+    /// Which words np widened, as it named them. Empty whenever `prefix_used` is not true, and also when np widened
+    /// without telling us which; the window only ever claims the words in this list.
+    pub prefix_terms: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -378,6 +389,10 @@ struct RawSearchAnswer {
     semantic_used: Option<bool>,
     #[serde(default)]
     note: Option<String>,
+    #[serde(default)]
+    prefix_used: Option<bool>,
+    #[serde(default)]
+    prefix_terms: Vec<String>,
 }
 
 pub fn search_answer(value: &Value) -> Result<SearchAnswer, NpFault> {
@@ -392,6 +407,8 @@ pub fn search_answer(value: &Value) -> Result<SearchAnswer, NpFault> {
             keyword_used: r.keyword_used,
             semantic_used: r.semantic_used,
             note: r.note,
+            prefix_used: r.prefix_used,
+            prefix_terms: r.prefix_terms,
         })
         .map_err(|e| shape_fault("search", e))
 }

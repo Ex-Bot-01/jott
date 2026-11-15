@@ -172,7 +172,7 @@ async fn the_tree_and_editor_work_with_no_np_anywhere_to_be_found() {
 
     session.save_note("b.md", "# B\n").expect("saving needs no np either");
     // Search does need it, and says so in one line the window can show.
-    let error = session.search("anything", 8).await.expect_err("np is not installed here");
+    let error = session.search("anything", 8, false).await.expect_err("np is not installed here");
     assert_eq!(error.kind, ErrorKind::NpGone);
 }
 
@@ -250,7 +250,7 @@ async fn a_search_answers_while_an_embed_is_still_running() {
     assert!(recorded(scenario_dir.path()).contains(&"embed".to_string()), "no embed was running: {:?}", recorded(scenario_dir.path()));
 
     let started = std::time::Instant::now();
-    let answer = session.search("A", 8).await.expect("the reader answers");
+    let answer = session.search("A", 8, false).await.expect("the reader answers");
     let waited = started.elapsed();
     assert!(waited < std::time::Duration::from_millis(400), "the search queued behind the embed: {waited:?}");
     assert_eq!(answer.mode, "keyword", "np's own word for which half answered (§18.11)");
@@ -396,8 +396,12 @@ async fn what_the_window_receives_is_named_exactly_as_ipc_ts_says() {
     let rename = serde_json::to_value(RenameOutcome { incoming_links: vec![] }).expect("rename");
     assert_eq!(rename, json!({ "incomingLinks": [] }));
 
+    // First the shape an older np answers with: every key the window reads is present and **null**, because it has to
+    // tell "np did not say" from "np said no". A missing key would be a third fact, arriving in TypeScript as
+    // `undefined` where no test would ever notice.
     let search = serde_json::to_value(SearchResults {
-        hits: vec![HitDto { path: "a.md".into(), snippet: None, kind: "note".into(), score: 1.0, bm25: None, cosine: None }],
+        hits: vec![HitDto { path: "a.md".into(), snippet: None, kind: "note".into(), score: 1.0, bm25: None,
+                            cosine: None, matched_exactly: None }],
         mode: "keyword".into(),
         vectors: false,
         offline: false,
@@ -406,11 +410,35 @@ async fn what_the_window_receives_is_named_exactly_as_ipc_ts_says() {
         keyword_used: None,
         semantic_used: None,
         notice: None,
+        prefix_used: None,
+        prefix_terms: vec![],
     })
     .expect("search");
-    assert_eq!(search, json!({ "hits": [{"path": "a.md", "snippet": null, "kind": "note", "score": 1.0, "bm25": null, "cosine": null}],
+    assert_eq!(search, json!({ "hits": [{"path": "a.md", "snippet": null, "kind": "note", "score": 1.0, "bm25": null,
+                                         "cosine": null, "matchedExactly": null}],
                                  "mode": "keyword", "vectors": false, "offline": false, "reason": null,
-                                 "indexed": null, "keywordUsed": null, "semanticUsed": null, "notice": null }));
+                                 "indexed": null, "keywordUsed": null, "semanticUsed": null, "notice": null,
+                                 "prefixUsed": null, "prefixTerms": [] }));
+
+    // …then 0.5.1's widened answer: np says it widened, names the word, and marks the row as not an exact match.
+    let widened = serde_json::to_value(SearchResults {
+        hits: vec![HitDto { path: "a.md".into(), snippet: Some("my [grandmother] kept".into()), kind: "note".into(),
+                            score: 1.1, bm25: None, cosine: Some(0.82), matched_exactly: Some(false) }],
+        mode: "hybrid".into(),
+        vectors: true,
+        offline: false,
+        reason: None,
+        indexed: Some(true),
+        keyword_used: Some(true),
+        semantic_used: Some(true),
+        notice: None,
+        prefix_used: Some(true),
+        prefix_terms: vec!["grand".into()],
+    })
+    .expect("widened search");
+    assert_eq!(widened["hits"][0]["matchedExactly"], json!(false), "a word-beginning row is not an exact match");
+    assert_eq!(widened["prefixUsed"], json!(true));
+    assert_eq!(widened["prefixTerms"], json!(["grand"]), "the header may name these words and no others");
 
     let note = serde_json::to_value(NoteContent {
         rel: "a.md".into(),
@@ -603,7 +631,7 @@ async fn a_vault_still_opens_when_np_cannot_be_asked_anything() {
 
     assert_eq!(session.listing().expect("the tree needs no np").nodes.len(), 1);
     session.save_note("b.md", "# B\n").expect("neither does a save");
-    assert_eq!(session.search("anything", 8).await.expect_err("np is not here").kind, ErrorKind::NpGone);
+    assert_eq!(session.search("anything", 8, false).await.expect_err("np is not here").kind, ErrorKind::NpGone);
 
     // And the `[embed]` button's queue does not spin: it fails its batch and moves on.
     session.ingest_all();
@@ -886,7 +914,7 @@ async fn the_trace_shows_what_the_session_asked_np() {
         harness.data.path().to_path_buf(),
     );
 
-    session.search("kumquat", 8).await.expect("the stand-in answers");
+    session.search("kumquat", 8, false).await.expect("the stand-in answers");
 
     let rows = session.trace().recent();
     let search = rows
@@ -930,7 +958,7 @@ async fn a_child_that_could_not_be_started_is_a_row_of_its_own() {
         harness.data.path().to_path_buf(),
     );
 
-    let err = session.search("anything", 8).await.expect_err("np is not here");
+    let err = session.search("anything", 8, false).await.expect_err("np is not here");
     assert_eq!(err.kind, ErrorKind::NpGone);
 
     let rows = session.trace().recent();
@@ -978,7 +1006,7 @@ async fn the_snapshot_shows_the_run_so_far() {
         harness.data.path().to_path_buf(),
     );
 
-    session.search("kumquat", 8).await.expect("the stand-in answers");
+    session.search("kumquat", 8, false).await.expect("the stand-in answers");
     let snapshot = session.diagnostics().await;
 
     assert!(snapshot.recent.iter().any(|row| row.method.as_deref() == Some("search")));
@@ -1153,7 +1181,7 @@ async fn a_refusal_from_np_is_not_reported_as_np_being_gone() {
         harness.data.path().to_path_buf(),
     );
 
-    let err = session.search("anything", 8).await.expect_err("np refused");
+    let err = session.search("anything", 8, false).await.expect_err("np refused");
     assert_eq!(err.kind, ErrorKind::NpRefused, "np answered; nothing is missing");
     assert_eq!(err.message, sentence, "and np's own sentence is the message (§4)");
 
@@ -1184,7 +1212,7 @@ async fn a_method_this_np_does_not_answer_says_which_floor_jott_needs() {
         harness.data.path().to_path_buf(),
     );
 
-    let err = session.search("anything", 8).await.expect_err("too old");
+    let err = session.search("anything", 8, false).await.expect_err("too old");
     assert_eq!(err.kind, ErrorKind::NpTooOld);
     assert!(
         err.message.contains(&jott_core::np::resolve::min_version_text()),
@@ -1258,7 +1286,7 @@ async fn np_is_asked_about_the_folder_and_not_one_spelling_of_it() {
         harness.data.path().to_path_buf(),
     );
 
-    session.search("kumquat", 8).await.expect("the stand-in answers");
+    session.search("kumquat", 8, false).await.expect("the stand-in answers");
     session.close().await;
 
     let lines = std::fs::read_to_string(&recorded).expect("the stand-in recorded what it was asked");
@@ -1388,7 +1416,7 @@ async fn the_window_is_told_what_ran_and_whether_there_was_an_index() {
         harness.data.path().to_path_buf(),
     );
 
-    let answer = session.search("kumquat", 8).await.expect("the stand-in answered");
+    let answer = session.search("kumquat", 8, false).await.expect("the stand-in answered");
     assert_eq!(answer.indexed, Some(false));
     assert_eq!(answer.keyword_used, Some(true));
     assert_eq!(answer.semantic_used, Some(false), "whatever `mode` claims, the vector half did not run");
