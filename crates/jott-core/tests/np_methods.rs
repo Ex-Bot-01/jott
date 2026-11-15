@@ -6,7 +6,7 @@
 mod common;
 
 use common::{fixture_result, spawn, vault};
-use jott_core::np::methods::{embed, initialize, models_list, scan, search};
+use jott_core::np::methods::{embed, embeddings_disable, embeddings_enable, initialize, models_list, scan, search};
 use jott_core::np::outcomes::{EmbedOutcome, Mode, ModelState, ScanOutcome};
 use jott_core::np::{NpError, NpMissing};
 use serde_json::json;
@@ -557,4 +557,170 @@ async fn an_embed_that_fetched_nothing_says_so_by_being_null() {
         panic!("outcome `current` is work finished");
     };
     assert_eq!(done.fetched, None);
+}
+
+// ---- the two consent doors (note-processor#7). Every document below was answered by np 0.5.1 on this box.
+
+/// "Allow the download" now has somewhere to go: np writes its own two keys and says which ones, where, and what the
+/// fetch will cost. Jott's job is to pass that answer on, not to describe settings it did not write.
+#[tokio::test]
+async fn enabling_embeddings_reports_what_np_changed_and_what_it_costs() {
+    // The stand-in appends `{"method":…, "params":…}` per call when a scenario names a record file, which is the only
+    // way to see what Jott actually sent: a param dropped on the floor would consent to something else, silently.
+    let record = std::env::temp_dir().join(format!("jott-enable-{}.ndjson", std::process::id()));
+    let _ = std::fs::remove_file(&record);
+    let (_d, client) = spawn(json!({
+        "record": record.display().to_string(),
+        "replies": {"embeddings.enable": {
+        "changed": ["embeddings.provider", "embeddings.model"],
+        "fetch": {"bytes_total": 309_855_456, "members": ["main"]},
+        "model": "embeddinggemma-2",
+        "persisted_to": "/home/you/.config/note-processor/config.toml",
+        "provider": "local-model"
+    }}}))
+    .await;
+
+    let answer = embeddings_enable(&client, "embeddinggemma-2").await.expect("np accepted the answer");
+    assert_eq!(answer.changed, vec!["embeddings.provider".to_string(), "embeddings.model".to_string()]);
+    assert_eq!(answer.provider.as_deref(), Some("local-model"));
+    assert_eq!(answer.model.as_deref(), Some("embeddinggemma-2"));
+    assert_eq!(answer.fetch_bytes, Some(309_855_456), "the price is np's number, not ours");
+    assert_eq!(answer.persisted_to.as_deref(), Some(Path::new("/home/you/.config/note-processor/config.toml")));
+
+    // …and it asked about the model we named.
+    let lines = std::fs::read_to_string(&record).expect("the stand-in recorded its calls");
+    let asked: Vec<serde_json::Value> = lines
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("one call per line"))
+        .filter(|call: &serde_json::Value| call["method"] == json!("embeddings.enable"))
+        .collect();
+    assert_eq!(asked.len(), 1, "one answer, one call: {lines}");
+    assert_eq!(asked[0]["params"]["model"], json!("embeddinggemma-2"), "{}", asked[0]);
+    let _ = std::fs::remove_file(&record);
+
+    client.shutdown().await.unwrap();
+}
+
+/// Revoking is not erasing: np switches the provider off and **keeps** which model was chosen, so saying no twice in a
+/// row does not lose the choice someone made once. `changed` naming one key is that fact on the wire.
+#[tokio::test]
+async fn disabling_keeps_the_model_and_says_which_key_moved() {
+    let (_d, client) = spawn(json!({"replies": {"embeddings.disable": {
+        "changed": ["embeddings.provider"],
+        "fetch": null,
+        "model": "embeddinggemma-2",
+        "persisted_to": "/home/you/.config/note-processor/config.toml",
+        "provider": "none"
+    }}}))
+    .await;
+
+    let answer = embeddings_disable(&client).await.expect("np took the answer back");
+    assert_eq!(answer.changed, vec!["embeddings.provider".to_string()]);
+    assert_eq!(answer.provider.as_deref(), Some("none"));
+    assert_eq!(answer.model.as_deref(), Some("embeddinggemma-2"), "disable is not forget");
+    assert_eq!(answer.fetch_bytes, None);
+
+    client.shutdown().await.unwrap();
+}
+
+/// Measured on 0.5.1: enabling what is already enabled writes no bytes and answers `changed: []`. That is a success
+/// with an empty list, and the card must be able to tell it apart from "nothing happened because we did not ask".
+#[tokio::test]
+async fn an_enable_that_changed_nothing_is_still_an_answer() {
+    let (_d, client) = spawn(json!({"replies": {"embeddings.enable": {
+        "changed": [], "fetch": null, "model": "embeddinggemma-2",
+        "persisted_to": "/home/you/.config/note-processor/config.toml", "provider": "local-model"
+    }}}))
+    .await;
+
+    let answer = embeddings_enable(&client, "embeddinggemma-2").await.expect("already on is not an error");
+    assert!(answer.changed.is_empty(), "np wrote nothing: {answer:?}");
+    assert_eq!(answer.provider.as_deref(), Some("local-model"));
+    assert_eq!(answer.fetch_bytes, None, "no price quoted because no fetch is owed");
+
+    client.shutdown().await.unwrap();
+}
+
+/// A config file np itself cannot read is left untouched — the refusal measured on 0.5.1 names the parse problem and
+//  the path. Jott shows it byte for byte; a paraphrase would lose the line number that makes it fixable.
+#[tokio::test]
+async fn np_refuses_to_write_a_file_it_cannot_read_and_says_which() {
+    let sentence = "config io: config parse error in /home/you/.config/note-processor/config.toml: TOML parse error at line 1, column 12";
+    let (_d, client) = spawn(json!({"faults": {"embeddings.enable": {"code": -32000, "message": sentence}}}))
+        .await;
+
+    let Err(fault) = embeddings_enable(&client, "embeddinggemma-2").await else {
+        panic!("an unloadable config must not look like consent recorded");
+    };
+    assert_eq!(fault.code, -32000);
+    assert_eq!(fault.message, sentence, "np's sentence, unchanged: {}", fault.message);
+
+    client.shutdown().await.unwrap();
+}
+
+/// An id this build does not pin is refused by name, naming the ids it does. Jott passes that through rather than
+/// retrying with its own guess — the compiled-in default is not a fact about someone's binary.
+#[tokio::test]
+async fn an_unpinned_model_is_refused_with_the_names_np_will_accept() {
+    let sentence = "config io: no pinned model \"no-such-model\": this build can name \"embeddinggemma-2\" \
+        — enable one of those, or install bytes you already hold with `np models install`";
+    let (_d, client) = spawn(json!({"faults": {"embeddings.enable": {"code": -32000, "message": sentence}}}))
+        .await;
+
+    let Err(fault) = embeddings_enable(&client, "no-such-model").await else {
+        panic!("np refuses this, so Jott must not report success");
+    };
+    assert_eq!(fault.message, sentence);
+
+    client.shutdown().await.unwrap();
+}
+
+/// `persisted_to` is optional on the wire. Absent means np did not say where — it does **not** mean "the file we
+/// guessed", and the card has to be able to say "note-processor recorded it" without naming a path that may be wrong.
+#[tokio::test]
+async fn a_missing_persisted_to_stays_unknown() {
+    let (_d, client) = spawn(json!({"replies": {"embeddings.enable": {
+        "changed": ["embeddings.provider", "embeddings.model"], "fetch": null,
+        "model": "embeddinggemma-2", "provider": "local-model"
+    }}}))
+    .await;
+
+    let answer = embeddings_enable(&client, "embeddinggemma-2").await.expect("answer parsed");
+    assert_eq!(answer.persisted_to, None, "silence is not a path");
+    assert_eq!(answer.model.as_deref(), Some("embeddinggemma-2"));
+
+    client.shutdown().await.unwrap();
+}
+
+/// The stand-in answers these two doors the way 0.5.1 does with no scenario at all, so a later test that only cares
+/// about Jott's behaviour cannot accidentally configure a backend nobody ships.
+#[tokio::test]
+async fn the_stand_in_opens_the_door_without_being_told_to() {
+    let (_d, client) = spawn(json!({})).await;
+
+    let answer = embeddings_enable(&client, "embeddinggemma-2").await.expect("default behaviour");
+    assert_eq!(answer.changed, vec!["embeddings.provider".to_string(), "embeddings.model".to_string()]);
+    assert!(answer.provider_set(), "np switched embeddings on: {answer:?}");
+
+    let back = embeddings_disable(&client).await.expect("and took it back");
+    assert_eq!(back.changed, vec!["embeddings.provider".to_string()]);
+    assert!(!back.provider_set());
+    assert_eq!(back.model.as_deref(), Some("embeddinggemma-2"), "disable kept the choice");
+
+    client.shutdown().await.unwrap();
+}
+
+/// A guard on the stand-in itself, asked raw: 0.5.1 refuses a parameter it cannot use instead of answering `ok`, and
+/// a fixture that accepted typos would let Jott believe a consent answer had been recorded when np ignored it.
+#[tokio::test]
+async fn the_stand_in_refuses_a_parameter_np_would_refuse() {
+    let (_d, client) = spawn(json!({})).await;
+
+    let Err(fault) = client.request("embeddings.enable", json!({ "modle": "embeddinggemma-2" })).await else {
+        panic!("a misspelled parameter must not be reported as consent recorded");
+    };
+    assert_eq!(fault.code, -32602, "{fault}");
+
+    client.shutdown().await.unwrap();
 }

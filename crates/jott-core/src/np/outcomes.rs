@@ -14,6 +14,7 @@ use super::NpFault;
 use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::path::PathBuf;
 
 /// How a search was answered: what we ask for, and what np says it did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -519,4 +520,58 @@ pub fn model_listing(value: &Value) -> Result<ModelListing, NpFault> {
                 .collect(),
         })
         .map_err(|e| shape_fault("models.list", e))
+}
+
+/// What one of np's two consent doors answered (0.5.0+, note-processor#7). Every field is np's own: which keys it
+/// moved, what the provider is now, which model it kept in mind, where it wrote that down, and what the fetch will
+/// cost if it has to happen.
+///
+/// `provider` is `None` only when np sent no key at all — a different fact from its `"none"`, which means embeddings
+/// are switched off on purpose. Same reasoning for `persisted_to`: absent does not mean "the file we would have
+/// guessed", it means np did not say, and the card has to be able to speak without inventing a path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnableAnswer {
+    /// The keys np changed, in the order it named them. Empty is a real answer: enabling what is already enabled
+    /// writes no bytes at all.
+    pub changed: Vec<String>,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub persisted_to: Option<PathBuf>,
+    /// np's `fetch.bytes_total` — the price of the download, quoted rather than guessed. `None` when np quoted no
+    /// fetch, which is not the same as a free one.
+    pub fetch_bytes: Option<u64>,
+}
+
+impl EnableAnswer {
+    /// Did np leave embeddings switched on? `"none"` and an absent key both answer no; only `"local-model"` says yes.
+    pub fn provider_set(&self) -> bool {
+        self.provider.as_deref() == Some("local-model")
+    }
+}
+
+#[derive(Deserialize)]
+pub struct RawEnableAnswer {
+    #[serde(default)]
+    changed: Vec<String>,
+    provider: Option<String>,
+    model: Option<String>,
+    #[serde(rename = "persisted_to")]
+    persisted_to: Option<PathBuf>,
+    fetch: Option<Value>,
+}
+
+impl RawEnableAnswer {
+    pub fn into_answer(self) -> EnableAnswer {
+        EnableAnswer {
+            changed: self.changed,
+            provider: self.provider,
+            model: self.model,
+            persisted_to: self.persisted_to,
+            fetch_bytes: self
+                .fetch
+                .as_ref()
+                .and_then(|fetch| fetch.get("bytes_total"))
+                .and_then(Value::as_u64),
+        }
+    }
 }
