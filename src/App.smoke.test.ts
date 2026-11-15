@@ -48,6 +48,27 @@ const searchSays: { indexed: boolean | null } = { indexed: null }
  *  `grand`, and np says so in `prefix_used`, `prefix_terms` and `matched_exactly`. */
 const widening = vi.hoisted(() => ({ on: false }))
 
+/** A stand-in for `matchMedia`, which jsdom does not have: the window asks which colour scheme the desktop is in,
+ *  and CodeMirror has to be told the answer (0.0.15 never told it, so CM painted a black caret on dark paper). */
+const media = vi.hoisted(() => {
+  const listeners = new Set<(event: { matches: boolean }) => void>()
+  return {
+    matches: false,
+    addEventListener: (_: string, fn: (event: { matches: boolean }) => void) => void listeners.add(fn),
+    removeEventListener: (_: string, fn: (event: { matches: boolean }) => void) => void listeners.delete(fn),
+    /** Start over: no leftover listeners from a window this test already destroyed. */
+    reset(matches = false) {
+      listeners.clear()
+      this.matches = matches
+    },
+    /** Flip the scheme the way the OS would, with the window open. */
+    set(next: boolean) {
+      this.matches = next
+      for (const fn of [...listeners]) fn({ matches: next })
+    },
+  }
+})
+
 /** What `set_consent` hands back: np's own answer to the button (np 0.5.x). */
 const consentAnswer = vi.hoisted(() => ({ current: 'accepted' as 'accepted' | 'refused' }))
 
@@ -447,6 +468,10 @@ describe('the window mounts', () => {
     notified.sent = []
     focused.current = true
     handlers.clear()
+    // The window asks the desktop for its colour scheme; jsdom has no `matchMedia`, so an unstubbed call is an
+    // unhandled error after the test finished — which Vitest counts as a failed run over passing tests.
+    media.reset()
+    ;(window as unknown as { matchMedia: unknown }).matchMedia = () => media
   })
 
   it('shows the empty state and takes the startup skeleton away', async () => {
@@ -1262,6 +1287,32 @@ describe('the window mounts', () => {
     expect(both).toContain('note-processor wrote embeddings.provider')
     expect(both).toContain('Jott wrote models.auto_fetch = true')
     expect(both).not.toContain('Copy these settings')
+    expect(errors).toEqual([])
+  })
+
+
+  it('tells the editor which colour scheme the desktop is in', async () => {
+    // The complaint: "the cursor is near invisible in dark mode". Part of the answer is ours to fix and part is
+    // CodeMirror's — it painted its light-facet caret because nothing ever told it otherwise. `cm-dark` on the
+    // editor element is the observable half of that being fixed.
+    scenario.current = 'vault'
+    media.reset(true)
+    const { errors } = await start()
+
+    const row = document.querySelector('.tree button:not(:disabled)') as HTMLElement
+    expect(row, 'the fixture has a note to open').not.toBeNull()
+    row.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+
+    await vi.waitFor(() => expect(document.querySelector('.cm-editor')).not.toBeNull(), { timeout: 2000 })
+    expect(document.querySelector('.cm-editor.jott-dark'), 'a dark desktop means a dark CodeMirror').not.toBeNull()
+
+    // The desktop changes its mind while the note is open. The editor follows — same element, so the buffer and any
+    // unsaved typing inside it survive the switch.
+    const before = document.querySelector('.cm-editor')
+    media.set(false)
+    await vi.waitFor(() => expect(document.querySelector('.cm-editor.jott-dark')).toBeNull(), { timeout: 2000 })
+    expect(document.querySelector('.cm-editor'), 'rebuilding the editor would drop what was typed').toBe(before)
+
     expect(errors).toEqual([])
   })
 

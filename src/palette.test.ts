@@ -75,6 +75,33 @@ describe('the caret is named, not inherited', () => {
     expect(rule).toMatch(/border-left:\s*2px solid var\(--ink\)/)
   })
 
+  it('hands the caret colour to CodeMirror as a theme, not only as CSS', () => {
+    // The rule above wins today by being more specific than what CodeMirror injects at runtime. Winning a race is
+    // not the same as not racing: the same light facet also paints a bright blue selection and a `black` native
+    // caret, and any future CM selector can arrive later and heavier. Through `EditorView.theme` the colours land
+    // inside CodeMirror's own style module, in the facet the window is actually in.
+    const theme = editor.slice(editor.indexOf('EditorView.theme'))
+    expect(theme, 'the editor builds no CodeMirror theme').not.toBe('')
+    expect(theme).toMatch(/borderLeft:\s*['"]2px solid var\(--ink\)['"]/)
+    // The facet itself: without it, CM's `&dark` variants never apply and the light ones contradict the palette.
+    expect(editor).toContain('EditorView.darkTheme.of')
+  })
+
+  it('stops the caret from switching itself off mid-blink', () => {
+    // CodeMirror blinks with `steps(1)` to `opacity: 0`, so the caret is genuinely absent half the time. "Hard to
+    // see where the cursor is" is a fair description of that, in either scheme.
+    expect(editor).toMatch(/@keyframes\s+jott-caret[\s\S]*?opacity:\s*0?\.[1-9]/)
+    expect(editor).toContain('animation-name: jott-caret')
+    // …and stands still for someone who asked their OS for no motion.
+    expect(editor).toMatch(/prefers-reduced-motion:\s*reduce[\s\S]*?animation:\s*none/)
+  })
+
+  it('keeps the caret visible in Windows high-contrast mode', () => {
+    // Forced colours replace custom properties, so `var(--ink)` is exactly what does not survive there. The system
+    // colour for text on the canvas does.
+    expect(editor).toMatch(/forced-colors:\s*active[\s\S]*?border-left-color:\s*CanvasText/)
+  })
+
   it('keeps the native carets in the window on the same ruler', () => {
     expect(appCss).toMatch(/caret-color:\s*var\(--ink\)/)
   })
