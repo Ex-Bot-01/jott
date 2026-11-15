@@ -69,6 +69,11 @@ const media = vi.hoisted(() => {
   }
 })
 
+/** Every `create_folder` / `move_entry` the window sent, with its arguments, in order. */
+const moveCalls = vi.hoisted(() => ({ current: [] as Record<string, unknown>[] }))
+/** Make `create_folder` refuse, to check what the dialog does when half a plan fails. */
+const moveSays = vi.hoisted(() => ({ createFails: false }))
+
 /** Whether `read_note` answers with note-processor's catalogue (read-only) for `INDEX.md`. */
 const readNoteSays = vi.hoisted(() => ({ catalogue: false }))
 
@@ -330,7 +335,17 @@ vi.mock('@tauri-apps/api/core', () => ({
           vault: { notes: 1, embedded: 0, indexed: 1, waiting: 0, refused: 0, warnings: 0 },
         })
       case 'create_folder':
+        moveCalls.current.push({ cmd, ...(args as Record<string, unknown>) })
+        if (moveSays.createFails) {
+          // The shape Tauri hands back for a refused command: an object with a sentence in it.
+          return Promise.reject({ kind: 'io', message: 'could not create ideas: permission denied' })
+        }
+        return Promise.resolve({ hash: 'b'.repeat(64), mtimeMs: 1_700_000_000_500 })
       case 'move_entry':
+        moveCalls.current.push({ cmd, ...(args as Record<string, unknown>) })
+        // A `void` command resolves undefined. Returning null here would be indistinguishable from App's own
+        // "the command failed" marker, and the dialog would stay open on a successful move.
+        return Promise.resolve(undefined)
       case 'save_note':
         return Promise.resolve({ hash: 'b'.repeat(64), mtimeMs: 1_700_000_000_500 })
       case 'list_vault':
@@ -482,6 +497,8 @@ describe('the window mounts', () => {
     notified.asked = 0
     notified.sent = []
     focused.current = true
+    moveCalls.current = []
+    moveSays.createFails = false
     handlers.clear()
     // The window asks the desktop for its colour scheme; jsdom has no `matchMedia`, so an unstubbed call is an
     // unhandled error after the test finished — which Vitest counts as a failed run over passing tests.
@@ -1414,6 +1431,94 @@ describe('the window mounts', () => {
     await vi.waitFor(() => expect(document.querySelector('.cm-content')?.getAttribute('contenteditable')).toBe('true'), { timeout: 2000 })
 
     readNoteSays.catalogue = false
+    expect(errors).toEqual([])
+  })
+
+
+  it('moves a note into a folder that does not exist yet', async () => {
+    // "I can right click on a note and select Move to…, but I see only an empty field — there is no folder inside
+    // it. So add an add-folder button, and then the file moves there." The vault fixture has no folders at all, so
+    // this is exactly the state that used to offer nothing.
+    scenario.current = 'vault'
+    const { errors } = await start()
+
+    let row!: HTMLElement
+    await vi.waitFor(() => {
+      row = document.querySelector('.tree button[data-kind="Note"]') as HTMLElement
+      expect(row, 'the fixture has a note to move').not.toBeNull()
+    }, { timeout: 2000 })
+    row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 40, clientY: 90 }))
+
+    // The menu is rendered by Svelte, so it arrives on the next microtask — asking for it synchronously is how a
+    // test manages to fail at a thing that works.
+    const moveItem = await vi.waitFor(() => {
+      const el = [...document.querySelectorAll('.row-menu [role="menuitem"]')].find((b) => b.textContent === 'Move to…')
+      expect(el, 'a note offers a move').not.toBeUndefined()
+      return el as HTMLButtonElement
+    }, { timeout: 2000 })
+    moveItem.click()
+
+    const field = (await vi.waitFor(() => {
+      const el = document.querySelector('[data-testid="new-folder-name"]') as HTMLInputElement | null
+      expect(el, 'the dialog offers a name for a folder that is not there yet').not.toBeNull()
+      return el!
+    }, { timeout: 2000 })) as HTMLInputElement
+
+    // A blank name is not a destination: nothing is sent, and the reason is on screen.
+    ;(document.querySelector('[data-testid="create-and-move"]') as HTMLButtonElement).click()
+    await new Promise((resolve) => setTimeout(resolve, 120))
+    expect(moveCalls.current, 'a refusal sends nothing').toEqual([])
+    expect(document.body.textContent ?? '').toContain('Name the folder')
+
+    // Re-query rather than reuse: the refusal message rendered beside the field, and a stale node would type into
+    // nothing.
+    const typed = document.querySelector('[data-testid="new-folder-name"]') as HTMLInputElement
+    typed.value = 'ideas'
+    typed.dispatchEvent(new Event('input', { bubbles: true }))
+    ;(document.querySelector('[data-testid="create-and-move"]') as HTMLButtonElement).click()
+
+    await vi.waitFor(() => expect(moveCalls.current.map((c) => c.cmd)).toEqual(['create_folder', 'move_entry']), { timeout: 2000 })
+    expect(moveCalls.current[0]).toMatchObject({ cmd: 'create_folder', rel: 'ideas' })
+    expect(moveCalls.current[1]).toMatchObject({ cmd: 'move_entry', from: 'inbox.md', to: 'ideas/inbox.md' })
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="new-folder-name"]')).toBeNull(), { timeout: 2000 })
+
+    expect(errors).toEqual([])
+  })
+
+  it('keeps the dialog open when the folder cannot be made', async () => {
+    // A plan that half-succeeded is the worst outcome: the note is where it was, and the window said nothing. So a
+    // failed create leaves the dialog up with the sentence, and sends no move after it.
+    scenario.current = 'vault'
+    moveSays.createFails = true
+    const { errors } = await start()
+
+    let row!: HTMLElement
+    await vi.waitFor(() => {
+      row = document.querySelector('.tree button[data-kind="Note"]') as HTMLElement
+      expect(row).not.toBeNull()
+    }, { timeout: 2000 })
+    row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 40, clientY: 90 }))
+    const item = await vi.waitFor(() => {
+      const el = [...document.querySelectorAll('.row-menu [role="menuitem"]')].find((b) => b.textContent === 'Move to…')
+      expect(el).not.toBeUndefined()
+      return el as HTMLButtonElement
+    }, { timeout: 2000 })
+    item.click()
+
+    const field = (await vi.waitFor(() => {
+      const el = document.querySelector('[data-testid="new-folder-name"]') as HTMLInputElement | null
+      expect(el).not.toBeNull()
+      return el!
+    }, { timeout: 2000 })) as HTMLInputElement
+    field.value = 'ideas'
+    field.dispatchEvent(new Event('input', { bubbles: true }))
+    ;(document.querySelector('[data-testid="create-and-move"]') as HTMLButtonElement).click()
+
+    await vi.waitFor(() => expect(document.body.textContent ?? '').toContain('permission denied'), { timeout: 2000 })
+    expect(document.querySelector('[data-testid="new-folder-name"]'), 'the dialog stays so the name can be fixed').not.toBeNull()
+    expect(moveCalls.current.map((c) => c.cmd), 'no move after a failed create').toEqual(['create_folder'])
+
+    moveSays.createFails = false
     expect(errors).toEqual([])
   })
 

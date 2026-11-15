@@ -9,7 +9,16 @@
   import Tree from './lib/Tree.svelte'
   import Editor from './lib/Editor.svelte'
   import StatusLine from './lib/StatusLine.svelte'
-  import { actionsFor, flattenTree, moveTargets, moveTo, notesAwaitingEmbedding, notesAwaitingIndex, targetFolder } from './lib/tree'
+  import {
+  actionsFor,
+  flattenTree,
+  moveTargets,
+  moveTo,
+  notesAwaitingEmbedding,
+  notesAwaitingIndex,
+  planMoveInto,
+  targetFolder,
+} from './lib/tree'
   import type { TreeAction } from './lib/tree'
   import { bareKeyFor, escapeAction, isTypingTarget, shortcutFor } from './lib/shortcuts'
   import {
@@ -107,7 +116,17 @@
   let searchTimer: ReturnType<typeof setTimeout> | undefined
 
   /** `folder` is where a new note or folder lands; `rel` is what is being moved. */
-  let dialog = $state<{ kind: 'new' | 'rename' | 'folder' | 'move'; value: string; folder?: string; rel?: string } | null>(null)
+  let dialog = $state<{
+    kind: 'new' | 'rename' | 'folder' | 'move'
+    value: string
+    folder?: string
+    rel?: string
+    /** The move dialog's second half: a destination that does not exist yet. */
+    newFolder?: string
+  } | null>(null)
+  /** A refusal about the dialog itself, shown inside it: "that name walks out of the folder" is not a backend
+   *  failure and must not look like one — and it is useless if the dialog has already closed. */
+  let dialogSaid = $state<string | null>(null)
   let confirmDelete = $state<string | null>(null)
   /** The row menu: where it was opened, and for what. `null` means empty ground — only creating is on offer there. */
   let menu = $state<{ rel: string | null; x: number; y: number } | null>(null)
@@ -407,7 +426,8 @@
         return
       case 'move':
         if (selected === null) return
-        dialog = { kind: 'move', value: '', rel: selected }
+        dialog = { kind: 'move', value: '', rel: selected, newFolder: '' }
+        dialogSaid = null
         return
       case 'delete':
         if (selected === null) return
@@ -563,11 +583,35 @@
 
   async function moveEntry(from: string, to: string) {
     const moved = await call(() => ipc.moveEntry(from, to))
+    // A failed move leaves the dialog up. Closing it would say "done" about something that did not happen, and the
+    // note is still where it was — `problem` already carries the sentence about why.
+    if (moved === null) return
     dialog = null
-    if (moved !== null) {
-      await refresh()
-      if (selected === from) selected = to
+    await refresh()
+    if (selected === from) selected = to
+  }
+
+  /** Move this note into a folder, making the folder first when somebody named one that is not there yet.
+   *
+   *  The vault may have no folders at all — which is how the dialog read as "only an empty field" — and `create_folder`
+   *  already makes parents, so a nested name needs nothing special. Half a plan is the failure to design for: if the
+   *  folder could not be made, no move is sent and the dialog stays open with the name still in it. */
+  async function createAndMove(rel: string, typed: string) {
+    const plan = planMoveInto(rel, typed, moveTargets(rows, rel))
+    if (plan.kind === 'refuse') {
+      dialogSaid = plan.sentence
+      return
     }
+    if (plan.kind === 'create-then-move') {
+      const made = await call(() => ipc.createFolder(plan.folder.replace(/\/$/, '')))
+      if (made === null) return
+    }
+    const moved = await call(() => ipc.moveEntry(rel, plan.to))
+    if (moved === null) return
+    dialog = null
+    dialogSaid = null
+    await refresh()
+    if (selected === rel) selected = plan.to
   }
 
   async function createNote(rel: string) {
@@ -960,6 +1004,28 @@
               <option value={folder}>{folder === '' ? 'the vault root' : folder}</option>
             {/each}
           </select>
+          <!-- A vault with no folders used to offer an empty list and nothing else. The destination can be a folder
+               that does not exist yet: name it, and this makes it and moves the note in — one intention, two commands. -->
+          <span class="new-folder">
+            <label for="newfolder" class="quiet">…or a new folder:</label>
+            <input
+              id="newfolder"
+              type="text"
+              data-testid="new-folder-name"
+              bind:value={dialog.newFolder}
+              placeholder="ideas"
+              spellcheck="false"
+              autocomplete="off"
+            />
+            <button
+              type="button"
+              data-testid="create-and-move"
+              onclick={() => dialog?.rel && void createAndMove(dialog.rel, dialog.newFolder ?? '')}
+            >
+              create and move
+            </button>
+          </span>
+          {#if dialogSaid !== null}<p class="warn" role="alert">{dialogSaid}</p>{/if}
         {:else}
           <label for="rel">
             {dialog.kind === 'new'

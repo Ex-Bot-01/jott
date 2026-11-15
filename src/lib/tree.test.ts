@@ -2,16 +2,7 @@
 // of Tree.svelte so the marker legend — the part most likely to be quietly wrong — has tests.
 
 import { describe, expect, it } from 'vitest'
-import {
-  GENERATED_TITLE,
-  actionsFor,
-  flattenTree,
-  moveTargets,
-  moveTo,
-  notesAwaitingEmbedding,
-  notesAwaitingIndex,
-  targetFolder,
-} from './tree'
+import { actionsFor, flattenTree, GENERATED_TITLE, moveTargets, moveTo, notesAwaitingEmbedding, notesAwaitingIndex, planMoveInto, targetFolder } from './tree'
 import type { Row } from './tree'
 import type { NodeEntry } from './ipc'
 
@@ -236,4 +227,50 @@ describe('a row\'s menu', () => {
     expect(moveTo('notes/deep/a.md', '')).toBe('a.md')
     expect(moveTo('notes/deep/a.md', 'inbox/')).toBe('inbox/a.md')
   })
+
+  /** The move dialog's second control: "put this in a folder I have not made yet". */
+  describe('planning a move into a folder that may not exist', () => {
+    const folders = ['', 'archive/', 'work/2026/']
+
+    it('moves into an existing folder, spelled either way', () => {
+      expect(planMoveInto('inbox.md', 'archive', folders)).toEqual({ kind: 'move', to: 'archive/inbox.md' })
+      expect(planMoveInto('inbox.md', 'work/2026/', folders)).toEqual({ kind: 'move', to: 'work/2026/inbox.md' })
+      expect(planMoveInto('inbox.md', '', folders).kind, 'blank is not a destination').toBe('refuse')
+    })
+
+    it('creates the folder first when there is nothing by that name', () => {
+      expect(planMoveInto('inbox.md', 'ideas', folders)).toEqual({
+        kind: 'create-then-move',
+        folder: 'ideas/',
+        to: 'ideas/inbox.md',
+      })
+    })
+
+    it('accepts a nested name, because create_folder makes the parents', () => {
+      expect(planMoveInto('inbox.md', 'ideas/2026', folders)).toEqual({
+        kind: 'create-then-move',
+        folder: 'ideas/2026/',
+        to: 'ideas/2026/inbox.md',
+      })
+    })
+
+    it('refuses a name that would leave the vault, and says so in one sentence', () => {
+      for (const typed of ['../outside', '/absolute', 'a/../..', '\\\\server\\share']) {
+        const plan = planMoveInto('inbox.md', typed, folders)
+        expect(plan.kind, `${typed} must not be created or moved into`).toBe('refuse')
+        expect((plan as { sentence?: string }).sentence, 'a refusal without words is a dead end').toBeTruthy()
+      }
+    })
+
+    it('does not offer to move a note into the folder it already sits in', () => {
+      // `moveTargets` drops the current parent from the list; typing it by hand is the same non-move, and creating
+      // it would fail with "already exists" for a thing that plainly does exist.
+      expect(planMoveInto('archive/old.md', 'archive', folders).kind).toBe('refuse')
+    })
+
+    it('trims what was typed without changing what it means', () => {
+      expect(planMoveInto('inbox.md', '  archive  ', folders)).toEqual({ kind: 'move', to: 'archive/inbox.md' })
+    })
+  })
+
 })
