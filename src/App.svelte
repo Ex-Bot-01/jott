@@ -17,6 +17,7 @@
   moveTo,
   notesAwaitingEmbedding,
   notesAwaitingIndex,
+  notesEmbedded,
   planMoveInto,
   targetFolder,
   toolbarTarget,
@@ -34,11 +35,13 @@
     wideningSentence,
   } from './lib/searchState'
   import { markTerms } from './lib/highlight'
+  import { SCORE_TITLE, formatScore, meaningLabel, rowLabel } from './lib/scoreLabel'
   import { consentSentence, modelReadySentence, statusFor, type Status } from './lib/statusLine'
   import { cardClipboard, cardSentences, NP_ISSUE } from './lib/consentHelp'
   import { createBlocked } from './lib/createHere'
   import { formatsSentence, opensAsText, planNoteName } from './lib/noteName'
   import type { ConsentOutcome } from './lib/ipc'
+  import type { ModelFacts } from './lib/modelStatus'
   import { openUrl } from '@tauri-apps/plugin-opener'
   import { getCurrentWindow } from '@tauri-apps/api/window'
   import { isPermissionGranted, requestPermission, sendNotification } from '@tauri-apps/plugin-notification'
@@ -106,6 +109,31 @@
       `null` means either "nothing to offer" or "not asked yet for this vault", and `offerAskedFor` says which. */
   let embeddingsOffer = $state<ipc.ConsentOffer | null>(null)
   let offerAskedFor: string | null = null
+  /** What np said about the model behind this folder: configured, on disk, in use here. `null` means nobody has been
+      asked yet for this folder, which draws no dot at all — an absence on screen rather than a grey one that reads as
+      "switched off". */
+  let modelStatus = $state<ipc.ModelStatus | null>(null)
+  let modelAskedFor: string | null = null
+
+  /** The dot's facts: np's answers about the model, plus how many notes in *this* folder carry vectors. Both halves are
+      needed — "the weights are on my disk" and "this folder can be searched by meaning" are different sentences, and
+      only the second explains an empty semantic search. Each key is named rather than spread: a proxied `$state` object
+      hands back `undefined` for a key nobody set, and `undefined` must not reach a dot that reads `null` as "off". */
+  const modelFacts = $derived<ModelFacts | null>(
+    // `listing === null` means no folder is open — which is not a folder whose np is quiet. Answering from the old
+    // status here would keep describing a vault that has been closed or trashed.
+    modelStatus === null || listing === null
+      ? null
+      : {
+          provider: modelStatus.provider ?? null,
+          modelId: modelStatus.modelId ?? null,
+          present: modelStatus.present ?? null,
+          bytesTotal: modelStatus.bytesTotal ?? null,
+          configUnreadable: modelStatus.configUnreadable ?? false,
+          modelsDirError: modelStatus.modelsDirError ?? null,
+          embeddedNotes: listing ? notesEmbedded(listing.nodes) : 0,
+        },
+  )
   /** What np's settings actually say, read after a pass that could not embed. `null` means "not asked yet". */
   let consentHelp = $state<ConsentHelp | null>(null)
   /** The last sentence np sent as a refusal, kept word for word for the card to quote (§4). */
@@ -243,6 +271,10 @@
       selectedFolder = null
       note = null
       bufferVault = null
+      // What np said about its model belongs to the folder that was asked about. Carrying `present: true` across into a
+      // folder nobody has queried yet would light a green bead over a vault with no vectors at all.
+      modelStatus = null
+      modelAskedFor = null
     }
 
     // Every path that installs a listing comes through here, so this is where the embeddings offer is asked. It used
@@ -250,6 +282,7 @@
     // picker — never asked about, and the banner that tells someone their notes are indexed but cannot be searched by
     // meaning had no way to appear until some later re-list happened to come along.
     void askOffer()
+    void askModel()
   }
 
   async function openRecent(folder: string) {
@@ -289,6 +322,24 @@
     const next = await call(ipc.listVault)
     listing = next
     void askOffer()
+    void askModel()
+  }
+
+  /** Once per opened folder: is the model configured, and are its bytes on this disk? Unlike the offer, this is asked
+      even when nothing is awaiting embedding — a status light has to be able to say "on" as well as "not bought yet".
+      It reads np's settings file plus `models.list` over the pool's *reader*, so it cannot queue behind an embed in
+      progress: when a download finishes, this is the call that learns about it. */
+  async function askModel() {
+    const vault = listing?.vault ?? null
+    if (!vault || modelAskedFor === vault) return
+    modelAskedFor = vault
+    const answer = await call(ipc.embeddingsStatus)
+    // The folder changed while np was answering — and `models.list` goes to the reader connection, which may have had to
+    // start that child first, so "while" can be seconds. A late answer about the previous folder would otherwise land on
+    // top of the new folder's own (search has the same guard for the same reason, since 0.0.12), and because
+    // `modelAskedFor` already names the new folder nothing would re-ask until an event happened to come along.
+    if (listing?.vault !== vault) return
+    modelStatus = answer
   }
 
   /** Once per opened vault: is there still a download to talk about? Asked here rather than assumed from the
@@ -869,6 +920,10 @@
       lastRefusal = null
     }
     void readConsentHelp()
+    // "Allow the download" moves np's provider setting, which is half of what the dot reports. Asking again is how the
+    // light agrees with the button that was just pressed, instead of waiting for a re-list nobody triggered.
+    modelAskedFor = null
+    void askModel()
   }
 
   /** The same question, asked again later. "Stay keyword-only" answers the moment, not the year, and the way
@@ -934,7 +989,12 @@
       // A finished pass changes every marker in the tree, and the tree is a snapshot of the stamps as they
       // were when it was listed. Without this re-list the status line says "completed" over dots that still
       // say "waiting for the index" — which is exactly what a tester reported and reasonably called confusing.
-      if ('indexed' in event || 'embedded' in event || 'refused' in event || 'disabled' in event) scheduleRelist()
+      if ('indexed' in event || 'embedded' in event || 'refused' in event || 'disabled' in event) {
+        // The dot reads np's `models.list`, and a pass is exactly what changes what sits in that directory. Asking
+        // again is one cheap request; the alternative is a light that stays amber through a finished download.
+        modelAskedFor = null
+        scheduleRelist()
+      }
     })
     // Bounded: a long run produces thousands of rows, and core's ring holds two hundred anyway. The drawer shows
     // the newest ones, so dropping the oldest loses nothing that was still on screen.
@@ -1013,13 +1073,6 @@
         oninput={onQueryInput}
         aria-label="Search the vault"
       />
-      <label
-        class="prefix-toggle"
-        title="Also match word beginnings: “grand” finds grandmother. note-processor says which words it widened."
-      >
-        <input type="checkbox" checked={prefixOn} onchange={togglePrefix} aria-label="Match word beginnings" />
-        match word beginnings
-      </label>
       <span class="tool-buttons">
         <!-- The destination is in the tooltip because it used to be a secret: both of these always meant the vault root,
              whatever had just been clicked. -->
@@ -1091,13 +1144,29 @@
           </li>
         {/if}
         {#each results.hits as hit (hit.path)}
+        {@const meaning = meaningLabel(hit.cosine)}
           <li>
-            <button type="button" onclick={() => void openNote(hit.path, searchQuery.trim())}>
+            <button
+              type="button"
+              aria-label={rowLabel({ path: hit.path, snippet: hit.snippet, score: hit.score, cosine: hit.cosine })}
+              onclick={() => void openNote(hit.path, searchQuery.trim())}
+            >
               <span class="hit-path">{hit.path}</span>
               <span class="hit-snippet">
                 {#each markTerms(hit.snippet ?? '', searchQuery, prefixOn) as part, index}
                   {#if part.matched}<mark>{part.text}</mark>{:else}{part.text}{/if}
                 {/each}
+              </span>
+              <span class="hit-numbers">
+                <!-- note-processor's own figure, unconverted. The tooltip is where it says what the number is, because
+                     every search UI is tempted to turn a ranking into "87% similar" and this one was asked for as a
+                     "similarity score". -->
+                <span class="hit-score" data-testid="hit-score" title={SCORE_TITLE}>{formatScore(hit.score)}</span>
+                {#if meaning !== null}
+                  <!-- Only rows where vectors actually ran get a meaning figure; np answers `cosine: null` otherwise,
+                       and "meaning 0" would describe a measurement nobody took. -->
+                  <span class="hit-meaning">{meaning}</span>
+                {/if}
               </span>
               {#if hitSuffix(hit.matchedExactly)}
                 <!-- np reached this note by a word beginning, so the row says which kind of match it is. Only rows np
@@ -1317,6 +1386,21 @@
       </div>
     {/if}
 
+    {#if selected !== null}
+      <!-- The tester asked twice for "a button to close a file from the editor". One existed since 0.0.16 — up in the
+           sidebar toolbar, among the tree's rename/delete, nowhere near the page of text they were reading. A control
+           belongs beside the thing it acts on. -->
+      <div class="note-bar">
+        <span class="note-name" title={selected}>{selected}</span>
+        {#if note?.readonly}
+          <span class="quiet">read-only</span>
+        {/if}
+        <button type="button" data-testid="editor-close" title="Close this note (Escape)" onclick={closeNote}>
+          close
+        </button>
+      </div>
+    {/if}
+
     <Editor
       saveSignal={saveSignal}
       highlight={hitQuery}
@@ -1351,7 +1435,14 @@
     />
   </section>
 
-  <StatusLine {status} consent={consent} onembed={() => void ipc.ingestAll()} onconsent={(granted) => void answerConsent(granted)} />
+  <StatusLine
+    {status}
+    consent={consent}
+    model={modelFacts}
+    onmodelclick={() => (showSettings = true)}
+    onembed={() => void ipc.ingestAll()}
+    onconsent={(granted) => void answerConsent(granted)}
+  />
 
   {#if showDiagnostics}
     <Diagnostics
@@ -1439,6 +1530,24 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  .note-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.2rem 0.5rem;
+    border-block-end: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+    font-size: 0.8125rem;
+  }
+  .note-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 600;
+  }
+  .note-bar button {
+    margin-inline-start: auto;
+  }
+
   .tools {
     display: flex;
     flex-direction: column;
@@ -1452,14 +1561,6 @@
     border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
     background: none;
     color: inherit;
-  }
-  .prefix-toggle {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.25rem;
-    font-size: 0.8rem;
-    white-space: nowrap;
-    user-select: none;
   }
 
   .tool-buttons {
@@ -1500,6 +1601,19 @@
     font-size: 0.75rem;
     color: color-mix(in srgb, currentColor 60%, transparent);
   }
+  .hit-numbers {
+    float: inline-end;
+    font-variant-numeric: tabular-nums;
+    font-size: 0.75rem;
+    opacity: 0.7;
+    white-space: nowrap;
+  }
+  .hit-score,
+  .hit-meaning {
+    display: inline-block;
+    margin-inline-start: 0.45rem;
+  }
+
   .hit-kind {
     font-size: 0.75rem;
     opacity: 0.75;

@@ -1883,3 +1883,264 @@ async fn an_accepted_yes_writes_our_key_once_and_reports_nps() {
     assert!(!after.contains("[embeddings]"), "Jott wrote into `[embeddings]`: {after}");
     session.close().await;
 }
+
+/// The status-line dot asks one question of note-processor — are the model's bytes on this disk? — and answers with
+/// what np said, in four distinguishable states. Flattening "np never answered" into `false` would draw a grey dot on
+/// a folder whose model is sitting in `%APPDATA%`, which is the same mistake as a green dot on a folder with none.
+#[tokio::test]
+async fn the_model_dot_reports_what_note_processor_said_about_the_model() {
+    let _turn = SERIAL.lock().await;
+    // np's own row shape (`state: "present"`), not one Jott invented — the same fixture the consent gate is tested with.
+    let present = json!({
+        "models": [{ "id": "embeddinggemma-2", "dim": 768, "sha256": null, "prefix_doc": null,
+                     "prefix_query": null, "installed_at": 1, "state": "present", "members": [] }],
+        "fetching": [], "unclaimed": [], "models_dir_error": null,
+        "pinned": [{ "id": "embeddinggemma-2", "bytes_total": 309855456 }]
+    });
+    let scenario_dir = scenario(json!({ "replies": { "models.list": present } }));
+
+    let harness = Harness::new();
+    let config = harness.data.path().join("np-config.toml");
+    std::fs::write(
+        &config,
+        "[models]\nauto_fetch = true\n\n[embeddings]\nprovider = \"local-model\"\nmodel = \"embeddinggemma-2\"\n",
+    )
+    .expect("config");
+    let session = VaultSession::open_in(
+        fake_np(),
+        info(),
+        harness.vault.path(),
+        Consent::Granted,
+        Some(config),
+        harness.data.path().to_path_buf(),
+    );
+
+    let status = session.embeddings_status().await;
+    assert_eq!(status.provider.as_deref(), Some("local-model"));
+    assert_eq!(status.model_id.as_deref(), Some("embeddinggemma-2"));
+    assert_eq!(status.present, Some(true), "np listed the model, so the dot says it is here");
+    assert_eq!(status.bytes_total, Some(309_855_456));
+
+    // The keys the webview reads, pinned: there is no compiler between this struct and `src/lib/ipc.ts`.
+    let wire = serde_json::to_value(&status).expect("serialize");
+    assert_eq!(
+        wire,
+        json!({
+            "provider": "local-model",
+            "modelId": "embeddinggemma-2",
+            "present": true,
+            "bytesTotal": 309855456,
+            "configUnreadable": false,
+            "modelsDirError": null
+        })
+    );
+
+    assert!(recorded(scenario_dir.path()).iter().any(|m| m == "models.list"), "np was asked");
+    session.close().await;
+}
+
+/// Configured but not fetched is a state of its own: it is the one the amber dot exists for, and the difference
+/// between "waiting on a 296 MiB download" and "nothing is set up".
+#[tokio::test]
+async fn a_model_that_is_not_on_the_disk_is_reported_absent_rather_than_unknown() {
+    let _turn = SERIAL.lock().await;
+    let _scenario = scenario(json!({
+        "replies": { "models.list": {
+            "models": [], "fetching": [], "unclaimed": [], "models_dir_error": null,
+            "pinned": [{ "id": "embeddinggemma-2", "bytes_total": 309855456 }]
+        }}
+    }));
+
+    let harness = Harness::new();
+    let config = harness.data.path().join("np-config.toml");
+    std::fs::write(
+        &config,
+        "[models]\nauto_fetch = false\n\n[embeddings]\nprovider = \"local-model\"\nmodel = \"embeddinggemma-2\"\n",
+    )
+    .expect("config");
+    let session = VaultSession::open_in(
+        fake_np(),
+        info(),
+        harness.vault.path(),
+        Consent::Undecided,
+        Some(config),
+        harness.data.path().to_path_buf(),
+    );
+
+    let status = session.embeddings_status().await;
+    assert_eq!(status.present, Some(false));
+    // The price still travels: this is the state where a person decides whether to fetch at all.
+    assert_eq!(status.bytes_total, Some(309_855_456));
+    session.close().await;
+}
+
+/// No np, no answer, no claim. `None` here is the difference between "the model is not on this disk" and "nobody was
+/// able to say", and the window draws those two differently (§18: absence is not a verdict).
+#[tokio::test]
+async fn an_unanswered_question_stays_unknown_instead_of_becoming_absent() {
+    let _turn = SERIAL.lock().await;
+    let harness = Harness::new();
+    let config = harness.data.path().join("np-config.toml");
+    std::fs::write(
+        &config,
+        "[embeddings]\nprovider = \"local-model\"\nmodel = \"embeddinggemma-2\"\n",
+    )
+    .expect("config");
+    let session = VaultSession::open_in(
+        NpSource::Env(PathBuf::from("/nonexistent/np")),
+        info(),
+        harness.vault.path(),
+        Consent::Granted,
+        Some(config),
+        harness.data.path().to_path_buf(),
+    );
+
+    let status = session.embeddings_status().await;
+    assert_eq!(status.provider.as_deref(), Some("local-model"), "the settings file still says this");
+    assert_eq!(status.present, None, "nobody answered, so nothing is claimed either way");
+    session.close().await;
+}
+
+/// Embeddings nobody allowed are not a download waiting to happen: the question never goes to np at all, and the dot
+/// says off from the settings file alone. Asking np here would wake a second child for a folder that will never embed.
+#[tokio::test]
+async fn embeddings_that_were_never_allowed_are_reported_without_asking_note_processor() {
+    let _turn = SERIAL.lock().await;
+    let scenario_dir = scenario(json!({}));
+
+    let harness = Harness::new();
+    let config = harness.data.path().join("np-config.toml");
+    std::fs::write(&config, "[models]\nauto_fetch = false\n").expect("config");
+    let session = VaultSession::open_in(
+        fake_np(),
+        info(),
+        harness.vault.path(),
+        Consent::Declined,
+        Some(config),
+        harness.data.path().to_path_buf(),
+    );
+
+    let status = session.embeddings_status().await;
+    assert_eq!(status.provider, None, "no provider is named, so nothing is configured");
+    assert_eq!(status.model_id, None);
+    assert_eq!(status.present, None);
+    assert!(
+        !recorded(scenario_dir.path()).iter().any(|m| m == "models.list"),
+        "a folder with no embeddings still woke note-processor: {:?}",
+        recorded(scenario_dir.path())
+    );
+    session.close().await;
+}
+
+/// A settings file that will not parse is not a settings file that says "no provider". The consent card already
+/// refuses to flatten those two (`SettingsGap::ConfigUnreadable`), and the dot has the same obligation: "embeddings off"
+/// about a file nobody could read is an instruction to go turn them on, in a folder where somebody's np is refusing to
+/// parse its own config.
+#[tokio::test]
+async fn an_unreadable_settings_file_is_not_reported_as_embeddings_off() {
+    let _turn = SERIAL.lock().await;
+    let scenario_dir = scenario(json!({}));
+
+    let harness = Harness::new();
+    let config = harness.data.path().join("np-config.toml");
+    std::fs::write(&config, "[embeddings\nprovider = \"local-model\"\n").expect("broken toml");
+    let session = VaultSession::open_in(
+        fake_np(),
+        info(),
+        harness.vault.path(),
+        Consent::Granted,
+        Some(config),
+        harness.data.path().to_path_buf(),
+    );
+
+    let status = session.embeddings_status().await;
+    assert!(status.config_unreadable, "a file that fails to parse is unreadable");
+    assert_eq!(status.provider, None, "an unreadable file names no provider");
+    assert_eq!(status.present, None, "and proves nothing about a download either");
+    assert!(
+        !recorded(scenario_dir.path()).iter().any(|m| m == "models.list"),
+        "a settings file nobody can read still woke note-processor: {:?}",
+        recorded(scenario_dir.path())
+    );
+    session.close().await;
+}
+
+/// np answers an unreadable models directory as a **result** carrying `models_dir_error`, not as a fault. Saying
+/// "note-processor did not answer" about that would be wrong in a way the person can act on: np is running fine and
+/// telling us it cannot look. Its own sentence travels so the dot can quote it.
+#[tokio::test]
+async fn a_models_directory_that_would_not_list_quotes_note_processors_own_reason() {
+    let _turn = SERIAL.lock().await;
+    let _scenario = scenario(json!({
+        "replies": { "models.list": {
+            "models": [], "fetching": [], "unclaimed": [],
+            "models_dir_error": "permission denied reading the model store under C:\\Users\\chris\\AppData",
+            "pinned": [{ "id": "embeddinggemma-2", "bytes_total": 309855456 }]
+        }}
+    }));
+
+    let harness = Harness::new();
+    let config = harness.data.path().join("np-config.toml");
+    std::fs::write(
+        &config,
+        "[embeddings]\nprovider = \"local-model\"\nmodel = \"embeddinggemma-2\"\n",
+    )
+    .expect("config");
+    let session = VaultSession::open_in(
+        fake_np(),
+        info(),
+        harness.vault.path(),
+        Consent::Granted,
+        Some(config),
+        harness.data.path().to_path_buf(),
+    );
+
+    let status = session.embeddings_status().await;
+    assert_eq!(status.present, None, "an unlistable directory is nobody's verdict about a download");
+    assert_eq!(
+        status.models_dir_error.as_deref(),
+        Some("permission denied reading the model store under C:\\Users\\chris\\AppData"),
+        "np's own sentence is what should be shown"
+    );
+    session.close().await;
+}
+
+/// A price belongs to the model it was quoted for. `only_price()` exists for a fresh np that named nothing and pinned
+/// exactly one thing; once a model *has* been named, taking "the table's one entry" as a fallback can only ever attach
+/// another model's size to this one — which is how a dot ends up saying *"no-such-model is not on this disk yet (about
+/// 296 MiB)"* about bytes nobody priced.
+#[tokio::test]
+async fn a_price_is_only_ever_quoted_for_the_model_it_belongs_to() {
+    let _turn = SERIAL.lock().await;
+    let _scenario = scenario(json!({
+        "replies": { "models.list": {
+            "models": [], "fetching": [], "unclaimed": [], "models_dir_error": null,
+            "pinned": [{ "id": "embeddinggemma-2", "bytes_total": 309855456 }]
+        }}
+    }));
+
+    let harness = Harness::new();
+    let config = harness.data.path().join("np-config.toml");
+    std::fs::write(
+        &config,
+        "[embeddings]\nprovider = \"local-model\"\nmodel = \"some-other-model\"\n",
+    )
+    .expect("config");
+    let session = VaultSession::open_in(
+        fake_np(),
+        info(),
+        harness.vault.path(),
+        Consent::Granted,
+        Some(config),
+        harness.data.path().to_path_buf(),
+    );
+
+    let status = session.embeddings_status().await;
+    assert_eq!(status.model_id.as_deref(), Some("some-other-model"), "np's key is quoted as written");
+    assert_eq!(status.present, Some(false), "it is not among the rows np listed");
+    assert_eq!(
+        status.bytes_total, None,
+        "309855456 is embeddinggemma-2's price; quoting it for some-other-model would be Jott's arithmetic"
+    );
+    session.close().await;
+}

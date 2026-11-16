@@ -2,7 +2,19 @@
 // of Tree.svelte so the marker legend — the part most likely to be quietly wrong — has tests.
 
 import { describe, expect, it } from 'vitest'
-import { actionsFor, flattenTree, GENERATED_TITLE, moveTargets, moveTo, notesAwaitingEmbedding, notesAwaitingIndex, planMoveInto, targetFolder, toolbarTarget } from './tree'
+import {
+  actionsFor,
+  flattenTree,
+  GENERATED_TITLE,
+  moveTargets,
+  moveTo,
+  notesAwaitingEmbedding,
+  notesAwaitingIndex,
+  notesEmbedded,
+  planMoveInto,
+  targetFolder,
+  toolbarTarget,
+} from './tree'
 import type { Row } from './tree'
 import type { NodeEntry } from './ipc'
 
@@ -327,5 +339,23 @@ describe('where the toolbar makes a thing', () => {
   it('says the destination in words a tooltip can carry', () => {
     expect(toolbarTarget('ideas').label).toBe('ideas')
     expect(toolbarTarget(null).label).toBe('the vault root')
+  })
+})
+
+
+describe('notesEmbedded', () => {
+  it('counts the notes that already have vectors, and nothing else', () => {
+    const nodes = [
+      entry('a.md', { state: 'Embedded' }),
+      entry('b.md', { state: 'Indexed' }),
+      entry('c.md', { state: 'Waiting' }),
+      entry('d.md', { state: null }),
+      entry('photo.png', { kind: 'Image', state: null }),
+      entry('work', { kind: 'Folder', size: 0, state: null }),
+    ]
+    // The dot's "12 notes in this folder have vectors" is a count of rows the person can see marked; counting an
+    // indexed note here would make a green dot out of a folder that cannot be searched by meaning at all.
+    expect(notesEmbedded(nodes)).toBe(1)
+    expect(notesEmbedded([])).toBe(0)
   })
 })

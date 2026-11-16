@@ -13,8 +13,8 @@ use jott_core::diagnostics::{Journal, RunRecord};
 use jott_core::ingest::consent::np_config_path;
 use jott_core::ingest::queue::ConsentOffer;
 use jott_core::ipc::{
-    self, ConsentAnswerDto, ConsentHelp, Diagnostics, IpcError, NpMissingPayload, NoteContent, RegistryInfo,
-    RenameOutcome, SearchResults, VaultListing, VaultSession, WriteResult,
+    self, ConsentAnswerDto, ConsentHelp, Diagnostics, EmbeddingsStatus, IpcError, NpMissingPayload,
+    NoteContent, RegistryInfo, RenameOutcome, SearchResults, VaultListing, VaultSession, WriteResult,
 };
 use jott_core::np::client::NpClient;
 use jott_core::np::resolve::{current_os, resolve_np, NpSource};
@@ -387,6 +387,13 @@ pub async fn embeddings_offer(app: State<'_, App>) -> Result<Option<ConsentOffer
 #[tauri::command]
 pub fn embeddings_help(app: State<'_, App>) -> Result<ConsentHelp, IpcError> {
     Ok(app.current()?.embeddings_help())
+}
+
+/// The status line's model dot: configured, downloaded, and whether this folder uses it — three questions, three
+/// different sources, all of them note-processor's answers rather than the webview's guesses.
+#[tauri::command]
+pub async fn embeddings_status(app: State<'_, App>) -> Result<EmbeddingsStatus, IpcError> {
+    Ok(app.current()?.embeddings_status().await)
 }
 
 /// The consent prompt's two buttons. The queue writes np's config; the registry remembers the answer for

@@ -392,6 +392,80 @@ nothing: the folder is not empty, nothing failed, and only `.md` is parsed. Meas
    move left the dialog sitting there over a tree that had already changed, because *success* and *no answer* looked the
    same to the window.
 
+## 2b-viii. Since 0.0.18: five asks from inside the editor
+
+These came from someone with notes open and opinions, so they are about the window you are already using.
+
+1. **The word-beginnings checkbox is in Settings now**, not beside the search box. The toolbar kept only the things you
+   *do*; how a query matches is a setting. The offer under an empty result — *try matching word beginnings* — stays where
+   it is, and pressing it still does not move your remembered choice.
+2. **The note pane has its own close button.** It names the file at the top of the pane, says `read-only` for np's own
+   `INDEX.md`, and puts **close** at the right edge. Escape still works, and with nothing open there is no button at all
+   rather than a greyed one. The old sidebar **close** is still there for whoever reaches for it first.
+3. **A number beside every search result.** That is note-processor's own figure — the fused keyword-and-meaning ranking
+   that decided this row comes first. Hover it: the tooltip says what it is, including that it is **not a percentage**.
+   On rows where meanings were compared you also get `meaning 0.82`. On a folder with no vectors you get no `meaning`
+   figure at all, because there was nothing to measure; if you ever see `meaning 0`, that is a bug — say so.
+   The honest answer to "how similar is it?" is that np quotes a rank fusion around `0.0164` for a keyword hit, and turns
+   it into a percentage in nobody's interest but a screenshot's.
+4. **A dot in the bottom bar with a word next to it**, and clicking it opens Settings. Six things it can honestly say:
+
+   | word | what it means | where the fact came from |
+   | --- | --- | --- |
+   | `meanings on` (green) | the model is on your disk **and** notes here have vectors | np + Jott's per-file markers |
+   | `model ready` (teal) | the model is on your disk; nothing in *this* folder is embedded yet | np's `models.list` |
+   | `model not downloaded` (amber) | embeddings are allowed, the weights are not here — and it names the size | np's pinned table |
+   | `embeddings off` (grey) | np's settings name no provider; search is words only | np's config file |
+   | `model state unknown` (hollow) | **nobody could say**, and the tooltip names which of four: np did not answer; its settings file will not parse; np is running but cannot list its models directory (its own sentence is quoted); no model was named for this folder | nothing trustworthy |
+   | `another provider` (blue) | embeddings run through something other than np's built-in `local-model`, so Jott will not pretend to know where its weights live | np's config file |
+
+   The grey row is the one to argue with, because it is the only one that carries advice: `embeddings off` claims np's
+   settings genuinely name no provider. If your file says otherwise — or will not open as TOML at all — you should get
+   `model state unknown`, never a suggestion to turn on something that may already be on. And if you allowed the download
+   and the dot says *unknown*, that is an np problem to report, not a reason to fetch 296 MiB again.
+5. **The caret.** Third attempt, and this time the cause turned out to be ours. Jott never asks CodeMirror to draw its own
+   caret — the extension that does it, `drawSelection()`, is not installed — so the caret has always been the browser's,
+   and since 0.0.16 our editor stylesheet hid it with `caret-color: transparent`, under a comment claiming CodeMirror
+   hides the native caret itself. Every earlier attempt recoloured a caret element this app never creates. It is now ink in
+   both schemes, and Windows high-contrast mode gets the system's text colour.
+
+   Two releases went by on a wrong premise, so treat this as *measured but not seen*: the machine that built it has no
+   display. If there is still no caret, check 6 below says which bug is left.
+
+**Six things worth trying**
+
+1. Search for something and read a row's number, then hover it. It must not look like a percentage anywhere.
+2. Type into a note. Is there a caret? Then click into the search box and back: does it come back? (Clicking between two
+   lines should never lose it either.)
+3. Look at the dot with a folder you have never indexed: `embeddings off` or `model not downloaded`, depending on what
+   you answered when asked. Then press `[embed]` and watch whether it changes without restarting.
+4. Click the dot. Settings should open.
+5. Open `INDEX.md`: the pane header should say `read-only` and **close** should still work.
+6. If the caret is *still* missing — **Ctrl+Shift+I**, paste this into the console, then click back into your note and
+   type. It waits three seconds before reporting on purpose: clicking the console takes focus away from the editor, and a
+   snapshot taken at that moment describes an unfocused window rather than the thing you were looking at. Send me the one
+   line it prints — this box has no screen, and I would rather fix the right bug than ship a fourth guess.
+
+   ```js
+   setTimeout(() => {
+     const e = document.querySelector('.cm-editor')
+     const n = document.querySelector('.cm-content')
+     const c = e && e.querySelector('.cm-cursor')
+     const cs = c && getComputedStyle(c)
+     console.log(JSON.stringify({
+       editorClass: e && e.className,
+       drawnCaret: cs ? cs.display + ' ' + cs.borderLeftWidth + ' ' + cs.borderLeftColor : 'no such element',
+       nativeCaret: n && getComputedStyle(n).caretColor,
+       paperBehindIt: n && getComputedStyle(n).backgroundColor,
+     }))
+   }, 3000)
+   ```
+
+   What it answers: whether a `.cm-cursor` element exists at all (it should read `no such element`, because Jott does not
+   ask CodeMirror to draw one), and what colour the browser's own caret was told to be. `nativeCaret: "transparent"` means
+   something is still hiding it; an ink colour with nothing visible points at something else — the paper colour behind it,
+   say — which is a different fix again.
+
 ## 2c. Since 0.0.11: press **Ctrl+Shift+D** when something is odd
 
 A drawer opens at the bottom of the window with what this run has actually been doing:

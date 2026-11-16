@@ -97,7 +97,8 @@ export function statusFor(event: IngestEvent): Status | null {
   return null
 }
 
-function mebibytes(bytes: number): string {
+/** Whole MiB as a person reads them. Exported for the model dot, so two places cannot quote different sizes. */
+export function mebibytes(bytes: number): string {
   return Math.round(bytes / MIB).toString()
 }
 

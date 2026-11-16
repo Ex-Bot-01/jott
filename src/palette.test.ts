@@ -62,53 +62,70 @@ describe('the palette names both colours', () => {
 })
 
 /**
- * A caret you cannot find is not a small thing in a text editor: it is the one pixel that says where your
- * typing will land. CodeMirror draws its own default — 1px, its own grey, and `transparent` until a focus
- * selector matches — which on a scaled Windows display reads as no caret at all. The palette owns ink, so the
- * palette has to name the caret too.
+ * A caret you cannot find is not a small thing in a text editor: it is the one pixel that says where your typing will
+ * land. Two releases went hunting for it in CodeMirror's drawn caret — and Jott never asks CodeMirror to draw one.
+ * `drawSelection()` is the only producer of `.cm-cursor` elements (`node_modules/@codemirror/view/dist/index.js`,
+ * `function drawSelection` returns `[selectionConfig, cursorLayer, selectionLayer, hideNativeSelection, …]`), it is not
+ * imported anywhere in `src/`, and so every rule that coloured `.cm-cursor` matched nothing at all. The caret this window
+ * has always had is the browser's own — and since c6665c7 (0.0.16) this file hid it with
+ * `'.cm-content': { caretColor: 'transparent' }`, under a comment claiming CodeMirror hides the native caret itself.
+ * It does not: that hiding ships inside `drawSelection()` too.
  */
-describe('the caret is named, not inherited', () => {
+describe('the caret is the browser’s, and this window stops hiding it', () => {
   const editor = readFileSync(fileURLToPath(new URL('./lib/Editor.svelte', import.meta.url)), 'utf8')
 
-  it('draws the editor caret in ink, wide enough to see', () => {
-    const rule = editor.slice(editor.indexOf('.cm-cursor'))
-    expect(rule, 'the editor never mentions .cm-cursor').not.toBe('')
-    expect(rule).toMatch(/border-left:\s*2px solid var\(--ink\)/)
-  })
-
-  it('hands the caret colour to CodeMirror as a theme, not only as CSS', () => {
-    // The rule above wins today by being more specific than what CodeMirror injects at runtime. Winning a race is
-    // not the same as not racing: the same light facet also paints a bright blue selection and a `black` native
-    // caret, and any future CM selector can arrive later and heavier. Through `EditorView.theme` the colours land
-    // inside CodeMirror's own style module, in the facet the window is actually in.
+  it('names the caret colour instead of making it transparent', () => {
+    // The theme is where the answer has to live: CodeMirror injects its style modules after the bundled stylesheet, so
+    // a global `caret-color` in app.css loses to anything this component says about `.cm-content`.
     const theme = editor.slice(editor.indexOf('EditorView.theme'))
     expect(theme, 'the editor builds no CodeMirror theme').not.toBe('')
-    expect(theme).toMatch(/borderLeft:\s*['"]2px solid var\(--ink\)['"]/)
-    // The facet itself: without it, CM's `&dark` variants never apply and the light ones contradict the palette.
-    expect(editor).toContain('EditorView.darkTheme.of')
+    expect(theme).toMatch(/'.cm-content':\s*\{[^}]*caretColor:\s*'var\(--ink\)'/)
   })
 
-  it('stops the caret from switching itself off mid-blink', () => {
-    // CodeMirror blinks with `steps(1)` to `opacity: 0`, so the caret is genuinely absent half the time. "Hard to
-    // see where the cursor is" is a fair description of that, in either scheme.
-    expect(editor).toMatch(/@keyframes\s+jott-caret[\s\S]*?opacity:\s*0?\.[1-9]/)
-    expect(editor).toContain('animation-name: jott-caret')
-    // …and stands still for someone who asked their OS for no motion.
-    expect(editor).toMatch(/prefers-reduced-motion:\s*reduce[\s\S]*?animation:\s*none/)
+  it('never hides a caret anywhere again', () => {
+    // The bug this pins was written by an attempt to fix the opposite bug. `transparent` is not a way to say "CodeMirror
+    // will draw it"; when nothing draws it, it is a way to say "there is no caret".
+    expect(editor).not.toMatch(/caretColor:\s*['"]transparent/)
+    expect(appCss).not.toMatch(/caret-color:\s*transparent/)
+  })
+
+  it('does not style a caret CodeMirror was never asked to draw', () => {
+    // The invariant that would have saved two releases: styling `.cm-cursor` is only meaningful if the extension that
+    // creates those elements is installed. Both halves are checked, so neither can quietly arrive alone.
+    expect(editor, 'the window installs no drawn caret').not.toMatch(/import\s*\{[^}]*drawSelection/)
+    // Rules, not prose: a comment is allowed to name the element while explaining why nothing styles it. Checked on
+    // both places a selector can live — a `:global(...)` in the stylesheet and a key in the theme object.
+    const globalSelectors = [...editor.matchAll(/:global\(([^)]*)\)/g)].map((m) => m[1]).join('\n')
+    expect(globalSelectors, 'a stylesheet rule for an element that is never created').not.toContain('cm-cursor')
+    expect(editor).not.toMatch(/'\.cm-cursor[^']*':/);
   })
 
   it('keeps the caret visible in Windows high-contrast mode', () => {
-    // Forced colours replace custom properties, so `var(--ink)` is exactly what does not survive there. The system
-    // colour for text on the canvas does.
-    expect(editor).toMatch(/forced-colors:\s*active[\s\S]*?border-left-color:\s*CanvasText/)
+    // Forced colours replace custom properties, so `var(--ink)` is exactly what does not survive there. The system's
+    // text-on-canvas colour does — and with the native caret this is the only caret rule that can matter.
+    expect(editor).toMatch(/forced-colors:\s*active[\s\S]{0,200}caret-color:\s*CanvasText/)
   })
 
   it('keeps the native carets in the window on the same ruler', () => {
     expect(appCss).toMatch(/caret-color:\s*var\(--ink\)/)
   })
+
+  it('stops naming a CodeMirror variable that CodeMirror does not have', () => {
+    // 0.0.16 set `--cm-cursor: var(--ink)` and commented that CodeMirror takes its caret colour from that variable. It
+    // does not: the base theme hardcodes `borderLeft: "1.2px solid black"` and `&dark .cm-cursor { borderLeftColor:
+    // "#ddd" }` — both of which apply to elements this app never creates. A variable nobody reads is not a fix, and a
+    // comment that says otherwise sends the next person to the wrong file.
+    expect(editor).not.toContain('--cm-cursor')
+    const codeMirror = readFileSync(
+      fileURLToPath(new URL('../node_modules/@codemirror/view/dist/index.js', import.meta.url)),
+      'utf8',
+    )
+    expect(codeMirror, 'the claim was checked against the dependency, and the dependency has no such variable').not.toContain(
+      '--cm-cursor',
+    )
+  })
 })
 
-/** A row that is not yours has to look different, in a way a test can see. */
 describe('the catalogue row still looks like something you do not edit', () => {
   it('styles the class the tree actually emits', () => {
     // These rows used to be `disabled`, which carried the dimming as a side effect of an attribute whose real job was

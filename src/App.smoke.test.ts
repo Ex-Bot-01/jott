@@ -48,6 +48,24 @@ const searchSays: { indexed: boolean | null } = { indexed: null }
 /** When on, `search_vault` answers the way np 0.5.1 does with word-beginning matching: the row was reached from
  *  `grand`, and np says so in `prefix_used`, `prefix_terms` and `matched_exactly`. */
 const widening = vi.hoisted(() => ({ on: false }))
+/** A pending `models.list`, for the folder-switch race. Only the *first* answer is delayed: delay them all and both
+    arrive late by the same amount, so the one that was asked first is still the one that lands first and the race the
+    test claims to run never happens. */
+const slowStatus = vi.hoisted(() => ({ on: false, served: 0 }))
+/** The two "nobody could say" facts, set per test: an unreadable settings file, and np's own sentence for a models
+    directory it could not list. */
+const statusExtras = vi.hoisted(() => ({
+  current: { configUnreadable: false, modelsDirError: null as string | null },
+}))
+// What note-processor's `models.list` says about the model, per test: here / not here / never answered.
+const modelStatus = vi.hoisted(() => ({
+  current: {
+    provider: null,
+    modelId: null,
+    present: null,
+    bytesTotal: null,
+  } as { provider: string | null; modelId: string | null; present: boolean | null; bytesTotal: number | null },
+}))
 
 /** A stand-in for `matchMedia`, which jsdom does not have: the window asks which colour scheme the desktop is in,
  *  and CodeMirror has to be told the answer (0.0.15 never told it, so CM painted a black caret on dark paper). */
@@ -207,6 +225,25 @@ vi.mock('@tauri-apps/api/core', () => ({
           docsUrl: 'https://github.com/Ex-Bot-01/jott/blob/main/docs/testing-on-windows.md',
           diagnostics: `Jott 0.0.5 · https://github.com/Ex-Bot-01/jott\nnp ${NP_STUB_VERSION} from bundled (C:\\Program Files\\Jott\\np\\np.exe)`,
         })
+      case 'embeddings_status':
+        // Core answers this through `app.current()?`, which refuses with *no vault is open* — a first-run window must
+        // not get a friendly answer here, or the guard in App that keeps the dot away can be deleted and the suite stays
+        // green while a dot reading "embeddings off" appears on a machine with nothing open.
+        if (session.current === null) {
+          return Promise.reject({ kind: 'noVault', message: 'no vault is open' })
+        }
+        // `models.list` goes to np's reader connection, which has to start that child and can wait behind nothing but
+        // its own startup — long enough for a folder switch to overtake it. That race is the subject of a test below.
+        // Snapshot what np "knows" when the request arrives, not when it answers. Reading the switch inside the timer
+        // made every slow-answer test harmless: the delayed reply carried the *new* folder's facts, so there was no
+        // stale answer to drop and the guard under test could be deleted with the suite green.
+        const payload = { ...modelStatus.current, ...statusExtras.current }
+        const first = slowStatus.on && slowStatus.served === 0
+        slowStatus.served += 1
+        if (first) {
+          return new Promise((resolve) => setTimeout(() => resolve(payload), 400))
+        }
+        return Promise.resolve(payload)
       case 'search_vault': {
         searchCalls.push({ ...(args ?? {}) })
         const query = String((args as { query?: string } | undefined)?.query ?? '')
@@ -217,7 +254,9 @@ vi.mock('@tauri-apps/api/core', () => ({
                 path: 'family.md',
                 snippet: 'my grandmother kept a jar of kumquats',
                 kind: 'note',
-                score: 1.1,
+                // Measured against np 0.5.1 on a keyword hit; a fixture of `1.1` would never exercise the rounding
+                // this module exists for.
+                score: 0.01639344262295082,
                 bm25: null,
                 cosine: 0.82,
                 matchedExactly: false,
@@ -241,7 +280,7 @@ vi.mock('@tauri-apps/api/core', () => ({
               path,
               snippet,
               kind: 'note',
-              score: 1.4,
+              score: 0.016129032258064516,
               bm25: 1.4,
               cosine: null,
               // This stub stands for a backend that has no word-beginning flag: unknown, not "matched exactly".
@@ -550,6 +589,18 @@ function ingest(event: IngestEvent) {
 /** Mount a fresh window. The returned handle lets a test unmount it and mount another, which is the only honest way
     to ask "does this survive closing the app?" — `localStorage` outlives the component either way, but an orphaned
     instance left mounted would keep answering events behind the next window's back. */
+/** Open the settings panel and hand back its word-beginnings checkbox — that is where the choice lives now. */
+async function prefixToggleInSettings(): Promise<HTMLInputElement> {
+  const button = document.querySelector('button[aria-label="Settings"]') as HTMLButtonElement | null
+  expect(button, 'the header offers settings').not.toBeNull()
+  button!.click()
+  return (await vi.waitFor(() => {
+    const el = document.querySelector('[data-testid="settings-prefix"]') as HTMLInputElement | null
+    expect(el, 'the panel carries the word-beginnings choice').not.toBeNull()
+    return el!
+  }, { timeout: 2000 })) as HTMLInputElement
+}
+
 async function start(): Promise<{ errors: unknown[]; app: Component }> {
   document.body.innerHTML = '<div id="app"></div><div id="boot"><p>Jott is starting…</p></div>'
   const errors: unknown[] = []
@@ -570,6 +621,12 @@ describe('the window mounts', () => {
     commands.length = 0
     searchCalls.length = 0
     widening.on = false
+    // Every switch gets reset here — including the model-status ones, which three tests set and would otherwise hand to
+    // whatever is declared after them.
+    modelStatus.current = { provider: null, modelId: null, present: null, bytesTotal: null }
+    statusExtras.current = { configUnreadable: false, modelsDirError: null }
+    slowStatus.on = false
+    slowStatus.served = 0
     consentAnswer.current = 'accepted'
     scenario.current = 'empty'
     incompleteSettings.current = false
@@ -1198,8 +1255,11 @@ describe('the window mounts', () => {
     await vi.waitFor(() => expect(searchCalls.length).toBeGreaterThan(0))
     expect(searchCalls.at(-1)?.prefix, 'an untouched window searches whole words').toBe(false)
 
-    const toggle = document.querySelector('input[aria-label="Match word beginnings"]') as HTMLInputElement
-    expect(toggle, 'the window offers the choice').not.toBeNull()
+    // Asked for by name: a control beside the search box is one more thing competing with the question being typed,
+    // and the tester asked for it in settings instead.
+    expect(document.querySelectorAll('.tools input[type="checkbox"]').length, 'the toolbar no longer carries it').toBe(0)
+
+    const toggle = await prefixToggleInSettings()
     expect(toggle.checked).toBe(false)
 
     toggle.checked = true
@@ -1212,7 +1272,7 @@ describe('the window mounts', () => {
     unmount(first.app)
     const second = await start()
 
-    const again = document.querySelector('input[aria-label="Match word beginnings"]') as HTMLInputElement
+    const again = await prefixToggleInSettings()
     expect(again.checked, 'the choice is the app’s memory, not this window’s').toBe(true)
     const box2 = document.querySelector('input[type="search"]') as HTMLInputElement
     box2.value = 'grand'
@@ -1325,7 +1385,7 @@ describe('the window mounts', () => {
     await vi.waitFor(() => expect(searchCalls.at(-1)?.prefix).toBe(true))
     // The remembered choice is untouched — that is what the checkbox beside the box is for.
     expect(localStorage.getItem(PREFIX_KEY)).toBeNull()
-    const toggle = document.querySelector('input[aria-label="Match word beginnings"]') as HTMLInputElement
+    const toggle = await prefixToggleInSettings()
     expect(toggle.checked, 'a one-off offer must not move the toggle').toBe(false)
 
     // Typing a new question starts from the remembered setting again.
@@ -2508,6 +2568,242 @@ describe('the window mounts', () => {
     const stillOpen = document.querySelector('#rel') as HTMLInputElement | null
     expect(stillOpen, 'a refused rename keeps its dialog').not.toBeNull()
     expect(stillOpen!.value, 'and the name that was typed').toBe('taken.md')
+    expect(errors).toEqual([])
+  })
+
+  it('offers a way to close the note beside the note itself', async () => {
+    // v0.0.16 added a **close** button and the tester still reported "there is no button to close a file from the
+    // editor" — because it sat up in the sidebar toolbar among the tree's own actions, far from the page of text they
+    // were looking at. A control belongs where the thing it acts on is.
+    scenario.current = 'vault'
+    const { errors } = await start()
+
+    let row!: HTMLElement
+    await vi.waitFor(() => {
+      row = document.querySelector('.tree button[data-kind="Note"]') as HTMLElement
+      expect(row, 'the fixture has a note').not.toBeNull()
+    }, { timeout: 2000 })
+    row.click()
+
+    const bar = await vi.waitFor(() => {
+      const el = document.querySelector('[data-testid="editor-close"]') as HTMLButtonElement | null
+      expect(el, 'the pane holding the note offers to close it').not.toBeNull()
+      return el!
+    }, { timeout: 2000 })
+    expect(bar.disabled).toBe(false)
+    expect(document.querySelector('.note-bar')?.textContent).toContain('inbox.md')
+
+    bar.click()
+    await vi.waitFor(() =>
+      expect((document.querySelector('[data-testid="close-note"]') as HTMLButtonElement).disabled).toBe(true),
+      { timeout: 2000 },
+    )
+    expect(document.querySelector('[data-testid="editor-close"]'), 'nothing open, nothing to close').toBeNull()
+    expect(errors).toEqual([])
+  })
+
+  it('puts note-processor’s number beside the row it ranked', async () => {
+    // The ask was "a similarity score beside each file". What np sends is a fused *rank* score, not a percentage, so
+    // the row prints np's own figure and says what it is — and shows the cosine only on the rows where vectors ran.
+    widening.on = true
+    const { errors } = await start()
+
+    const box = document.querySelector('input[type="search"]') as HTMLInputElement
+    box.value = 'grand'
+    box.dispatchEvent(new Event('input', { bubbles: true }))
+
+    const row = await vi.waitFor(() => {
+      const el = document.querySelector('.hit-path')?.closest('button') as HTMLButtonElement | undefined
+      // `toBeTruthy`, not `not.toBeNull()`: optional chaining hands back `undefined` when the row is missing, and
+      // `undefined` is not null — a waitFor written that way succeeds on the first tick and awaits nothing.
+      expect(el, 'the widened search answers').toBeTruthy()
+      return el!
+    }, { timeout: 2000 })
+
+    expect(row.textContent).toContain('0.0164') // three significant figures of np's own figure, unconverted
+    expect(row.textContent).toContain('meaning 0.82') // its `cosine`, because this fixture had vectors
+    const score = row.querySelector('[data-testid="hit-score"]') as HTMLElement
+    expect(score.title).toContain('not a percentage')
+    expect(score.textContent).not.toContain('%')
+    // A `title` is a mouse affordance. The row's accessible name has to carry the same warning, or a screen reader
+    // announces "0.0164" as if it were a score worth comparing — which is exactly the misreading.
+    const button = row.closest('button') as HTMLButtonElement
+    expect(button.getAttribute('aria-label') ?? '').toContain('not a percentage')
+
+    // `widening.on` is reset in beforeEach, where every switch gets reset — a mid-test failure must not leak it.
+    expect(errors).toEqual([])
+  })
+
+  it('says nothing about meanings when note-processor compared none', async () => {
+    scenario.current = 'vault'
+    const { errors } = await start()
+
+    const box = document.querySelector('input[type="search"]') as HTMLInputElement
+    box.value = 'grandmother'
+    box.dispatchEvent(new Event('input', { bubbles: true }))
+
+    const row = await vi.waitFor(() => {
+      const el = document.querySelector('.hit-path')?.closest('button') as HTMLButtonElement | undefined
+      expect(el, 'the keyword search answers').toBeTruthy()
+      return el!
+    }, { timeout: 2000 })
+
+    // The fixture's `cosine` is null — vectors never ran. "meaning 0" would be a statement about a measurement nobody
+    // took, which is the mistake this row refuses to make.
+    expect(row.textContent).not.toContain('meaning')
+    expect(row.querySelector('[data-testid="hit-score"]')?.textContent).toBe('0.0161')
+    expect(errors).toEqual([])
+  })
+
+  it('shows a model dot that says which of six things is true', async () => {
+    // "A green dot when the embedding model is active" is three states in one sentence — configured, downloaded, and
+    // used by this folder — and the tester deserves to tell them apart. Each comes from a different fact: np's settings
+    // file, np's `models.list`, and Jott's own per-file markers.
+    modelStatus.current = { provider: 'local-model', modelId: 'embeddinggemma-2', present: true, bytesTotal: 309855456 }
+    scenario.current = 'indexed'
+    const { errors } = await start()
+
+    const dot = await vi.waitFor(() => {
+      const el = document.querySelector('[data-testid="model-dot"]') as HTMLButtonElement | null
+      expect(el, 'the status line carries the model state').not.toBeNull()
+      return el!
+    }, { timeout: 2000 })
+
+    // The fixture's one note carries the `Embedded` marker, so the count travels from the tree's own stamps into the
+    // sentence — singular, because a label that says "1 notes" is its own bug report.
+    await vi.waitFor(() => expect(dot.getAttribute('aria-label') ?? '').toContain('1 note in this folder has vectors'), {
+      timeout: 2000,
+    })
+    expect(dot.dataset.state).toBe('active')
+
+    // Clicking it goes where the choice lives now.
+    dot.click()
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="settings-prefix"]')).not.toBeNull(), {
+      timeout: 2000,
+    })
+    expect(errors).toEqual([])
+  })
+
+  it('never draws an unanswered question as switched off', async () => {
+    // The mistake this exists to prevent: np did not answer, the dot went grey, and a person with 296 MiB of weights
+    // on their disk was told their embeddings were off.
+    modelStatus.current = { provider: 'local-model', modelId: 'embeddinggemma-2', present: null, bytesTotal: 309855456 }
+    scenario.current = 'vault'
+    const { errors } = await start()
+
+    const dot = await vi.waitFor(() => {
+      const el = document.querySelector('[data-testid="model-dot"]') as HTMLButtonElement | null
+      expect(el).not.toBeNull()
+      return el!
+    }, { timeout: 2000 })
+
+    await vi.waitFor(() => expect(dot.getAttribute('aria-label') ?? '').toContain('did not answer'), { timeout: 2000 })
+    expect(dot.dataset.state).toBe('unknown')
+    expect(dot.getAttribute('aria-label') ?? '').not.toContain('switched off')
+    expect(errors).toEqual([])
+  })
+
+  it('names the download a waiting dot is waiting for', async () => {
+    modelStatus.current = { provider: 'local-model', modelId: 'embeddinggemma-2', present: false, bytesTotal: 309855456 }
+    scenario.current = 'vault'
+    const { errors } = await start()
+
+    const dot = await vi.waitFor(() => {
+      const el = document.querySelector('[data-testid="model-dot"]') as HTMLButtonElement | null
+      expect(el).not.toBeNull()
+      return el!
+    }, { timeout: 2000 })
+
+    await vi.waitFor(() => expect(dot.getAttribute('aria-label') ?? '').toContain('296 MiB'), { timeout: 2000 })
+    expect(dot.dataset.state).toBe('waiting')
+    expect(errors).toEqual([])
+  })
+
+
+
+  it('draws no dot and asks nothing about a model before a folder is open', async () => {
+    // A first-run window has no vault, so core refuses `embeddings_status` — and the dot must simply not be there,
+    // rather than reading "embeddings off" over a machine where nobody has ever been asked. The stub refuses the way
+    // core does, so deleting App's guard shows up here instead of on somebody's first screen.
+    scenario.current = 'empty'
+    const { errors } = await start()
+
+    expect(document.querySelector('[data-testid="model-dot"]')).toBeNull()
+    expect(commands).not.toContain('embeddings_status')
+    expect(document.querySelector('[data-testid="global-problem"]'), 'a refused question is not a problem to report')
+      .toBeNull()
+    expect(errors).toEqual([])
+  })
+
+  it('asks note-processor about its model once per opened folder', async () => {
+    // Deliberately asked on every folder open, unlike the consent offer (which stays lazy): a status light has to be
+    // able to say "on" as well as "not bought yet", and it goes to the reader connection so it cannot queue behind an
+    // embed. That costs the second np child at folder-open — so the same ruling that made the offer lazy still has to
+    // hold for everything else: one ask per folder, not one per keystroke, re-list, or event.
+    scenario.current = 'vault'
+    modelStatus.current = { provider: 'local-model', modelId: 'embeddinggemma-2', present: true, bytesTotal: 309855456 }
+    const { errors } = await start()
+
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="model-dot"]')).not.toBeNull(), { timeout: 2000 })
+    const asked = () => commands.filter((c) => c === 'embeddings_status').length
+    expect(asked()).toBe(1)
+
+    // Typing a query…
+    const box = document.querySelector('input[type="search"]') as HTMLInputElement
+    box.value = 'kumquat'
+    box.dispatchEvent(new Event('input', { bubbles: true }))
+    await vi.waitFor(() => expect(document.querySelector('.hit-path')).not.toBeNull(), { timeout: 2000 })
+
+    // …and a pass finishing. That one *is* allowed to ask again: a finished pass is exactly what puts a model's bytes
+    // into np's models directory, and watching a light stay amber through a download it just completed is the failure
+    // mode the dot would otherwise be known for. Pinned as an exception so it stays deliberate rather than accidental.
+    handlers.get('ingest://event')?.({ embedded: { rel: 'inbox.md', model: 'embeddinggemma-2' } })
+    await vi.waitFor(() => expect(asked()).toBe(2), { timeout: 2000 })
+
+    // Typing after that adds nothing.
+    box.value = 'kumquats'
+    box.dispatchEvent(new Event('input', { bubbles: true }))
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    expect(asked(), 'the second np child should not be asked about on every keystroke').toBe(2)
+    expect(errors).toEqual([])
+  })
+
+  it('drops a model answer that arrived after the folder changed', async () => {
+    // Folder A is configured and its `models.list` has to start a child, so it answers late. Folder B names no
+    // provider and answers from its settings file at once. If A's late reply is allowed to land last, the bar reads
+    // "model ready" over a vault with nothing configured — and because the window already recorded B as asked, nothing
+    // re-asks until an ingest event or a consent answer happens to come along.
+    scenario.current = 'vault'
+    extraRecent.current = 'D:\\other'
+    modelStatus.current = { provider: 'local-model', modelId: 'embeddinggemma-2', present: true, bytesTotal: 309855456 }
+    slowStatus.on = true
+    const { errors } = await start()
+
+    // A's request is in flight. Switch folders while it is still out there.
+    await vi.waitFor(() => expect(commands).toContain('embeddings_status'), { timeout: 2000 })
+    modelStatus.current = { provider: null, modelId: null, present: null, bytesTotal: null }
+
+    const menu = document.querySelector('select.recents') as HTMLSelectElement
+    expect(menu).not.toBeNull()
+    menu.value = 'D:\\other'
+    menu.dispatchEvent(new Event('change', { bubbles: true }))
+
+    // B answers at once from its own settings file, so the bar reads *off* — and A's answer, asked about a folder that
+    // is no longer on screen, is still in flight. It lands after this point: without the guard it overwrites B with
+    // "model ready", which is what the assertion below catches (checked by deleting the guard, not by hoping).
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="model-dot"]')?.getAttribute('data-state')).toBe('off'), {
+      timeout: 2000,
+    })
+    expect(commands.filter((c) => c === 'embeddings_status').length, 'the switch asked about the new folder').toBe(2)
+
+    // Wait past A's delay: this is the moment a stale answer would land.
+    await new Promise((resolve) => setTimeout(resolve, 600))
+    const dot = document.querySelector('[data-testid="model-dot"]') as HTMLButtonElement
+    expect(dot.getAttribute('data-state'), 'a late answer about another folder landed').toBe('off')
+    expect(dot.getAttribute('aria-label') ?? '').not.toContain('model ready')
+
+    slowStatus.on = false
+    extraRecent.current = null
     expect(errors).toEqual([])
   })
 

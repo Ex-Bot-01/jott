@@ -35,6 +35,7 @@ fn main() {
             ipc::set_consent,
             ipc::embeddings_offer,
             ipc::embeddings_help,
+            ipc::embeddings_status,
             ipc::diagnostics,
             ipc::flush_on_close
         ])
