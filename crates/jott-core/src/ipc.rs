@@ -943,13 +943,33 @@ impl VaultSession {
     /// had to queue behind a running embed would sit grey through the whole download, which is exactly the moment
     /// someone is watching it.
     pub async fn embeddings_status(&self) -> EmbeddingsStatus {
-        use crate::ingest::consent::{embedding_model_named, embedding_provider_named};
+        use crate::ingest::consent::{consent_file_is_unreadable, embedding_model_named, embedding_provider_named};
         let path = self.np_config.as_deref();
+        // The file's *state* before its contents. A TOML that fails to parse names no provider and proves nothing about
+        // a model, and asking np would spend a child to build an answer out of nothing.
+        let unreadable = path.map(consent_file_is_unreadable).unwrap_or(false);
+        if unreadable {
+            return EmbeddingsStatus {
+                provider: None,
+                model_id: None,
+                present: None,
+                bytes_total: None,
+                config_unreadable: true,
+                models_dir_error: None,
+            };
+        }
         let provider = path.and_then(embedding_provider_named);
         // `"none"` is what `embeddings.disable` writes, and it means off. Anything else names a provider, which is the
         // only reason to ask np about a model at all — an unconfigured folder must not wake a second child for a dot.
         if !provider.as_deref().is_some_and(|named| !named.eq_ignore_ascii_case("none")) {
-            return EmbeddingsStatus { provider, model_id: None, present: None, bytes_total: None };
+            return EmbeddingsStatus {
+                provider,
+                model_id: None,
+                present: None,
+                bytes_total: None,
+                config_unreadable: false,
+                models_dir_error: None,
+            };
         }
         let configured_model = path.and_then(embedding_model_named);
         let started = std::time::Instant::now();
@@ -968,7 +988,14 @@ impl VaultSession {
         let Some(listing) = listing else {
             // Nobody answered. The settings file still says which model this folder points at, so that half is kept
             // and the two halves that need np stay `None`.
-            return EmbeddingsStatus { provider, model_id: configured_model, present: None, bytes_total: None };
+            return EmbeddingsStatus {
+                provider,
+                model_id: configured_model,
+                present: None,
+                bytes_total: None,
+                config_unreadable: false,
+                models_dir_error: None,
+            };
         };
         let model_id = configured_model.or_else(|| match listing.pinned.as_slice() {
             [only] => Some(only.id.clone()),
@@ -976,17 +1003,17 @@ impl VaultSession {
             // when it would not promise 310 MB for what might be an 865 MB download.
             _ => None,
         });
+        let models_dir_error = listing.models_dir_error.clone();
         let present = model_id
             .as_deref()
             // An unreadable models directory is not evidence of absence: `artifact_present` says "no" because a
             // consent gate must fail closed, and a light has no business inheriting that caution as a fact.
-            .filter(|_| listing.models_dir_error.is_none())
+            .filter(|_| models_dir_error.is_none())
             .map(|id| listing.artifact_present(id));
-        let bytes_total = model_id
-            .as_deref()
-            .and_then(|id| listing.price_of(id))
-            .or_else(|| listing.only_price());
-        EmbeddingsStatus { provider, model_id, present, bytes_total }
+        // Deliberately no `or_else(only_price)`: once a model is named, "the table's one entry" can only be another
+        // model's price, and 309855456 bytes attached to the wrong file is a number Jott made up.
+        let bytes_total = model_id.as_deref().and_then(|id| listing.price_of(id));
+        EmbeddingsStatus { provider, model_id, present, bytes_total, config_unreadable: false, models_dir_error }
     }
 
     /// The consent prompt's two buttons, taken to np over the pipe.
@@ -1345,8 +1372,16 @@ pub struct EmbeddingsStatus {
     /// unreadable directory is nobody's verdict about a download (`artifact_present` answers "no" for a gate that must
     /// fail closed; a dot has no such reason to guess).
     pub present: Option<bool>,
-    /// What the download costs, from np's own pinned table, so an amber dot can name the size it is waiting on.
+    /// What the download costs, **for `modelId`** — from np's pinned table, and never "the table's one entry" once a
+    /// different model was named. A price attached to the wrong model is Jott's arithmetic wearing np's authority.
     pub bytes_total: Option<u64>,
+    /// np's settings file exists and will not parse. That is not "no provider", and it must not be drawn as
+    /// embeddings-off: the same flattening the consent card refuses (`SettingsGap::ConfigUnreadable`) would have the dot
+    /// telling somebody to switch embeddings on in a folder whose np cannot read its own config.
+    pub config_unreadable: bool,
+    /// np's own sentence for a models directory it could not list, when it sent one. A result rather than a fault — np
+    /// is running and reporting that it cannot look — so the dot quotes it instead of saying "did not answer".
+    pub models_dir_error: Option<String>,
 }
 
 /// The payload for `np://missing`: what is wrong, and how to fix it on this platform (§2).

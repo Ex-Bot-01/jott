@@ -48,6 +48,15 @@ const searchSays: { indexed: boolean | null } = { indexed: null }
 /** When on, `search_vault` answers the way np 0.5.1 does with word-beginning matching: the row was reached from
  *  `grand`, and np says so in `prefix_used`, `prefix_terms` and `matched_exactly`. */
 const widening = vi.hoisted(() => ({ on: false }))
+/** A pending `models.list`, for the folder-switch race. Only the *first* answer is delayed: delay them all and both
+    arrive late by the same amount, so the one that was asked first is still the one that lands first and the race the
+    test claims to run never happens. */
+const slowStatus = vi.hoisted(() => ({ on: false, served: 0 }))
+/** The two "nobody could say" facts, set per test: an unreadable settings file, and np's own sentence for a models
+    directory it could not list. */
+const statusExtras = vi.hoisted(() => ({
+  current: { configUnreadable: false, modelsDirError: null as string | null },
+}))
 // What note-processor's `models.list` says about the model, per test: here / not here / never answered.
 const modelStatus = vi.hoisted(() => ({
   current: {
@@ -55,7 +64,7 @@ const modelStatus = vi.hoisted(() => ({
     modelId: null,
     present: null,
     bytesTotal: null,
-  } as { provider: string | null; modelId: string | null; present: number | boolean | null; bytesTotal: number | null },
+  } as { provider: string | null; modelId: string | null; present: boolean | null; bytesTotal: number | null },
 }))
 
 /** A stand-in for `matchMedia`, which jsdom does not have: the window asks which colour scheme the desktop is in,
@@ -217,7 +226,24 @@ vi.mock('@tauri-apps/api/core', () => ({
           diagnostics: `Jott 0.0.5 · https://github.com/Ex-Bot-01/jott\nnp ${NP_STUB_VERSION} from bundled (C:\\Program Files\\Jott\\np\\np.exe)`,
         })
       case 'embeddings_status':
-        return Promise.resolve({ ...modelStatus.current })
+        // Core answers this through `app.current()?`, which refuses with *no vault is open* — a first-run window must
+        // not get a friendly answer here, or the guard in App that keeps the dot away can be deleted and the suite stays
+        // green while a dot reading "embeddings off" appears on a machine with nothing open.
+        if (session.current === null) {
+          return Promise.reject({ kind: 'noVault', message: 'no vault is open' })
+        }
+        // `models.list` goes to np's reader connection, which has to start that child and can wait behind nothing but
+        // its own startup — long enough for a folder switch to overtake it. That race is the subject of a test below.
+        // Snapshot what np "knows" when the request arrives, not when it answers. Reading the switch inside the timer
+        // made every slow-answer test harmless: the delayed reply carried the *new* folder's facts, so there was no
+        // stale answer to drop and the guard under test could be deleted with the suite green.
+        const payload = { ...modelStatus.current, ...statusExtras.current }
+        const first = slowStatus.on && slowStatus.served === 0
+        slowStatus.served += 1
+        if (first) {
+          return new Promise((resolve) => setTimeout(() => resolve(payload), 400))
+        }
+        return Promise.resolve(payload)
       case 'search_vault': {
         searchCalls.push({ ...(args ?? {}) })
         const query = String((args as { query?: string } | undefined)?.query ?? '')
@@ -228,7 +254,9 @@ vi.mock('@tauri-apps/api/core', () => ({
                 path: 'family.md',
                 snippet: 'my grandmother kept a jar of kumquats',
                 kind: 'note',
-                score: 1.1,
+                // Measured against np 0.5.1 on a keyword hit; a fixture of `1.1` would never exercise the rounding
+                // this module exists for.
+                score: 0.01639344262295082,
                 bm25: null,
                 cosine: 0.82,
                 matchedExactly: false,
@@ -252,7 +280,7 @@ vi.mock('@tauri-apps/api/core', () => ({
               path,
               snippet,
               kind: 'note',
-              score: 1.4,
+              score: 0.016129032258064516,
               bm25: 1.4,
               cosine: null,
               // This stub stands for a backend that has no word-beginning flag: unknown, not "matched exactly".
@@ -593,6 +621,12 @@ describe('the window mounts', () => {
     commands.length = 0
     searchCalls.length = 0
     widening.on = false
+    // Every switch gets reset here — including the model-status ones, which three tests set and would otherwise hand to
+    // whatever is declared after them.
+    modelStatus.current = { provider: null, modelId: null, present: null, bytesTotal: null }
+    statusExtras.current = { configUnreadable: false, modelsDirError: null }
+    slowStatus.on = false
+    slowStatus.served = 0
     consentAnswer.current = 'accepted'
     scenario.current = 'empty'
     incompleteSettings.current = false
@@ -2586,11 +2620,15 @@ describe('the window mounts', () => {
       return el!
     }, { timeout: 2000 })
 
-    expect(row.textContent).toContain('1.1') // the fixture's `score`, unconverted
+    expect(row.textContent).toContain('0.0164') // three significant figures of np's own figure, unconverted
     expect(row.textContent).toContain('meaning 0.82') // its `cosine`, because this fixture had vectors
     const score = row.querySelector('[data-testid="hit-score"]') as HTMLElement
     expect(score.title).toContain('not a percentage')
     expect(score.textContent).not.toContain('%')
+    // A `title` is a mouse affordance. The row's accessible name has to carry the same warning, or a screen reader
+    // announces "0.0164" as if it were a score worth comparing — which is exactly the misreading.
+    const button = row.closest('button') as HTMLButtonElement
+    expect(button.getAttribute('aria-label') ?? '').toContain('not a percentage')
 
     // `widening.on` is reset in beforeEach, where every switch gets reset — a mid-test failure must not leak it.
     expect(errors).toEqual([])
@@ -2613,7 +2651,7 @@ describe('the window mounts', () => {
     // The fixture's `cosine` is null — vectors never ran. "meaning 0" would be a statement about a measurement nobody
     // took, which is the mistake this row refuses to make.
     expect(row.textContent).not.toContain('meaning')
-    expect(row.querySelector('[data-testid="hit-score"]')?.textContent).toBe('1.4')
+    expect(row.querySelector('[data-testid="hit-score"]')?.textContent).toBe('0.0161')
     expect(errors).toEqual([])
   })
 
@@ -2682,5 +2720,91 @@ describe('the window mounts', () => {
   })
 
 
+
+  it('draws no dot and asks nothing about a model before a folder is open', async () => {
+    // A first-run window has no vault, so core refuses `embeddings_status` — and the dot must simply not be there,
+    // rather than reading "embeddings off" over a machine where nobody has ever been asked. The stub refuses the way
+    // core does, so deleting App's guard shows up here instead of on somebody's first screen.
+    scenario.current = 'empty'
+    const { errors } = await start()
+
+    expect(document.querySelector('[data-testid="model-dot"]')).toBeNull()
+    expect(commands).not.toContain('embeddings_status')
+    expect(document.querySelector('[data-testid="global-problem"]'), 'a refused question is not a problem to report')
+      .toBeNull()
+    expect(errors).toEqual([])
+  })
+
+  it('asks note-processor about its model once per opened folder', async () => {
+    // Deliberately asked on every folder open, unlike the consent offer (which stays lazy): a status light has to be
+    // able to say "on" as well as "not bought yet", and it goes to the reader connection so it cannot queue behind an
+    // embed. That costs the second np child at folder-open — so the same ruling that made the offer lazy still has to
+    // hold for everything else: one ask per folder, not one per keystroke, re-list, or event.
+    scenario.current = 'vault'
+    modelStatus.current = { provider: 'local-model', modelId: 'embeddinggemma-2', present: true, bytesTotal: 309855456 }
+    const { errors } = await start()
+
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="model-dot"]')).not.toBeNull(), { timeout: 2000 })
+    const asked = () => commands.filter((c) => c === 'embeddings_status').length
+    expect(asked()).toBe(1)
+
+    // Typing a query…
+    const box = document.querySelector('input[type="search"]') as HTMLInputElement
+    box.value = 'kumquat'
+    box.dispatchEvent(new Event('input', { bubbles: true }))
+    await vi.waitFor(() => expect(document.querySelector('.hit-path')).not.toBeNull(), { timeout: 2000 })
+
+    // …and a pass finishing. That one *is* allowed to ask again: a finished pass is exactly what puts a model's bytes
+    // into np's models directory, and watching a light stay amber through a download it just completed is the failure
+    // mode the dot would otherwise be known for. Pinned as an exception so it stays deliberate rather than accidental.
+    handlers.get('ingest://event')?.({ embedded: { rel: 'inbox.md', model: 'embeddinggemma-2' } })
+    await vi.waitFor(() => expect(asked()).toBe(2), { timeout: 2000 })
+
+    // Typing after that adds nothing.
+    box.value = 'kumquats'
+    box.dispatchEvent(new Event('input', { bubbles: true }))
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    expect(asked(), 'the second np child should not be asked about on every keystroke').toBe(2)
+    expect(errors).toEqual([])
+  })
+
+  it('drops a model answer that arrived after the folder changed', async () => {
+    // Folder A is configured and its `models.list` has to start a child, so it answers late. Folder B names no
+    // provider and answers from its settings file at once. If A's late reply is allowed to land last, the bar reads
+    // "model ready" over a vault with nothing configured — and because the window already recorded B as asked, nothing
+    // re-asks until an ingest event or a consent answer happens to come along.
+    scenario.current = 'vault'
+    extraRecent.current = 'D:\\other'
+    modelStatus.current = { provider: 'local-model', modelId: 'embeddinggemma-2', present: true, bytesTotal: 309855456 }
+    slowStatus.on = true
+    const { errors } = await start()
+
+    // A's request is in flight. Switch folders while it is still out there.
+    await vi.waitFor(() => expect(commands).toContain('embeddings_status'), { timeout: 2000 })
+    modelStatus.current = { provider: null, modelId: null, present: null, bytesTotal: null }
+
+    const menu = document.querySelector('select.recents') as HTMLSelectElement
+    expect(menu).not.toBeNull()
+    menu.value = 'D:\\other'
+    menu.dispatchEvent(new Event('change', { bubbles: true }))
+
+    // B answers at once from its own settings file, so the bar reads *off* — and A's answer, asked about a folder that
+    // is no longer on screen, is still in flight. It lands after this point: without the guard it overwrites B with
+    // "model ready", which is what the assertion below catches (checked by deleting the guard, not by hoping).
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="model-dot"]')?.getAttribute('data-state')).toBe('off'), {
+      timeout: 2000,
+    })
+    expect(commands.filter((c) => c === 'embeddings_status').length, 'the switch asked about the new folder').toBe(2)
+
+    // Wait past A's delay: this is the moment a stale answer would land.
+    await new Promise((resolve) => setTimeout(resolve, 600))
+    const dot = document.querySelector('[data-testid="model-dot"]') as HTMLButtonElement
+    expect(dot.getAttribute('data-state'), 'a late answer about another folder landed').toBe('off')
+    expect(dot.getAttribute('aria-label') ?? '').not.toContain('model ready')
+
+    slowStatus.on = false
+    extraRecent.current = null
+    expect(errors).toEqual([])
+  })
 
 })

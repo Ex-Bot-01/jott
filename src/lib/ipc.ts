@@ -323,6 +323,11 @@ export interface ModelStatus {
   modelId: string | null
   present: boolean | null
   bytesTotal: number | null
+  /** np's settings file will not parse. `provider: null` alone cannot say so — an absent key and a broken file look
+      identical, and they need opposite advice. */
+  configUnreadable: boolean
+  /** np's own sentence for a models directory it could not list, when it sent one. */
+  modelsDirError: string | null
 }
 export const embeddingsStatus = () => invoke<ModelStatus>('embeddings_status')
 

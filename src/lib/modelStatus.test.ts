@@ -9,6 +9,8 @@ function facts(over: Partial<ModelFacts> = {}): ModelFacts {
     present: true,
     bytesTotal: 309_855_456,
     embeddedNotes: 12,
+    configUnreadable: false,
+    modelsDirError: null,
     ...over,
   }
 }
@@ -78,4 +80,39 @@ describe('the status line’s model dot', () => {
     }
     expect(dotTitle(facts()).startsWith(DOT_LABEL.active)).toBe(true)
   })
+describe('what the dot says when nobody could answer', () => {
+  it('does not call an unreadable settings file "embeddings off"', () => {
+    // The consent card already refuses this flattening (`configUnreadable`): a TOML that fails to parse names no
+    // provider, and telling somebody to turn embeddings on in a folder whose np cannot read its own config is advice
+    // that cannot work.
+    const unreadable = facts({ configUnreadable: true, provider: null, present: null, embeddedNotes: 0 })
+    expect(dotState(unreadable)).toBe('unknown')
+    const title = dotTitle(unreadable)
+    expect(title).toContain("settings file could not be read")
+    expect(title.toLowerCase()).not.toContain('words only')
+    expect(title.toLowerCase()).not.toContain('switched off')
+  })
+
+  it('quotes note-processor when it is running but cannot look', () => {
+    // np answers an unlistable models directory with a *result* carrying its own sentence. "did not answer" would be
+    // false about a process that answered, and told us exactly what it could not do.
+    const stalled = facts({ present: null, modelsDirError: 'permission denied reading the model store' })
+    expect(dotState(stalled)).toBe('unknown')
+    expect(dotTitle(stalled)).toContain('models directory')
+    expect(dotTitle(stalled)).toContain('permission denied reading the model store')
+  })
+
+  it('says which half is missing when note-processor named no model', () => {
+    // No `pinned` entry and no configured key: np answered, and what it said was "I cannot tell you which model".
+    const unnamed = facts({ modelId: null, present: null, bytesTotal: null })
+    expect(dotState(unnamed)).toBe('unknown')
+    expect(dotTitle(unnamed)).toContain('which model this folder would use')
+  })
+
+  it('keeps the plain silence sentence for a real non-answer', () => {
+    const title = dotTitle(facts({ present: null }))
+    expect(title).toContain('did not answer')
+  })
+})
+
 })

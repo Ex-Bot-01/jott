@@ -29,3 +29,24 @@ export function meaningLabel(cosine: number | null): string | null {
   if (cosine === null || !Number.isFinite(cosine)) return null
   return `meaning ${cosine.toFixed(2)}`
 }
+
+/** The plain text of np's snippet: its `[` `]` marks are for the eye, and reading them aloud is noise. */
+function stripMarks(snippet: string): string {
+  return snippet.replaceAll('[', '').replaceAll(']', '')
+}
+
+/**
+ * What a result row says out loud. The visible row is path, snippet, then two numbers; a screen reader given only that
+ * hears "0.0164" and reasonably files it under scores-to-compare — the exact misreading the tooltip exists to prevent,
+ * except a tooltip is a mouse affordance. So the explanation travels in the accessible name too, and the meaning figure
+ * appears there only when np sent one.
+ */
+export function rowLabel(row: { path: string; snippet: string | null; score: number; cosine: number | null }): string {
+  const parts = [row.path]
+  const snippet = row.snippet === null ? '' : stripMarks(row.snippet).trim()
+  if (snippet !== '') parts.push(snippet)
+  const meaning = meaningLabel(row.cosine)
+  parts.push(`${formatScore(row.score)}${meaning === null ? '' : `, ${meaning}`}`)
+  parts.push('rank score, not a percentage')
+  return parts.join(' — ')
+}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { SCORE_TITLE, formatScore, meaningLabel } from './scoreLabel'
+import { SCORE_TITLE, formatScore, meaningLabel, rowLabel } from './scoreLabel'
 
 describe('the note-processor score on a result row', () => {
   it('prints the number note-processor actually sent, at three significant digits', () => {
@@ -35,4 +35,26 @@ describe('the note-processor score on a result row', () => {
     expect(SCORE_TITLE).toContain('not a percentage')
     expect(SCORE_TITLE.toLowerCase()).toContain('rank')
   })
+describe('the accessible name of a result row', () => {
+  it('says what the number is to anyone who cannot hover it', () => {
+    // A `title` is a mouse affordance. Read aloud, "inbox.md … 0.0164" sounds like a score to compare, which is the
+    // one misreading this row exists to avoid.
+    const label = rowLabel({ path: 'inbox.md', snippet: 'a kumquat tree', score: 0.01639344262295082, cosine: null })
+    expect(label).toContain('inbox.md')
+    expect(label).toContain('a kumquat tree')
+    expect(label).toContain('0.0164')
+    expect(label.toLowerCase()).toContain('not a percentage')
+  })
+
+  it('mentions the meaning figure only when there was one', () => {
+    expect(rowLabel({ path: 'a.md', snippet: 'x', score: 0.01, cosine: 0.82 })).toContain('meaning 0.82')
+    expect(rowLabel({ path: 'a.md', snippet: 'x', score: 0.01, cosine: null })).not.toContain('meaning')
+  })
+
+  it('strips note-processors own highlight marks rather than reading them as words', () => {
+    // np brackets what it matched: `[kumquat]`. An accessible name that says "bracket kumquat bracket" is noise.
+    expect(rowLabel({ path: 'a.md', snippet: 'a [kumquat] tree', score: 0.01, cosine: null })).toContain('a kumquat tree')
+  })
+})
+
 })

@@ -35,7 +35,7 @@
     wideningSentence,
   } from './lib/searchState'
   import { markTerms } from './lib/highlight'
-  import { SCORE_TITLE, formatScore, meaningLabel } from './lib/scoreLabel'
+  import { SCORE_TITLE, formatScore, meaningLabel, rowLabel } from './lib/scoreLabel'
   import { consentSentence, modelReadySentence, statusFor, type Status } from './lib/statusLine'
   import { cardClipboard, cardSentences, NP_ISSUE } from './lib/consentHelp'
   import { createBlocked } from './lib/createHere'
@@ -120,13 +120,17 @@
       only the second explains an empty semantic search. Each key is named rather than spread: a proxied `$state` object
       hands back `undefined` for a key nobody set, and `undefined` must not reach a dot that reads `null` as "off". */
   const modelFacts = $derived<ModelFacts | null>(
-    modelStatus === null
+    // `listing === null` means no folder is open — which is not a folder whose np is quiet. Answering from the old
+    // status here would keep describing a vault that has been closed or trashed.
+    modelStatus === null || listing === null
       ? null
       : {
           provider: modelStatus.provider ?? null,
           modelId: modelStatus.modelId ?? null,
           present: modelStatus.present ?? null,
           bytesTotal: modelStatus.bytesTotal ?? null,
+          configUnreadable: modelStatus.configUnreadable ?? false,
+          modelsDirError: modelStatus.modelsDirError ?? null,
           embeddedNotes: listing ? notesEmbedded(listing.nodes) : 0,
         },
   )
@@ -329,7 +333,13 @@
     const vault = listing?.vault ?? null
     if (!vault || modelAskedFor === vault) return
     modelAskedFor = vault
-    modelStatus = await call(ipc.embeddingsStatus)
+    const answer = await call(ipc.embeddingsStatus)
+    // The folder changed while np was answering — and `models.list` goes to the reader connection, which may have had to
+    // start that child first, so "while" can be seconds. A late answer about the previous folder would otherwise land on
+    // top of the new folder's own (search has the same guard for the same reason, since 0.0.12), and because
+    // `modelAskedFor` already names the new folder nothing would re-ask until an event happened to come along.
+    if (listing?.vault !== vault) return
+    modelStatus = answer
   }
 
   /** Once per opened vault: is there still a download to talk about? Asked here rather than assumed from the
@@ -1136,7 +1146,11 @@
         {#each results.hits as hit (hit.path)}
         {@const meaning = meaningLabel(hit.cosine)}
           <li>
-            <button type="button" onclick={() => void openNote(hit.path, searchQuery.trim())}>
+            <button
+              type="button"
+              aria-label={rowLabel({ path: hit.path, snippet: hit.snippet, score: hit.score, cosine: hit.cosine })}
+              onclick={() => void openNote(hit.path, searchQuery.trim())}
+            >
               <span class="hit-path">{hit.path}</span>
               <span class="hit-snippet">
                 {#each markTerms(hit.snippet ?? '', searchQuery, prefixOn) as part, index}

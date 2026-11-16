@@ -26,6 +26,12 @@ export type ModelFacts = {
   bytesTotal: number | null
   /** Notes in this folder that carry an embedded marker — Jott's own stamps, not np's claim about the vault. */
   embeddedNotes: number
+  /** np's settings file exists and will not parse. Not "no provider": the same flattening the consent card refuses, in
+      a place that used to say "embeddings off" about a file nobody could read. */
+  configUnreadable: boolean
+  /** np's own sentence for a models directory it could not list, when it sent one. It is running and reporting that it
+      cannot look, which is a different thing from silence. */
+  modelsDirError: string | null
 }
 
 export type DotState = 'active' | 'ready' | 'waiting' | 'off' | 'unknown' | 'other'
@@ -47,6 +53,9 @@ export const DOT_LABEL: Record<DotState, string> = {
 const LOCAL_PROVIDER = 'local-model'
 
 export function dotState(facts: ModelFacts): DotState {
+  // Before anything else: a settings file that will not parse is not a settings file that says "off". It outranks even
+  // a provider quoted from it, because nothing could have been quoted from a file that does not parse.
+  if (facts.configUnreadable) return 'unknown'
   const provider = facts.provider
   if (provider === null || provider.toLowerCase() === 'none') return 'off'
   if (provider.toLowerCase() !== LOCAL_PROVIDER) return 'other'
@@ -74,9 +83,19 @@ export function dotTitle(facts: ModelFacts): string {
     }
     case 'off':
       return `${DOT_LABEL[state]} — search uses words only. Settings turns embeddings on.`
-    case 'unknown':
-      // Never "off", which would be a claim about a setting nobody could read.
-      return `${DOT_LABEL[state]} — note-processor did not answer, so whether the model is here is not known yet.`
+    case 'unknown': {
+      // Never "off", which would be a claim about a setting nobody could read. Four ways to get here and four honest
+      // sentences: an unreadable file, a models directory np cannot list (which it *told* us about), no model named,
+      // and plain silence from a process that did not reply.
+      const cause = facts.configUnreadable
+        ? 'note-processor’s settings file could not be read'
+        : facts.modelsDirError !== null
+          ? `note-processor could not read its models directory (${facts.modelsDirError})`
+          : facts.modelId === null
+            ? 'note-processor could not say which model this folder would use'
+            : 'note-processor did not answer'
+      return `${DOT_LABEL[state]} — ${cause}, so whether the model is here is not known yet.`
+    }
     case 'other':
       return `${DOT_LABEL[state]} — this folder embeds through ${facts.provider}, so Jott cannot say what its weights look like. Whether meanings were searched appears with each search result.`
   }
