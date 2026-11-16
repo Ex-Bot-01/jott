@@ -282,6 +282,35 @@
     untrack(() => viewNow.dispatch({ effects: editable.reconfigure(EditorView.editable.of(writable)) }))
   })
 
+  /* Whether the caret is owed. CodeMirror draws its own and hides the browser's, and it shows its own only under
+     `.cm-focused` — a class it sets from its own focus observers:
+
+         ".cm-cursor": { display: "none" }
+         "&.cm-focused > .cm-scroller > .cm-cursorLayer .cm-cursor": { display: "block" }
+
+     Two releases went by colouring and widening a caret that was never drawn, because `display: none` outranks both.
+     So the window records focus itself, from the DOM events that fire when focus genuinely arrives, and the stylesheet
+     below draws on that. `relatedTarget` keeps an intra-editor move (clicking from one line to the next) from reading
+     as leaving. */
+  let caretFocused = $state(false)
+  $effect(() => {
+    const node = host
+    if (!node) return
+    const arrived = () => (caretFocused = true)
+    const left = (event: FocusEvent) => {
+      const goingTo = event.relatedTarget
+      if (goingTo instanceof Node && node.contains(goingTo)) return
+      caretFocused = false
+    }
+    node.addEventListener('focusin', arrived)
+    node.addEventListener('focusout', left)
+    return () => {
+      node.removeEventListener('focusin', arrived)
+      node.removeEventListener('focusout', left)
+      caretFocused = false
+    }
+  })
+
   // Ctrl+S from the window. `> 0` so mounting an editor does not save a note nobody touched.
   $effect(() => {
     if (saveSignal > 0) void saveNow()
@@ -394,7 +423,7 @@
     {/if}
 
     <div class="path" title={rel}>{rel}</div>
-    <div class="cm" bind:this={host}></div>
+    <div class="cm" class:jott-caret-focus={caretFocused} bind:this={host}></div>
     <div class="phase" data-phase={phase}>
       {#if phase === 'saving'}saving{:else if phase === 'conflict'}unsaved · file changed outside{:else if phase === 'dirty'}unsaved{:else if phase === 'saved'}saved{:else}up to date{/if}
     </div>
@@ -435,11 +464,26 @@
     background: var(--paper);
     color: var(--ink);
   }
-  .cm :global(.cm-editor) {
-    /* CodeMirror draws its own caret element and takes its colour from this variable; unset, it is a grey of
-       CodeMirror's choosing that disappears on a scaled Windows display. */
-    --cm-cursor: var(--ink);
+  /* Two answers to "is there a caret", in the order the browser reads them.
+
+     First: CodeMirror's own drawn caret, shown whenever the DOM says focus is in this editor — not merely when
+     CodeMirror's `.cm-focused` agrees. `min-height` is the guard for a line measured at zero height (a font still
+     loading, a webview reporting an empty client rect): the height arrives as an inline style, so without it the caret
+     is zero pixels tall and the window has no way to say so.
+
+     Second: if CodeMirror does *not* believe it is focused, its layer is `display: none` and nothing above will show.
+     Then the browser's real caret takes over — which needs an `!important`, because CodeMirror hides it with
+     `caretColor: "transparent !important"` on `.cm-content`. Scoping that to `:not(.cm-focused)` is what keeps exactly
+     one caret on screen instead of two blinking at each other. */
+  .cm.jott-caret-focus :global(.cm-editor .cm-cursor),
+  .cm.jott-caret-focus :global(.cm-editor .cm-dropCursor) {
+    display: block;
+    min-height: 1em;
   }
+  .cm.jott-caret-focus :global(.cm-editor:not(.cm-focused) .cm-content) {
+    caret-color: var(--ink) !important;
+  }
+
   .cm :global(.cm-editor .cm-cursor),
   .cm :global(.cm-editor.cm-focused .cm-cursor),
   .cm :global(.cm-editor .cm-dropCursor) {

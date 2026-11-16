@@ -2681,4 +2681,50 @@ describe('the window mounts', () => {
     expect(errors).toEqual([])
   })
 
+
+  it('knows the editor has focus without asking CodeMirror to believe it', async () => {
+    // The caret's visibility in CodeMirror is `display: none` plus one rule that turns it on under `.cm-focused`, a
+    // class CodeMirror sets from its own focus observers. This window tracks DOM focus itself, so a caret can be drawn
+    // on the fact of focus rather than on CodeMirror's opinion about it — and a stale opinion is exactly what "I type
+    // and there is no cursor" describes.
+    scenario.current = 'vault'
+    const { errors } = await start()
+
+    let row!: HTMLElement
+    await vi.waitFor(() => {
+      row = document.querySelector('.tree button[data-kind="Note"]') as HTMLElement
+      expect(row).toBeTruthy()
+    }, { timeout: 2000 })
+    row.click()
+
+    const content = await vi.waitFor(() => {
+      const el = document.querySelector('.cm-content') as HTMLElement | null
+      expect(el, 'the note mounted').not.toBeNull()
+      return el!
+    }, { timeout: 2000 })
+
+    const wrapper = document.querySelector('.cm') as HTMLElement
+    expect(wrapper.className).not.toContain('jott-caret-focus')
+
+    content.dispatchEvent(new FocusEvent('focusin', { bubbles: true }))
+    // Awaited rather than read on the same tick: the class arrives through Svelte's own update, not by poking the DOM.
+    await vi.waitFor(() => expect(wrapper.className, 'the caret is owed a focus the DOM already has').toContain('jott-caret-focus'), {
+      timeout: 2000,
+    })
+
+    // Tabbing out to the search box takes the promise back. `relatedTarget` is where focus went, and staying inside
+    // the editor (a click between two lines) must not clear it.
+    content.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: document.body }))
+    await vi.waitFor(() => expect(wrapper.className).not.toContain('jott-caret-focus'), { timeout: 2000 })
+
+    content.dispatchEvent(new FocusEvent('focusin', { bubbles: true }))
+    await vi.waitFor(() => expect(wrapper.className).toContain('jott-caret-focus'), { timeout: 2000 })
+    content.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: wrapper }))
+    await vi.waitFor(
+      () => expect(wrapper.className, 'moving within the editor is not leaving it').toContain('jott-caret-focus'),
+      { timeout: 2000 },
+    )
+    expect(errors).toEqual([])
+  })
+
 })

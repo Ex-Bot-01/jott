@@ -106,6 +106,48 @@ describe('the caret is named, not inherited', () => {
   it('keeps the native carets in the window on the same ruler', () => {
     expect(appCss).toMatch(/caret-color:\s*var\(--ink\)/)
   })
+
+  it('draws a caret even when CodeMirror does not believe it is focused', () => {
+    // Read out of `@codemirror/view/dist/index.js`, the two rules that decide whether a caret exists at all:
+    //
+    //     ".cm-cursor": { display: "none" }
+    //     "&.cm-focused > .cm-scroller > .cm-cursorLayer .cm-cursor": { display: "block" }
+    //
+    // Colour and width are irrelevant to a `display: none` element. `cm-focused` is CodeMirror's own belief about
+    // focus, derived from its observers — so the window tracks DOM focus itself and shows the caret on that as well.
+    // This is the third release at this bug; the two earlier ones coloured and widened a caret that was never drawn.
+    // `[^{]*` rather than a fixed shape: the rule is a selector list (caret and drop caret), so the brace is several
+    // names away from the class that turns it on.
+    expect(editor).toMatch(/\.jott-caret-focus[^{]*\.cm-cursor[^{]*\{[^}]*display:\s*block/)
+  })
+
+  it('falls back to the native caret only while CodeMirror thinks it is unfocused', () => {
+    // CodeMirror hides the real caret with `caretColor: "transparent !important"` on `.cm-content`, which is why
+    // v0.0.17's `caret-color: var(--ink)` in app.css could not do anything: an `!important` needs an `!important`
+    // and a heavier selector to answer. Un-hiding it unconditionally would put two carets on screen whenever
+    // CodeMirror's own layer is working, so the fallback waits for exactly the case where it is not.
+    expect(editor).toMatch(/:not\(\.cm-focused\)[\s\S]{0,120}caret-color:\s*var\(--ink\)\s*!important/)
+  })
+
+  it('refuses a caret that was measured zero pixels tall', () => {
+    // Each `.cm-cursor` gets its height from CodeMirror's line measurement, inline. A measurement of 0 — before a
+    // font loads, or on a webview that reports an empty client rect — is an invisible caret with no explanation.
+    expect(editor).toMatch(/\.cm-cursor[\s\S]{0,200}min-height:\s*1em/)
+  })
+
+  it('stops naming a CodeMirror variable that CodeMirror does not have', () => {
+    // v0.0.16 set `--cm-cursor` on the editor and commented that CodeMirror takes its caret colour from it. It does
+    // not: the base theme hardcodes `borderLeft: "1.2px solid black"` and `&dark .cm-cursor { borderLeftColor: "#ddd" }`.
+    // A variable nobody reads is not a fix, and a comment that says otherwise sends the next person to the wrong file.
+    expect(editor).not.toContain('--cm-cursor')
+    const codeMirror = readFileSync(
+      fileURLToPath(new URL('../node_modules/@codemirror/view/dist/index.js', import.meta.url)),
+      'utf8',
+    )
+    expect(codeMirror, 'the claim was checked against the dependency, and the dependency has no such variable').not.toContain(
+      '--cm-cursor',
+    )
+  })
 })
 
 /** A row that is not yours has to look different, in a way a test can see. */
