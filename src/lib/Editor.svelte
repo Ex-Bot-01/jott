@@ -36,6 +36,7 @@
     ondiscardmirror,
     onreload,
     onkeep,
+    openFolder,
   }: {
     rel: string | null
     /** What the file said when this buffer was filled — and what a reload replaces the buffer with. */
@@ -69,6 +70,10 @@
     ondiscardmirror: () => void
     onreload: () => void
     onkeep: () => void
+    /** Offered only when nothing is open, and it is the parent's own open-folder action — the pane does not get to
+     *  invent a second way into a vault, and a button that did nothing in a window with no folder would be worse
+     *  than the sentence it replaces. */
+    openFolder?: () => void
   } = $props()
 
   /** Search marks live in their own compartment: changing the query reconfigures the highlighting and nothing
@@ -379,7 +384,15 @@
     </p>
   {/if}
   {#if !rel}
-    <p class="placeholder" data-testid="no-note">Choose a note on the left, or make one.</p>
+    <!-- The pane used to be a sentence floating in a void: correct, and not something you could act on. The button is
+         the same handler as the toolbar's `Open…`, so there is one way in and it appears where the eye already is. -->
+    <div class="placeholder" data-testid="no-note">
+      <p class="lead">Nothing is open.</p>
+      <p>Choose a note on the left, or make one — Jott reads plain markdown files wherever you keep them.</p>
+      {#if openFolder}
+        <button type="button" class="primary" onclick={openFolder}>Open a notes folder</button>
+      {/if}
+    </div>
   {:else}
     {#if phase === 'conflict' && !kept}
       <div class="banner" role="alert">
@@ -414,7 +427,24 @@
   }
   .placeholder {
     margin: auto;
-    color: color-mix(in srgb, currentColor 50%, transparent);
+    display: grid;
+    gap: 0.35rem;
+    justify-items: start;
+    max-width: 27rem;
+    color: var(--muted);
+    font-size: 0.9rem;
+    text-align: start;
+  }
+  .placeholder p {
+    margin: 0;
+  }
+  .placeholder .lead {
+    color: var(--ink);
+    font-size: 1.05rem;
+    font-weight: 600;
+  }
+  .placeholder button {
+    margin-block-start: 0.45rem;
   }
   .cm {
     flex: 1;
@@ -428,6 +458,27 @@
        follow `color` from there. */
     background: var(--paper);
     color: var(--ink);
+  }
+
+  /* Writing gets a prose face and a measure.
+     Prose, because a note is read more than it is typed and CodeMirror's default monospace makes two pages of
+     markdown look like a build log; the markers are still on screen (§20), so alignment was never guaranteed by the
+     font anyway. Code keeps the mono face — a table or an indented block loses its shape in a proportional one.
+     Measure, because a line that runs the full width of a wide window is hard to follow back to its start; `max()`
+     keeps at least a thumb's width of padding on a narrow window and centres the column on a wide one. The padding
+     is inside `.cm-content`, not a margin on it, so clicking anywhere in the row still puts the caret where you
+     clicked. */
+  .cm :global(.cm-content) {
+    font-family: ui-sans-serif, system-ui, 'Segoe UI', Roboto, sans-serif;
+    font-size: 15px;
+    line-height: 1.62;
+    padding-block: 0.9rem;
+    padding-inline: max(1.1rem, calc((100% - 74ch) / 2));
+  }
+  .cm :global(.md-code),
+  .cm :global(.cm-comment) {
+    font-family: ui-monospace, 'Cascadia Mono', 'DejaVu Sans Mono', monospace;
+    font-size: 0.9em;
   }
   /* The caret. There is exactly one rule here because there is exactly one caret — the browser's — and it is already
      coloured by the theme above. What remains is the case a custom property cannot survive: Windows high-contrast mode
@@ -542,8 +593,16 @@
   .phase[data-phase='conflict'] {
     color: #b8863b;
   }
-  :global(.dark) .phase[data-phase='dirty'],
-  :global(.dark) .phase[data-phase='conflict'] {
-    color: #d9a441;
+  @media (prefers-color-scheme: dark) {
+    .phase[data-phase='dirty'],
+    .phase[data-phase='conflict'] {
+      color: #d9a441;
+    }
+
+    /* The same amber, mixed into dark paper, goes mud-brown; the brighter one keeps the banner reading as "worth
+       noticing" rather than as a stain. */
+    .banner {
+      background: color-mix(in srgb, #d9a441 20%, transparent);
+    }
   }
 </style>

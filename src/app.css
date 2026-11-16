@@ -17,12 +17,28 @@
   font: 14px/1.5 system-ui, "Segoe UI", Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+
+  /* One place for the tints every component used to re-derive from `currentColor` at its own percentage — which is how
+     "muted" ended up three shades deep in one window: a colour mixed from an already-muted colour mixes from that.
+     Mixed from `--ink` instead, so a rule cannot compound itself by accident. */
+  --line: color-mix(in srgb, var(--ink) 13%, transparent);
+  --line-strong: color-mix(in srgb, var(--ink) 24%, transparent);
+  --muted: color-mix(in srgb, var(--ink) 62%, transparent);
+  --faint: color-mix(in srgb, var(--ink) 45%, transparent);
+  --hover: color-mix(in srgb, var(--ink) 7%, transparent);
+  --selected: color-mix(in srgb, var(--ink) 11%, transparent);
+  /* A surface that sits slightly above the paper, so a control reads as a control. */
+  --surface: #ffffff;
+  --radius: 8px;
+  --ring: 0 0 0 3px color-mix(in srgb, var(--ink) 22%, transparent);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
     --paper: #1b1a19;
     --ink: #eae7e3;
+    /* Raised the other way: above a dark paper means *lighter*, not white. */
+    --surface: #242220;
   }
 }
 
@@ -49,11 +65,90 @@ textarea {
   font: inherit;
 }
 
+/* The control language, once. Before this each component drew its own native-looking box with its own padding — the
+   toolbar's buttons were 20 px tall, the rename bar's input 24 px, and `Index now` wrapped onto two lines in a narrow
+   sidebar because nothing insisted a label stay on one. Every component may still opt out (tree rows and menu items
+   are flat by design); what they can no longer do is disagree about what a button is.
+
+   Padding is chosen for a ~29 px target, which is where a pointer stops being fiddly; `white-space: nowrap` is the fix
+   for "+\nnote". */
+button {
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: inherit;
+  padding: 0.26rem 0.6rem;
+  line-height: 1.35;
+  white-space: nowrap;
+  cursor: default;
+  transition:
+    background-color 0.12s ease,
+    border-color 0.12s ease;
+}
+
+button:hover:not(:disabled) {
+  background: var(--hover);
+}
+
+button:active:not(:disabled) {
+  background: var(--selected);
+}
+
+button:disabled {
+  opacity: 0.45;
+}
+
+input {
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: inherit;
+  padding: 0.28rem 0.5rem;
+}
+
+/* The keyboard ring, once and visibly: `outline: 2px solid currentColor` on a native control landed half outside the
+   border and read as a rendering fault rather than as focus. */
+button:focus-visible,
+input:focus-visible,
+a:focus-visible {
+  outline: none;
+  border-color: color-mix(in srgb, var(--ink) 50%, transparent);
+  box-shadow: var(--ring);
+}
+
+/* One accent, and it is the ink: a filled button is the thing to press, and adding a hue would have to compete with
+   the two colours that already mean something here — amber for "worth noticing", green for "the model is up". */
+button.primary {
+  background: var(--ink);
+  border-color: transparent;
+  color: var(--paper);
+}
+
+button.primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--ink) 86%, var(--paper));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  button {
+    transition: none;
+  }
+}
+
 /* Where typing will land is the one pixel a person is looking for. Inheriting the webview's caret colour is
    how the text itself went white in 0.0.3; the caret gets the same treatment as the ink. */
 input,
 textarea {
   caret-color: var(--ink);
+}
+
+/* Flat rows — tree lines, result lines, menu items — opt out of the control language above and keep their own shape. */
+.flat,
+.row-menu button,
+.tree button,
+.results li button {
+  border: 0;
+  border-radius: 6px;
+  background: none;
 }
 
 :focus-visible {

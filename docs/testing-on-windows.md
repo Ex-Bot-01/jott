@@ -545,6 +545,36 @@ It cannot show the contents of a note, and it never will: the rows are the same 
 whose key set is fixed by tests on both sides. If you ever see a sentence in there that looks like your writing,
 tell me — that would be a bug, not a feature.
 
+## 2b-x. Since 0.0.20: the skin — controls, file names, and dark mode's own colours
+
+This release changed how the window is dressed, not what it does. I looked at it in a browser on Linux, because this
+build box cannot paint a webview at all, so **you are the first person to see it in WebView2**. Four things worth a
+look, roughly in the order you will meet them:
+
+1. **The toolbar.** `+ note`, `+ folder`, `rename`, `delete`, `close` and `Index now` should each sit on one line,
+   about the same height as the search box beside them, and disabled ones should look plainly unavailable rather than
+   merely faint. Before 0.0.20 several of them wrapped in half in a narrow window.
+2. **`INDEX.md` in the tree.** It is drawn italic on purpose — it is note-processor's own catalogue, not yours. Until now
+   the italics made the box clip its own last letter, so it read as `INDEX.ma`. If you still see a name with a piece
+   missing, that is the bug still living, and I want the screenshot.
+3. **Writing a note.** Prose is now in the same face as the rest of the interface, at a width of roughly 74 characters,
+   with code blocks left monospace. Two things to tell me either way: whether it reads better at your font size, and
+   whether anything you write looks *worse* — a table, an indented list, a note full of front matter. This is the most
+   opinionated change in the release and it is one rule to undo.
+4. **Dark mode, if you use it.** Set Windows to dark (Settings → Personalization → Colors → Choose your mode → Dark)
+   and look at the amber items: an unsaved note's marker, the "changed outside Jott" banner, the read-only
+   note-processor index notice. Those were meant to be a brighter amber on dark paper since 0.0.12 and never were —
+   the rules were written against a class nothing in Jott adds. If they now look noticeably *too* bright, that is the
+   same change landing for the first time.
+
+Two things I could not check from here, so treat them as open rather than fixed: how text is hinted by ClearType at
+125% and 150% scaling, and what happens in **high-contrast** mode (Settings → Accessibility → Contrast themes). Earlier
+releases added explicit rules for the caret and the status-line dot there; if a control now looks like a grey blob in a
+contrast theme, that is new and it is my doing.
+
+Nothing about your files moved: same np 0.5.1 inside, same index, same search. If something *behavioural* looks
+different, that is a regression and worth a log file — `Ctrl+Shift+D` → Copy all.
+
 ## 3. One thing worth watching: np processes
 
 Jott starts np when it opens and keeps one running; a second starts the first time you search and stays until you

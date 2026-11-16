@@ -135,8 +135,18 @@ describe('the catalogue row still looks like something you do not edit', () => {
     const start = treeSvelte.indexOf('.tree button.greyed')
     expect(start, 'the .greyed class has no styling behind it any more').toBeGreaterThan(-1)
     const rule = treeSvelte.slice(start, treeSvelte.indexOf('}', start) + 1)
-    expect(rule).toContain('color-mix')
     expect(rule.toLowerCase()).toContain('italic')
+    // The dimming may live in the rule or behind a token — what must not happen is a `.greyed` class that resolves to
+    // nothing. So follow the token: if the row borrows `--faint`, `app.css` has to define that as an ink mix, or the
+    // catalogue rows come back full-strength and this test says so here instead of in somebody's screenshot.
+    const viaToken = /color:\s*var\(--faint\)/.test(rule)
+    if (viaToken) {
+      expect(appCss, '--faint is used to grey a row but is not defined as a mix').toMatch(
+        /--faint:\s*color-mix\(in srgb,\s*var\(--ink\)\s+\d+%,\s*transparent\)/
+      )
+    } else {
+      expect(rule).toContain('color-mix')
+    }
   })
 
   it('does not light up under the pointer like an ordinary note', () => {
@@ -149,5 +159,30 @@ describe('the catalogue row still looks like something you do not edit', () => {
     // half of "+ folder → nothing happens". jsdom can read the markup; these rules are the other half.
     expect(treeSvelte, 'an empty folder still gets a place in the twisty column').toMatch(/\.twisty\.faint/)
     expect(treeSvelte, 'and it says so in words').toMatch(/\.empty-hint/)
+  })
+})
+
+describe('dark mode is the media query, because nobody sets a `.dark` class', () => {
+  const appSvelte = readFileSync(fileURLToPath(new URL('./App.svelte', import.meta.url)), 'utf8')
+  const statusLine = readFileSync(fileURLToPath(new URL('./lib/StatusLine.svelte', import.meta.url)), 'utf8')
+  const editor = readFileSync(fileURLToPath(new URL('./lib/Editor.svelte', import.meta.url)), 'utf8')
+  const darkMode = readFileSync(fileURLToPath(new URL('./lib/darkMode.ts', import.meta.url)), 'utf8')
+
+  it('adds no class for the window to wear', () => {
+    // Three stylesheets used to hang their dark colours off `:global(.dark)` — and nothing in the app ever added that
+    // class. `darkMode.ts` reads `prefers-color-scheme` and tells CodeMirror its facet; that is the entire mechanism,
+    // so a class-based rule was an amber nobody on a dark desktop ever saw.
+    for (const [name, src] of Object.entries({ appSvelte, statusLine, editor, darkMode, treeSvelte })) {
+      expect(src, `${name} writes a .dark selector that nothing can produce`).not.toMatch(/class:dark=|classList\.(add|toggle)\(['"]dark/)
+    }
+  })
+
+  it('paints the brighter amber where the media query can actually reach it', () => {
+    for (const [name, src] of Object.entries({ appSvelte, statusLine, editor })) {
+      expect(src, `${name} still styles a class no element wears`).not.toContain(':global(.dark)')
+      expect(src, `${name}'s dark amber is not inside a prefers-color-scheme block`).toMatch(
+        /@media \(prefers-color-scheme: dark\)[\s\S]{0,220}#d9a441/
+      )
+    }
   })
 })
