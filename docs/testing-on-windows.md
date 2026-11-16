@@ -329,6 +329,69 @@ until it is fixed, Jott says what it can and does not fill the gap in:
    **Settings** and pick *meanings only*. You should get the warning under that choice, and an empty answer whose
    sentence blames the missing vectors rather than your notes.
 
+## 2b-vii. Since 0.0.17: the first five minutes
+
+Four reports, all from the part of Jott you only meet once — before and just after you open your first folder. The
+backend inside is still **note-processor 0.5.1**; this is all window.
+
+**A button that cannot do its job now says so.** With no folder open, **+ note** / **+ folder** used to accept a name,
+press Enter, and produce silence. The window had the sentence — *"no vault is open"* — and drew it nowhere: the only
+place it rendered needed a folder to be open first. Now the dialog itself carries the reason:
+
+> No folder is open yet, so there is nowhere to make this. Choose one, and it will be made inside it.  **[Choose a folder]**
+
+…with what you typed kept, so choosing a folder finishes the note you asked for instead of starting it over. Nothing is
+sent while there is nowhere to put it. Any other refusal (a folder that went missing, a path that could not be opened)
+appears in one place above the search box, whether or not a folder is open — check that by picking a folder that no
+longer exists from the recents list.
+
+**A new folder appears the moment you make it, and looks like a folder.** Two separate faults were behind "nothing
+happened": a successful `create_folder` was being read as a failure (its whole answer is *nothing*, which crossed the
+wire looking exactly like this window's marker for *failed*), so the tree was never asked again; and a folder row's only
+visual distinction was bold text, with no twisty until it had children. Now:
+
+- `▸` / `▾` for a folder with things in it, `·` for one that is empty, nothing at all for a note;
+- an empty folder says `(empty)` beside its name — it is empty, not missing;
+- the tree re-lists after the create, without needing another command to do its job.
+
+**Clicking a folder means it.** One click selects the folder *and* opens or closes it, which is what one click has
+always meant in a Windows file tree. The toolbar follows the selection: its tooltip reads **New note in notes (Ctrl+N)**,
+the dialog label says `New note in notes/:`, and the file lands there. Open a note and the destination goes back to the
+vault root, so the tooltip cannot promise one place while the button writes to another.
+
+**A note gets a name that is a note.** Typing `trip plan` creates `trip plan.md`. An extension you typed on purpose is
+kept exactly — `todo.txt` stays `todo.txt` — and the window then says what happens next rather than letting you discover
+it by searching: *"Created todo.txt. note-processor reads only .md files as notes, so this one will not be searchable."*
+Spellings note-processor cannot read are folded and announced (`hello.markdown` → `hello.md`, said out loud). Names that
+cannot become files are refused in words with the dialog still open: `notes.`, `.`, `..`.
+
+**A folder full of other formats explains itself.** If any file in the folder is not a note, under the tree:
+
+> Of 12 files here, 3 files are notes note-processor can search; 9 are kept as attachments — tracked for links, never
+> searched. note-processor reads .md files as notes.
+
+That sentence matters most to whoever opens a folder of `notes.txt`, `ideas.org` and `scan.pdf` and finds search returns
+nothing: the folder is not empty, nothing failed, and only `.md` is parsed. Measured against 0.5.1 for exactly that mix:
+`scan` answers `added: 5, notes: 1`. Jott does not convert anything, and the rule itself is filed upstream as
+[note-processor#12](https://github.com/Ex-Bot-01/note-processor/issues/12).
+
+### Six things worth trying
+
+1. **Uninstall-and-first-run check.** Quit, rename or move your recent-folder list away if you want the true first run:
+   press **+ folder**. You should get the sentence and a **Choose a folder** button, no new anything on disk, and your
+   typed name still in the box after you pick.
+2. **Make a folder and look at it immediately.** `·` and `(empty)`, no other command needed. Add a note inside: it
+   becomes `▸`/`▾` and stops saying `(empty)`.
+3. **Click a folder, then check the tooltip** before pressing it: it should name that folder. Create one and confirm the
+   file really lands inside it, not at the root. Then open a note and confirm the tooltip goes back to *the vault root*.
+4. **Type `trip plan`** → you get `trip plan.md`. Type `todo.txt` → you keep `todo.txt` and get a sentence. Type
+   `hello.markdown` → you get `hello.md` and it says so. Type `notes.` → nothing is created, and the reason is on screen.
+5. **Open a folder with mixed formats** (a few `.md`, some `.txt`, an image). One line under the tree, counts plausible,
+   and it must not read as blame or as an error. A folder of only `.md` says nothing at all.
+6. **Move something.** Since 0.0.17 a move that works closes its dialog and refreshes the tree — in 0.0.16 a successful
+   move left the dialog sitting there over a tree that had already changed, because *success* and *no answer* looked the
+   same to the window.
+
 ## 2c. Since 0.0.11: press **Ctrl+Shift+D** when something is odd
 
 A drawer opens at the bottom of the window with what this run has actually been doing:
