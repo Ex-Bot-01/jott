@@ -1317,6 +1317,50 @@ describe('the window mounts', () => {
   })
 
 
+  it('starts fetching the moment Allow is pressed in Settings', async () => {
+    // The hole v0.0.23 opened: np recorded the settings, and then — with the receipt card gone — the window said
+    // nothing at all, because nothing had begun downloading. Accepting *is* the order to fetch, and the only
+    // feedback left is the strip, so a click that starts nothing looks exactly like a click that did nothing.
+    incompleteSettings.current = true
+    scenario.current = 'vault'
+    await start()
+
+    ;(document.querySelector('button[aria-label="Settings"]') as HTMLButtonElement).click()
+    const allow = await vi.waitFor(() => {
+      const el = document.querySelector('[data-testid="embeddings-allow"]') as HTMLButtonElement | null
+      expect(el, 'the panel offers the answer').not.toBeNull()
+      return el!
+    }, { timeout: 2000 })
+
+    commands.length = 0
+    allow.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+
+    await vi.waitFor(() => expect(commands).toContain('set_consent'), { timeout: 2000 })
+    await vi.waitFor(() => expect(commands, 'a yes means go, not "yes, whenever a save happens next"').toContain('ingest_all'), {
+      timeout: 2000,
+    })
+    incompleteSettings.current = false
+  })
+
+  it('shows the download strip as soon as note-processor says bytes are arriving', async () => {
+    // The strip reads np's fetch markers, which costs a poll. A `fetching` progress line is the moment to spend it:
+    // without that trigger the bar waits for some other reason to re-ask, and "no bar" is exactly what somebody
+    // watching a first download notices.
+    scenario.current = 'vault'
+    await start()
+
+    modelStatus.current.downloading = { modelId: 'embeddinggemma-2', bytesDone: 12_000_000, bytesTotal: 309_855_456 }
+    ingest({ working: { phase: 'fetching', done: 12_000_000, total: 309_855_456, memberIndex: null, memberCount: null } })
+
+    const banner = await vi.waitFor(() => {
+      const el = document.querySelector('[data-testid="download-banner"]')
+      expect(el, 'a fetching line from np should put the strip on screen').not.toBeNull()
+      return el!
+    }, { timeout: 2000 })
+    expect(banner.textContent).toContain('downloading embeddinggemma-2')
+    modelStatus.current.downloading = null
+  })
+
   it('leaves nothing on screen after a yes that went through', async () => {
     // Removed at the tester's request: *"can we remove this message… we don't need it anymore, because now the user
     // accepts it by downloading the model."* They were right. The card answered "what happened when I clicked?" ten

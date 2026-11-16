@@ -957,6 +957,18 @@
     // light agrees with the button that was just pressed, instead of waiting for a re-list nobody triggered.
     modelAskedFor = null
     void askModel()
+
+    // A yes means *go*, not "yes, whenever the next save happens". This mattered more in 0.0.23 than before: with the
+    // receipt card gone the strip is the only feedback a first download gets, and recording settings starts no
+    // transfer — so the click produced np's `ok` and a screen that looked untouched. Walking the folder now is what
+    // makes np begin fetching, which is what puts bytes on the bar. A decline starts nothing: there is nothing to fetch.
+    if (granted && receipt) {
+      await call(ipc.ingestAll)
+      // The walk has begun; np's marker exists or is about to. One more read, because the strip shows on a *moving*
+      // count and the first reading of a fresh marker is enough to start drawing it.
+      modelAskedFor = null
+      await askModel()
+    }
   }
 
   /** The same question, asked again later. "Stay keyword-only" answers the moment, not the year, and the way
@@ -969,9 +981,8 @@
     if (!(await ipc.askConfirm(sentence, 'Set up semantic search'))) return
     // The same answer as the offer's own Allow button — one code path, so both leave np's receipt on the card and
     // neither can forget to re-read the settings beside it.
+    // `answerConsent` runs the pass itself now (see the comment there), so this door does not start a second one.
     await answerConsent(true)
-    // "Yes" means go, not "yes, whenever the next save happens": the vault goes through the pass now.
-    await call(ipc.ingestAll)
     notice = 'Downloading the model and embedding your notes. The line at the bottom keeps count.'
     await refresh()
   }
@@ -1017,6 +1028,13 @@
           // permanent property of the vault.
           modelReady = null
         }
+      }
+      if ('working' in event && event.working.phase === 'fetching') {
+        // np says bytes are arriving, which means its fetch marker exists — and that marker is what the strip reads.
+        // Spending one cheap request on the reader connection here is the difference between a bar appearing within a
+        // second of the first fetching line and waiting for some unrelated reason to re-ask.
+        modelAskedFor = null
+        void pollModel()
       }
       status = statusFor(event)
       // A finished pass changes every marker in the tree, and the tree is a snapshot of the stamps as they
