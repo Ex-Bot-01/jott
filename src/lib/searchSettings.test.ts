@@ -5,7 +5,7 @@
 // holding a value this version never wrote.
 
 import { describe, expect, it } from 'vitest'
-import { DEFAULTS, MODE_KEY, PREFIX_KEY, loadSettings, modeSentence, saveMode, savePrefix } from './searchSettings'
+import { DEFAULTS, MODE_KEY, MODE_WORD, PREFIX_KEY, loadSettings, modeSentence, saveMode, savePrefix } from './searchSettings'
 
 /** A stand-in for `Storage` with exactly the methods these two modules are allowed to use. */
 function store(initial: Record<string, string> = {}) {
@@ -135,5 +135,28 @@ describe('describing a mode to the person choosing it', () => {
     expect(modeSentence('hybrid').toLowerCase()).toContain('both')
     // The meanings-only sentence is where the panel warns that this mode needs vectors, so it has to be in it.
     expect(modeSentence('semantic').toLowerCase()).toContain('meaning')
+  })
+})
+
+describe('the mode’s name, said once', () => {
+  const modes = ['keyword', 'hybrid', 'semantic'] as const
+
+  it('has a word for every mode, and the sentence opens with it', () => {
+    // The status line quotes `MODE_WORD`; the Settings panel quotes the opening of `modeSentence`. Two places that
+    // describe one choice in two vocabularies is how "Words only" in the panel ended up next to "meanings on" in
+    // the corner, which a tester reasonably read as a toggle that had not taken effect.
+    for (const mode of modes) {
+      expect(MODE_WORD[mode].length).toBeGreaterThan(0)
+      expect(modeSentence(mode), `${mode}’s sentence no longer opens with its own word`).toBe(`${MODE_WORD[mode]}: ${modeSentence(mode).slice(MODE_WORD[mode].length + 2)}`)
+      expect(modeSentence(mode).startsWith(`${MODE_WORD[mode]}:`), `panel text drifted from the word for ${mode}`).toBe(true)
+    }
+  })
+
+  it('names the choice rather than a result', () => {
+    // A mode word must never read as a measurement of what search did — that is np's answer, and it travels with
+    // each result (`searchState`), not with this setting.
+    for (const mode of modes) {
+      expect(MODE_WORD[mode].toLowerCase()).not.toMatch(/matched|found|result/)
+    }
   })
 })

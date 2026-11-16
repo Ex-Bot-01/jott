@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { SCORE_TITLE, formatScore, meaningLabel, rowLabel } from './scoreLabel'
+import {
+  SCORE_TITLE,
+  figuresNote,
+  formatScore,
+  meaningLabel,
+  rowLabel,
+} from './scoreLabel'
 
 describe('the note-processor score on a result row', () => {
   it('prints the number note-processor actually sent, at three significant digits', () => {
@@ -57,4 +63,27 @@ describe('the accessible name of a result row', () => {
   })
 })
 
+})
+
+describe('the figures that stay in the tooltip', () => {
+  it('says nothing about a measurement nobody took', () => {
+    expect(figuresNote({ bm25: null, cosine: null })).toBe('')
+    expect(figuresNote({ bm25: Number.NaN, cosine: null })).toBe('')
+  })
+
+  it('keeps bm25 negative, because the sign is the meaning', () => {
+    // SQLite reports bm25 as negative-is-better. Taking the absolute value to make it "look like a score" would
+    // invert the ordering while keeping the digits — the sort of tidy lie a formatter tells.
+    const note = figuresNote({ bm25: -8.953488e-7, cosine: null })
+    expect(note).toContain('bm25 -8.95e-7')
+    expect(note.toLowerCase()).not.toContain('%')
+    expect(note).toMatch(/negative/i)
+  })
+
+  it('names both figures when both ran, and never a percentage', () => {
+    const note = figuresNote({ bm25: -1.5, cosine: 0.827341 })
+    expect(note).toContain('bm25 -1.5')
+    expect(note).toContain('cosine 0.8273')
+    expect(note).not.toContain('%')
+  })
 })

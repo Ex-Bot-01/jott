@@ -677,6 +677,8 @@ impl VaultSession {
         };
         let sink = self.changed.clone();
         let stop = self.stop.clone();
+        let vault = self.vault.clone();
+        let queue = self.queue.clone();
         // `next_change` waits on an OS channel with a deadline, so it belongs on a blocking thread: an
         // async task that slept a second at a time would hold a worker hostage. One second is also the
         // longest the pump can be told to stop — a task aborted mid-wait loses that one event, which the
@@ -691,6 +693,13 @@ impl VaultSession {
                 // window hears about an outside edit. Task 8's watcher coalesces at a longer interval than
                 // this anyway, so it never adds a visible lag of its own.
                 if let Some(rel) = watch.next_change(Duration::from_millis(100)) {
+                    // A file deleted or moved outside Jott leaves the same ghost as one deleted inside it:
+                    // the tree re-walks when the window re-lists, but np's index does not, and its own rule
+                    // is to mark a gone path stale rather than retire it. Checked rather than assumed — the
+                    // event says "this path changed", only the disk says whether it is still there.
+                    if !vault.join(&rel).exists() {
+                        queue.paths_changed();
+                    }
                     let _ = sink.send(rel);
                 }
             }
@@ -818,6 +827,9 @@ impl VaultSession {
         // Both names matter to the tree: what moved, and whatever it left behind in the index.
         self.local(LocalRecord::new("renamed").with_rel(to).with_detail(format!("from {from}")));
         self.queue.note_saved(to);
+        // The new name is owed an embed; the *old* one needs the folder walked, or np keeps answering for a
+        // path that is no longer there. A move is not a deletion — np reports `moved` and relinks the row.
+        self.queue.paths_changed();
         Ok(RenameOutcome { incoming_links: report.incoming_links.into_iter().map(LinkRefDto::from).collect() })
     }
 
@@ -827,6 +839,7 @@ impl VaultSession {
         files::move_entry(&self.vault, from, to).map_err(IpcError::from)?;
         self.local(LocalRecord::new("moved").with_rel(to).with_detail(format!("from {from}")));
         self.queue.note_saved(to);
+        self.queue.paths_changed();
         Ok(())
     }
 
@@ -837,6 +850,10 @@ impl VaultSession {
         // in the log too: a deletion with no record of a deletion is the "my note vanished" report by definition.
         let where_it_went = files::delete_to_trash(&self.vault, rel).map_err(IpcError::from)?.sentence();
         self.local(LocalRecord::new("deleted").with_rel(rel).with_detail(&where_it_went));
+        // Background, deliberately: the reply above is about the file, and it must arrive whether or not np
+        // is running. Without this the note stays in search results until some later save walks the folder —
+        // which is the "I deleted it and it is still in my list of found files" report.
+        self.queue.paths_changed();
         Ok(where_it_went)
     }
 

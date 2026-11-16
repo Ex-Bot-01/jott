@@ -79,13 +79,25 @@ export function savePrefix(store: WritableStore | null | undefined, on: boolean)
  *  Written so each says what note-processor will actually do — including the part where `semantic` needs vectors on
  *  disk. That warning belongs here rather than only in the panel's markup, because then a test can hold it to account
  *  and a reworded heading cannot quietly drop it. */
+/** The name of a mode, spelled once.
+ *
+ *  It used to exist only inside the openings of three sentences, which is how the status line came to say
+ *  something else about the same choice: the panel said *Words only* while the corner of the window talked about
+ *  meanings. A test now holds the sentence to the word (`modeSentence` must open with it), so the two cannot
+ *  drift apart again by rewording one of them. */
+export const MODE_WORD: Record<SearchMode, string> = {
+  keyword: 'Words only',
+  hybrid: 'Both',
+  semantic: 'Meanings only',
+}
+
 export function modeSentence(mode: SearchMode): string {
   switch (mode) {
     case 'keyword':
-      return 'Words only: notes containing the exact words you typed, ranked by how well they match.'
+      return `${MODE_WORD.keyword}: notes containing the exact words you typed, ranked by how well they match.`
     case 'hybrid':
-      return 'Both: the words you typed, plus notes that mean the same thing even when the words differ.'
+      return `${MODE_WORD.hybrid}: the words you typed, plus notes that mean the same thing even when the words differ.`
     case 'semantic':
-      return 'Meanings only: notes that mean what you typed, even with different words. Needs the embedding model, and reports nothing where a folder has no vectors yet.'
+      return `${MODE_WORD.semantic}: notes that mean what you typed, even with different words. Needs the embedding model, and reports nothing where a folder has no vectors yet.`
   }
 }

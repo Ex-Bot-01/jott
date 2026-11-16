@@ -121,6 +121,11 @@ pub enum IngestEvent {
 enum Msg {
     Saved(String),
     Flush,
+    /// A path stopped existing, or moved: a delete to the trash, a rename, a move. Nothing is *owed* — no
+    /// bytes changed and there is nothing to embed — which is exactly why nobody used to tell np, and why a
+    /// note deleted in the window went on answering searches. np marks a gone path stale and never deletes
+    /// it (`scan.rs:161`), so the only thing that retires it is a walk of the folder.
+    Rescan,
     /// The user answered the consent prompt while work was held at the gate.
     ConsentChanged,
     Drain(oneshot::Sender<()>),
@@ -271,6 +276,12 @@ impl IngestQueue {
         let _ = self.tx.send(Msg::Saved(rel.to_string()));
     }
 
+    /// Files were deleted, renamed or moved in this folder. Ask np to walk it again — coalesced, so eight
+    /// deletes cost one scan, and never on the caller's thread: the delete's own reply must not wait on np.
+    pub fn paths_changed(&self) {
+        let _ = self.tx.send(Msg::Rescan);
+    }
+
     /// Run the batch now: the save-on-close path, and "ingest everything waiting" (§11's manual action).
     pub fn flush_now(&self) {
         let _ = self.tx.send(Msg::Flush);
@@ -386,6 +397,9 @@ struct State {
     retry_at: Option<Instant>,
     last_save: Option<Instant>,
     flush: bool,
+    /// A rescan is owed. One flag rather than a queue: np takes a workspace and not a path (§18.2), so the
+    /// eighth deletion in a row wants the same walk as the first, and coalescing is free.
+    rescan: bool,
     consent_asked: bool,
     /// Why work last went back, while it is still waiting. Cleared when the retry fires.
     last_reason: Option<StateReason>,
@@ -467,6 +481,10 @@ impl Worker {
 
                 maybe = rx.recv() => match maybe {
                     Some(Msg::Saved(rel)) => self.saved(rel),
+                    Some(Msg::Rescan) => {
+                        // No timer, no queue: a flag, so five of these before the next pass are one walk.
+                        self.state.rescan = true;
+                    }
                     Some(Msg::Flush) => {
                         if !self.state.pending.is_empty() {
                             self.state.flush = true;
@@ -570,6 +588,12 @@ impl Worker {
 
     /// When the next pass is due, or `None` when there is nothing to do.
     fn due(&self) -> Option<Instant> {
+        if self.state.rescan {
+            // A folder that lost a file is work with no note behind it, so it cannot borrow the rule about
+            // pending saves — under that rule "nothing is waiting to be embedded" reads as "nothing to do",
+            // which is how a deleted note stayed searchable.
+            return Some(self.state.retry_at.unwrap_or_else(Instant::now));
+        }
         if self.state.pending.is_empty() {
             return None;
         }
@@ -611,6 +635,9 @@ impl Worker {
     async fn cycle(&mut self) {
         self.state.flush = false;
         self.state.retry_at = None;
+        // Taken before anything can return early: a pass that starts and then stops at a gate has still
+        // looked at the folder, so the debt is discharged. Where it is not — np busy — the flag goes back on.
+        let rescan = std::mem::take(&mut self.state.rescan);
         let np_config = guarded(&self.shared.options).np_config.clone();
 
         let mut owed: Vec<(String, String)> = Vec::new();
@@ -633,7 +660,7 @@ impl Worker {
                 owed.push((rel, hash));
             }
         }
-        if owed.is_empty() {
+        if owed.is_empty() && !rescan {
             return;
         }
 
@@ -646,6 +673,10 @@ impl Worker {
         }
         let scanned = match scan_result {
             Ok(ScanOutcome::Locked { waited_ms }) => {
+                // np is indexing for somebody else. The walk is still owed — dropping the flag here would
+                // leave a deleted note in the index until the next save or launch, which on a folder nobody
+                // types into is never.
+                self.state.rescan = true;
                 self.requeue(&owed, StateReason::Locked { waited_ms });
                 return;
             }
@@ -692,6 +723,11 @@ impl Worker {
         // the consent gate should not lose its index stamp because someone closed the window.
         self.save_stamps();
         self.emit(IngestEvent::Indexed(scanned));
+        if owed.is_empty() {
+            // This pass exists because a file stopped existing. There is nothing to embed, and falling
+            // through would ask np for a model listing on behalf of a deletion.
+            return;
+        }
 
         // ---- embed, if it may.
         match self.consent() {

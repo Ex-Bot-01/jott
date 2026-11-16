@@ -682,12 +682,17 @@ describe('the window mounts', () => {
     scenario.current = 'vault'
     await start()
 
-    expect(document.body.textContent ?? '').toContain('not indexed yet')
+    // Read the rows' own markers rather than the whole window: the key under the tree names every state on
+    // purpose, and a body-text check cannot tell a legend from a claim about somebody's note.
+    const markerWords = () =>
+      [...document.querySelectorAll('.tree .marker')].map((el) => el.getAttribute('title') ?? '').join(' ')
+
+    expect(markerWords()).toContain('not indexed yet')
 
     scenario.current = 'indexed'
     ingest({ indexed: { ...scanReport, elapsed_ms: 412 } })
 
-    await vi.waitFor(() => expect(document.body.textContent ?? '').not.toContain('not indexed yet'))
+    await vi.waitFor(() => expect(markerWords()).not.toContain('not indexed yet'))
     expect(document.querySelector('[title="embedded"]'), 'the marker should say embedded by now').not.toBeNull()
     expect(commands).toContain('list_vault')
   })
@@ -2805,6 +2810,39 @@ describe('the window mounts', () => {
     slowStatus.on = false
     extraRecent.current = null
     expect(errors).toEqual([])
+  })
+
+
+  it('names the matching choice in the corner, the moment Settings changes it', async () => {
+    // The tester's words: "I click on settings and change the bullet point to Words only and I close it — in the
+    // down left corner the 'meanings on' is not updating." It was not stale: that dot answers a different question
+    // (are the weights here, does this folder have vectors) than the one Settings asks. The fix is to show the
+    // choice itself where the eye went to check it, and to stop the dot from using words that sound like a claim
+    // about search.
+    localStorage.removeItem(MODE_KEY)
+    const first = await start()
+
+    const corner = () => document.querySelector('[data-testid="search-mode"]')?.textContent?.trim() ?? ''
+    expect(corner(), 'an untouched window searches both ways, and says so').toBe('Both')
+
+    const button = document.querySelector('button[aria-label="Settings"]') as HTMLButtonElement | null
+    expect(button, 'the header offers settings').not.toBeNull()
+    button!.click()
+    const radio = await vi.waitFor(() => {
+      const el = document.querySelector('[data-testid="mode-keyword"]') as HTMLInputElement | null
+      expect(el, 'the panel carries the matching choice').not.toBeNull()
+      return el!
+    }, { timeout: 2000 })
+
+    radio.checked = true
+    radio.dispatchEvent(new Event('change', { bubbles: true }))
+    await vi.waitFor(() => expect(localStorage.getItem(MODE_KEY)).toBe('keyword'))
+    expect(corner(), 'the corner moves with the choice, without a relaunch').toBe('Words only')
+
+    // And it is storage doing it, not a panel that happens to still be mounted.
+    unmount(first.app)
+    await start()
+    expect(corner()).toBe('Words only')
   })
 
 })

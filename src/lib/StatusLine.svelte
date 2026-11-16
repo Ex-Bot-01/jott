@@ -3,6 +3,7 @@
   // from `statusLine.ts`, which is tested; this file only puts it on screen.
 
   import { DOT_LABEL, dotState, dotTitle, type ModelFacts } from './modelStatus'
+  import { MODE_WORD, type SearchMode } from './searchSettings'
   import type { Status } from './statusLine'
   import type { IngestEvent } from './ipc'
 
@@ -10,6 +11,7 @@
     status,
     consent = null,
     model = null,
+    mode = null,
     onmodelclick,
     onembed,
     onconsent,
@@ -20,6 +22,9 @@
     /** What note-processor said about the model behind this folder. `null` means nobody asked yet, and the dot stays
         out of the way rather than drawing "off" from an absence. */
     model?: ModelFacts | null
+    /** Which engine search was told to use, straight from Settings. `null` only while the window is still reading
+        storage — drawing a mode nobody chose would be the same invention this line refuses elsewhere. */
+    mode?: SearchMode | null
     onmodelclick: () => void
     onembed: () => void
     onconsent: (granted: boolean) => void
@@ -27,7 +32,17 @@
 </script>
 
 <footer class="status" data-tone={status?.tone ?? 'neutral'}>
-  {#if model !== null}
+  <!-- The two facts about matching, side by side and in the corner a person checks after changing Settings:
+       what they asked for (`mode`, from this window's own choice) and what the folder actually holds (`model`,
+       from np). They are different questions — a folder full of vectors searched by words alone is both true at
+       once — which is exactly why the old single label read as a broken toggle. -->
+  <span class="match">
+    {#if mode !== null}
+      <span class="mode-word" data-testid="search-mode" title="How search matches what you type. Settings changes it.">
+        {MODE_WORD[mode]}
+      </span>
+    {/if}
+    {#if model !== null}
     {@const state = dotState(model)}
     <!-- "A green dot when the model is active" was the ask; three states were measured. The word travels with the
          colour because a dot alone carries nothing for a screen reader, a colour-blind tester, or a screenshot pasted
@@ -41,10 +56,11 @@
       aria-label={dotTitle(model)}
       onclick={onmodelclick}
     >
-      <span class="bead" aria-hidden="true"></span>
-      <span class="word">{DOT_LABEL[state]}</span>
-    </button>
-  {/if}
+        <span class="bead" aria-hidden="true"></span>
+        <span class="word">{DOT_LABEL[state]}</span>
+      </button>
+    {/if}
+  </span>
   <span class="text">
     {#if status}{status.text}{:else}idle{/if}
   </span>
@@ -142,6 +158,23 @@
     .status[data-tone='warn'] .text {
       color: #d9a441;
     }
+  }
+  /* One cluster, so `space-between` on the footer cannot push the mode word to the middle of an empty line and
+     let it look like a status message. */
+  .match {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex: none;
+  }
+  /* Set-off rather than a heavier colour: this is the setting, that is the measurement, and the vertical rule says
+     which is which without either one pretending to be a warning. */
+  .mode-word {
+    font-size: 0.75rem;
+    color: var(--muted);
+    white-space: nowrap;
+    padding-inline-end: 0.5rem;
+    border-inline-end: 1px solid var(--line);
   }
   .text {
     overflow: hidden;

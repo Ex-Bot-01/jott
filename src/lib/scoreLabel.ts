@@ -50,3 +50,24 @@ export function rowLabel(row: { path: string; snippet: string | null; score: num
   parts.push('rank score, not a percentage')
   return parts.join(' — ')
 }
+
+/**
+ * np's other figure for this row, in the tooltip instead of on the face of the result.
+ *
+ * A hit also carries `bm25` — SQLite FTS5's own keyword score, which is the TF-IDF family with length normalisation
+ * and term-frequency saturation added. It is a real measurement and it is useless to compare by eye: negative is
+ * better, its scale depends on how many notes mention the word, and two rows with the same words in them can differ
+ * by orders of magnitude. A second number on every row would be decoration that invites exactly the wrong reading,
+ * so it appears where the score's own explanation already lives.
+ *
+ * `null` means that half did not run — a meaning-only hit has no bm25, a keyword-only one no cosine — and nothing is
+ * said about a measurement nobody took.
+ */
+export function figuresNote(hit: { bm25: number | null; cosine: number | null }): string {
+  const parts: string[] = []
+  if (hit.bm25 !== null && Number.isFinite(hit.bm25)) parts.push(`bm25 ${formatScore(hit.bm25)}`)
+  if (hit.cosine !== null && Number.isFinite(hit.cosine)) parts.push(`cosine ${hit.cosine.toFixed(4)}`)
+  if (parts.length === 0) return ''
+  // The sign is kept because it carries the meaning: in bm25 as SQLite reports it, nearer zero is worse.
+  return ` note-processor also measured ${parts.join(' and ')}. Lower (more negative) bm25 means a weaker keyword match; neither figure is a percentage.`
+}

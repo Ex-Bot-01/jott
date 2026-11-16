@@ -20,6 +20,7 @@ import { describe, expect, it } from 'vitest'
 const appCss = readFileSync(fileURLToPath(new URL('./app.css', import.meta.url)), 'utf8')
 const shell = readFileSync(fileURLToPath(new URL('../index.html', import.meta.url)), 'utf8')
 const treeSvelte = readFileSync(fileURLToPath(new URL('./lib/Tree.svelte', import.meta.url)), 'utf8')
+const treeTs = readFileSync(fileURLToPath(new URL('./lib/tree.ts', import.meta.url)), 'utf8')
 
 /** The dark block is the `@media` rule that follows the light one, not a stray mention of the word. */
 function darkBlock(css: string): string {
@@ -184,5 +185,42 @@ describe('dark mode is the media query, because nobody sets a `.dark` class', ()
         /@media \(prefers-color-scheme: dark\)[\s\S]{0,220}#d9a441/
       )
     }
+  })
+})
+
+describe('the marker colours and the states that produce them', () => {
+  /** The union in `tree.ts`, read from its own declaration. */
+  const tones = (treeTs.match(/export type MarkerTone = ([^;]+);/)?.[1] ?? '').match(/'[a-z]+'/g) ?? []
+
+  it('declares the tones where the decision is made', () => {
+    expect(tones.length, 'no MarkerTone union in tree.ts').toBeGreaterThan(1)
+    expect(tones.map((t) => t.replaceAll("'", ''))).toEqual(
+      expect.arrayContaining(['embedded', 'queued', 'waiting', 'refused', 'none'])
+    )
+  })
+
+  it('draws exactly those tones, and no others', () => {
+    // Twice now this project has shipped a style that could never apply: a `.greyed` class whose rule had been
+    // deleted, and `--cm-cursor`, which CodeMirror does not have. Same shape of bug in the other direction — CSS
+    // inventing a tone no row can have — so both directions are checked here rather than in a screenshot.
+    const declared = tones.map((t) => t.replaceAll("'", ''))
+    for (const tone of declared.filter((t) => t !== 'none')) {
+      expect(treeSvelte, `nothing colours a ${tone} marker`).toContain(`.marker[data-tone='${tone}']`)
+    }
+    const styled = [...treeSvelte.matchAll(/\.marker\[data-tone='([a-z]+)'\]/g)].map((m) => m[1])
+    for (const tone of new Set(styled)) {
+      expect(declared, `Tree.svelte styles '${tone}', which no state produces`).toContain(tone)
+    }
+  })
+
+  it('shows the key with a word per colour, built from the same sentences as the tooltips', () => {
+    expect(treeSvelte).toContain('data-testid="marker-legend"')
+    expect(treeSvelte, 'the key must come from MARKER_LEGEND, not from prose typed into markup').toContain('{#each MARKER_LEGEND')
+  })
+
+  it('keeps a shape for every colour, because colour alone carries nothing', () => {
+    // The glyph is hidden behind the disc and shown again where hues go away.
+    expect(treeSvelte).toMatch(/\.marker \{[^}]*\}/s)
+    expect(treeSvelte).toMatch(/@media \(forced-colors: active\)[\s\S]{0,200}\.marker \.glyph \{\s*display: inline/)
   })
 })

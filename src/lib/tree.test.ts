@@ -3,6 +3,8 @@
 
 import { describe, expect, it } from 'vitest'
 import {
+  MARKER_LEGEND,
+  markerFor,
   actionsFor,
   flattenTree,
   GENERATED_TITLE,
@@ -190,6 +192,7 @@ describe('a row\'s menu', () => {
     depth: 1,
     hasChildren: false,
     marker: '',
+    tone: 'none',
     title: '',
     greyed: false,
     ...over,
@@ -357,5 +360,44 @@ describe('notesEmbedded', () => {
     // indexed note here would make a green dot out of a folder that cannot be searched by meaning at all.
     expect(notesEmbedded(nodes)).toBe(1)
     expect(notesEmbedded([])).toBe(0)
+  })
+})
+
+describe('what a marker looks like', () => {
+  const file = (rel: string, state: unknown) => ({ rel, kind: 'File', state }) as never
+
+  it('gives every state a tone, and nothing to a state it does not know', () => {
+    // The colour lives in CSS and the decision lives here; `tone` is the single name for it. A row whose state
+    // comes from a newer core than this file draws nothing rather than borrowing a colour that would mean
+    // something else (§4: no invented state).
+    expect(markerFor('Embedded').tone).toBe('embedded')
+    expect(markerFor('Indexed').tone).toBe('queued')
+    expect(markerFor('Waiting').tone).toBe('waiting')
+    expect(markerFor({ Refused: 'locked' }).tone).toBe('refused')
+    expect(markerFor(null).tone).toBe('none')
+    expect(markerFor('SomethingANewerCoreInvented' as never).tone).toBe('none')
+  })
+
+  it('lists each tone once, in words that are the tooltip’s own words', () => {
+    // A legend that reworded the tooltip would be two sentences about one dot, free to disagree with each other.
+    // The legend's text *is* `markerFor`'s sentence for a sample of each state, so it cannot drift.
+    const tones = MARKER_LEGEND.map((entry) => entry.tone)
+    expect(new Set(tones).size, `a tone is listed twice: ${tones.join(', ')}`).toBe(tones.length)
+    expect(tones).not.toContain('none')
+
+    for (const entry of MARKER_LEGEND) {
+      expect(entry.word.trim().length, `${entry.tone} has no word`).toBeGreaterThan(0)
+      expect(markerFor(entry.sample).title, `${entry.tone}: legend and tooltip disagree`).toBe(entry.word)
+    }
+  })
+
+  it('carries the mark in a shape as well as a colour', () => {
+    // Colour alone fails a colour-blind tester, forced-colours mode and a screenshot pasted into a bug report.
+    // The glyph stays as the second channel; the colour is decoration on top of it, never the only signal.
+    const rows = flattenTree([file('a.md', 'Embedded'), file('b.md', 'Waiting')], new Set())
+    expect(rows.map((row) => [row.tone, row.marker])).toEqual([
+      ['embedded', '·'],
+      ['waiting', '○'],
+    ])
   })
 })
