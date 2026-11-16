@@ -17,6 +17,7 @@
   moveTo,
   notesAwaitingEmbedding,
   notesAwaitingIndex,
+  notesEmbedded,
   planMoveInto,
   targetFolder,
   toolbarTarget,
@@ -40,6 +41,7 @@
   import { createBlocked } from './lib/createHere'
   import { formatsSentence, opensAsText, planNoteName } from './lib/noteName'
   import type { ConsentOutcome } from './lib/ipc'
+  import type { ModelFacts } from './lib/modelStatus'
   import { openUrl } from '@tauri-apps/plugin-opener'
   import { getCurrentWindow } from '@tauri-apps/api/window'
   import { isPermissionGranted, requestPermission, sendNotification } from '@tauri-apps/plugin-notification'
@@ -107,6 +109,27 @@
       `null` means either "nothing to offer" or "not asked yet for this vault", and `offerAskedFor` says which. */
   let embeddingsOffer = $state<ipc.ConsentOffer | null>(null)
   let offerAskedFor: string | null = null
+  /** What np said about the model behind this folder: configured, on disk, in use here. `null` means nobody has been
+      asked yet for this folder, which draws no dot at all — an absence on screen rather than a grey one that reads as
+      "switched off". */
+  let modelStatus = $state<ipc.ModelStatus | null>(null)
+  let modelAskedFor: string | null = null
+
+  /** The dot's facts: np's answers about the model, plus how many notes in *this* folder carry vectors. Both halves are
+      needed — "the weights are on my disk" and "this folder can be searched by meaning" are different sentences, and
+      only the second explains an empty semantic search. Each key is named rather than spread: a proxied `$state` object
+      hands back `undefined` for a key nobody set, and `undefined` must not reach a dot that reads `null` as "off". */
+  const modelFacts = $derived<ModelFacts | null>(
+    modelStatus === null
+      ? null
+      : {
+          provider: modelStatus.provider ?? null,
+          modelId: modelStatus.modelId ?? null,
+          present: modelStatus.present ?? null,
+          bytesTotal: modelStatus.bytesTotal ?? null,
+          embeddedNotes: listing ? notesEmbedded(listing.nodes) : 0,
+        },
+  )
   /** What np's settings actually say, read after a pass that could not embed. `null` means "not asked yet". */
   let consentHelp = $state<ConsentHelp | null>(null)
   /** The last sentence np sent as a refusal, kept word for word for the card to quote (§4). */
@@ -244,6 +267,10 @@
       selectedFolder = null
       note = null
       bufferVault = null
+      // What np said about its model belongs to the folder that was asked about. Carrying `present: true` across into a
+      // folder nobody has queried yet would light a green bead over a vault with no vectors at all.
+      modelStatus = null
+      modelAskedFor = null
     }
 
     // Every path that installs a listing comes through here, so this is where the embeddings offer is asked. It used
@@ -251,6 +278,7 @@
     // picker — never asked about, and the banner that tells someone their notes are indexed but cannot be searched by
     // meaning had no way to appear until some later re-list happened to come along.
     void askOffer()
+    void askModel()
   }
 
   async function openRecent(folder: string) {
@@ -290,6 +318,18 @@
     const next = await call(ipc.listVault)
     listing = next
     void askOffer()
+    void askModel()
+  }
+
+  /** Once per opened folder: is the model configured, and are its bytes on this disk? Unlike the offer, this is asked
+      even when nothing is awaiting embedding — a status light has to be able to say "on" as well as "not bought yet".
+      It reads np's settings file plus `models.list` over the pool's *reader*, so it cannot queue behind an embed in
+      progress: when a download finishes, this is the call that learns about it. */
+  async function askModel() {
+    const vault = listing?.vault ?? null
+    if (!vault || modelAskedFor === vault) return
+    modelAskedFor = vault
+    modelStatus = await call(ipc.embeddingsStatus)
   }
 
   /** Once per opened vault: is there still a download to talk about? Asked here rather than assumed from the
@@ -870,6 +910,10 @@
       lastRefusal = null
     }
     void readConsentHelp()
+    // "Allow the download" moves np's provider setting, which is half of what the dot reports. Asking again is how the
+    // light agrees with the button that was just pressed, instead of waiting for a re-list nobody triggered.
+    modelAskedFor = null
+    void askModel()
   }
 
   /** The same question, asked again later. "Stay keyword-only" answers the moment, not the year, and the way
@@ -935,7 +979,12 @@
       // A finished pass changes every marker in the tree, and the tree is a snapshot of the stamps as they
       // were when it was listed. Without this re-list the status line says "completed" over dots that still
       // say "waiting for the index" — which is exactly what a tester reported and reasonably called confusing.
-      if ('indexed' in event || 'embedded' in event || 'refused' in event || 'disabled' in event) scheduleRelist()
+      if ('indexed' in event || 'embedded' in event || 'refused' in event || 'disabled' in event) {
+        // The dot reads np's `models.list`, and a pass is exactly what changes what sits in that directory. Asking
+        // again is one cheap request; the alternative is a light that stays amber through a finished download.
+        modelAskedFor = null
+        scheduleRelist()
+      }
     })
     // Bounded: a long run produces thousands of rows, and core's ring holds two hundred anyway. The drawer shows
     // the newest ones, so dropping the oldest loses nothing that was still on screen.
@@ -1372,7 +1421,14 @@
     />
   </section>
 
-  <StatusLine {status} consent={consent} onembed={() => void ipc.ingestAll()} onconsent={(granted) => void answerConsent(granted)} />
+  <StatusLine
+    {status}
+    consent={consent}
+    model={modelFacts}
+    onmodelclick={() => (showSettings = true)}
+    onembed={() => void ipc.ingestAll()}
+    onconsent={(granted) => void answerConsent(granted)}
+  />
 
   {#if showDiagnostics}
     <Diagnostics

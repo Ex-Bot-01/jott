@@ -48,6 +48,15 @@ const searchSays: { indexed: boolean | null } = { indexed: null }
 /** When on, `search_vault` answers the way np 0.5.1 does with word-beginning matching: the row was reached from
  *  `grand`, and np says so in `prefix_used`, `prefix_terms` and `matched_exactly`. */
 const widening = vi.hoisted(() => ({ on: false }))
+// What note-processor's `models.list` says about the model, per test: here / not here / never answered.
+const modelStatus = vi.hoisted(() => ({
+  current: {
+    provider: null,
+    modelId: null,
+    present: null,
+    bytesTotal: null,
+  } as { provider: string | null; modelId: string | null; present: number | boolean | null; bytesTotal: number | null },
+}))
 
 /** A stand-in for `matchMedia`, which jsdom does not have: the window asks which colour scheme the desktop is in,
  *  and CodeMirror has to be told the answer (0.0.15 never told it, so CM painted a black caret on dark paper). */
@@ -207,6 +216,8 @@ vi.mock('@tauri-apps/api/core', () => ({
           docsUrl: 'https://github.com/Ex-Bot-01/jott/blob/main/docs/testing-on-windows.md',
           diagnostics: `Jott 0.0.5 · https://github.com/Ex-Bot-01/jott\nnp ${NP_STUB_VERSION} from bundled (C:\\Program Files\\Jott\\np\\np.exe)`,
         })
+      case 'embeddings_status':
+        return Promise.resolve({ ...modelStatus.current })
       case 'search_vault': {
         searchCalls.push({ ...(args ?? {}) })
         const query = String((args as { query?: string } | undefined)?.query ?? '')
@@ -2605,4 +2616,69 @@ describe('the window mounts', () => {
     expect(row.querySelector('[data-testid="hit-score"]')?.textContent).toBe('1.4')
     expect(errors).toEqual([])
   })
+
+  it('shows a model dot that says which of four things is true', async () => {
+    // "A green dot when the embedding model is active" is three states in one sentence — configured, downloaded, and
+    // used by this folder — and the tester deserves to tell them apart. Each comes from a different fact: np's settings
+    // file, np's `models.list`, and Jott's own per-file markers.
+    modelStatus.current = { provider: 'local-model', modelId: 'embeddinggemma-2', present: true, bytesTotal: 309855456 }
+    scenario.current = 'indexed'
+    const { errors } = await start()
+
+    const dot = await vi.waitFor(() => {
+      const el = document.querySelector('[data-testid="model-dot"]') as HTMLButtonElement | null
+      expect(el, 'the status line carries the model state').not.toBeNull()
+      return el!
+    }, { timeout: 2000 })
+
+    // The fixture's one note carries the `Embedded` marker, so the count travels from the tree's own stamps into the
+    // sentence — singular, because a label that says "1 notes" is its own bug report.
+    await vi.waitFor(() => expect(dot.getAttribute('aria-label') ?? '').toContain('1 note in this folder has vectors'), {
+      timeout: 2000,
+    })
+    expect(dot.dataset.state).toBe('active')
+
+    // Clicking it goes where the choice lives now.
+    dot.click()
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="settings-prefix"]')).not.toBeNull(), {
+      timeout: 2000,
+    })
+    expect(errors).toEqual([])
+  })
+
+  it('never draws an unanswered question as switched off', async () => {
+    // The mistake this exists to prevent: np did not answer, the dot went grey, and a person with 296 MiB of weights
+    // on their disk was told their embeddings were off.
+    modelStatus.current = { provider: 'local-model', modelId: 'embeddinggemma-2', present: null, bytesTotal: 309855456 }
+    scenario.current = 'vault'
+    const { errors } = await start()
+
+    const dot = await vi.waitFor(() => {
+      const el = document.querySelector('[data-testid="model-dot"]') as HTMLButtonElement | null
+      expect(el).not.toBeNull()
+      return el!
+    }, { timeout: 2000 })
+
+    await vi.waitFor(() => expect(dot.getAttribute('aria-label') ?? '').toContain('did not answer'), { timeout: 2000 })
+    expect(dot.dataset.state).toBe('unknown')
+    expect(dot.getAttribute('aria-label') ?? '').not.toContain('switched off')
+    expect(errors).toEqual([])
+  })
+
+  it('names the download a waiting dot is waiting for', async () => {
+    modelStatus.current = { provider: 'local-model', modelId: 'embeddinggemma-2', present: false, bytesTotal: 309855456 }
+    scenario.current = 'vault'
+    const { errors } = await start()
+
+    const dot = await vi.waitFor(() => {
+      const el = document.querySelector('[data-testid="model-dot"]') as HTMLButtonElement | null
+      expect(el).not.toBeNull()
+      return el!
+    }, { timeout: 2000 })
+
+    await vi.waitFor(() => expect(dot.getAttribute('aria-label') ?? '').toContain('296 MiB'), { timeout: 2000 })
+    expect(dot.dataset.state).toBe('waiting')
+    expect(errors).toEqual([])
+  })
+
 })

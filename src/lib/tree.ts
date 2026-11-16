@@ -89,6 +89,13 @@ export function notesAwaitingEmbedding(nodes: NodeEntry[]): number {
   return nodes.filter((node) => node.kind === 'Note' && node.state === 'Indexed').length
 }
 
+/** How many notes in this folder already carry vectors. The model dot counts these because "the model is on my disk"
+ *  and "this folder can be searched by meaning" are different sentences, and only the second one explains why a
+ *  semantic search came back empty. Counted from Jott's own per-file markers, which is what the tree shows. */
+export function notesEmbedded(nodes: NodeEntry[]): number {
+  return nodes.filter((node) => node.kind === 'Note' && node.state === 'Embedded').length
+}
+
 /** What a row's menu offers. Decided here rather than in the component so "you cannot delete np's own catalogue"
  *  is a fact with a test on it, not an `if` inside markup. */
 export type TreeAction = 'new-note' | 'new-folder' | 'rename' | 'move' | 'delete'

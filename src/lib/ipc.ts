@@ -315,6 +315,17 @@ export interface ConsentHelp {
 }
 export const embeddingsHelp = () => invoke<ConsentHelp>('embeddings_help')
 
+/** What note-processor said about the model behind this folder. Every `null` is "nobody said", never "no" — the dot's
+    fifth state exists because a folder whose np did not answer is not a folder with embeddings switched off. */
+export interface ModelStatus {
+  /** np's `embeddings.provider`, quoted as written (`"none"` is what `embeddings.disable` writes). */
+  provider: string | null
+  modelId: string | null
+  present: boolean | null
+  bytesTotal: number | null
+}
+export const embeddingsStatus = () => invoke<ModelStatus>('embeddings_status')
+
 /** A question with two answers, asked outside the status line. False when nobody answered. */
 export const askConfirm = (message: string, title: string) => confirm(message, { title })
 // §14's two answers are not one command: *reload* re-reads the file (`readNote`), and *keep* is a

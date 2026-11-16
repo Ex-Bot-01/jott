@@ -938,6 +938,57 @@ impl VaultSession {
         }
     }
 
+    /// The model dot's facts. Configured-or-not is read from np's settings file without a round trip; whether the
+    /// bytes are on disk can only come from `models.list`, and that goes to the pool's *reader* — a status light that
+    /// had to queue behind a running embed would sit grey through the whole download, which is exactly the moment
+    /// someone is watching it.
+    pub async fn embeddings_status(&self) -> EmbeddingsStatus {
+        use crate::ingest::consent::{embedding_model_named, embedding_provider_named};
+        let path = self.np_config.as_deref();
+        let provider = path.and_then(embedding_provider_named);
+        // `"none"` is what `embeddings.disable` writes, and it means off. Anything else names a provider, which is the
+        // only reason to ask np about a model at all — an unconfigured folder must not wake a second child for a dot.
+        if !provider.as_deref().is_some_and(|named| !named.eq_ignore_ascii_case("none")) {
+            return EmbeddingsStatus { provider, model_id: None, present: None, bytes_total: None };
+        }
+        let configured_model = path.and_then(embedding_model_named);
+        let started = std::time::Instant::now();
+        let listing = match self.pool.reader().await {
+            Ok(reader) => match crate::np::methods::models_list(&reader, &self.vault).await {
+                Ok(listing) => Some(listing),
+                Err(fault) => {
+                    // The dot goes grey-and-honest either way, but the drawer should still be able to say *why* it
+                    // cannot answer: this light is the one people trust to mean "nothing is happening".
+                    self.record_fault("models.list", started.elapsed(), fault.code, &fault.message);
+                    None
+                }
+            },
+            Err(_) => None,
+        };
+        let Some(listing) = listing else {
+            // Nobody answered. The settings file still says which model this folder points at, so that half is kept
+            // and the two halves that need np stay `None`.
+            return EmbeddingsStatus { provider, model_id: configured_model, present: None, bytes_total: None };
+        };
+        let model_id = configured_model.or_else(|| match listing.pinned.as_slice() {
+            [only] => Some(only.id.clone()),
+            // Several pinned and none named is np's table, not Jott's guess — the same refusal the consent gate made
+            // when it would not promise 310 MB for what might be an 865 MB download.
+            _ => None,
+        });
+        let present = model_id
+            .as_deref()
+            // An unreadable models directory is not evidence of absence: `artifact_present` says "no" because a
+            // consent gate must fail closed, and a light has no business inheriting that caution as a fact.
+            .filter(|_| listing.models_dir_error.is_none())
+            .map(|id| listing.artifact_present(id));
+        let bytes_total = model_id
+            .as_deref()
+            .and_then(|id| listing.price_of(id))
+            .or_else(|| listing.only_price());
+        EmbeddingsStatus { provider, model_id, present, bytes_total }
+    }
+
     /// The consent prompt's two buttons, taken to np over the pipe.
     ///
     /// np opens and closes its own door (`embeddings.enable` / `embeddings.disable`, note-processor#7); Jott writes
@@ -1275,6 +1326,27 @@ pub struct ConsentHelp {
     /// What np's file says about `[models] auto_fetch` right now — the key Jott writes when it records an answer.
     /// `None` means the file is unreadable or absent, which the card words as "np's default", not as "no".
     pub auto_fetch: Option<bool>,
+}
+
+/// What the status line's model dot is drawn from: whether embeddings are configured at all, which model that means,
+/// and whether note-processor reports its bytes as present on this disk.
+///
+/// Every field is np's answer, and every `None` means nobody said — not "no". A folder whose np did not answer gets a
+/// dot that says "unknown", never a grey one that reads as "off": those are two different instructions to a person, and
+/// v0.0.17 already learned what it costs when the window flattens them (`ErrorKind::NpGone` vs `NpRefused`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct EmbeddingsStatus {
+    /// np's `embeddings.provider`, quoted as written — including `"none"`, which is an answer and not an absence.
+    pub provider: Option<String>,
+    /// The model this folder would embed with: np's configured one, else the single entry its `pinned` table names.
+    pub model_id: Option<String>,
+    /// Are the model's bytes here? `None` means np was unreachable, or its models directory would not list — an
+    /// unreadable directory is nobody's verdict about a download (`artifact_present` answers "no" for a gate that must
+    /// fail closed; a dot has no such reason to guess).
+    pub present: Option<bool>,
+    /// What the download costs, from np's own pinned table, so an amber dot can name the size it is waiting on.
+    pub bytes_total: Option<u64>,
 }
 
 /// The payload for `np://missing`: what is wrong, and how to fix it on this platform (§2).

@@ -97,6 +97,14 @@ describe('the consent receipt', () => {
   })
 })
 
+describe('the model dot payload', () => {
+  it('carries every key Rust sends about whether the model is here', () => {
+    // The dot's fifth state exists because `present: null` is a different fact from `present: false`. If this side
+    // drops the key, TypeScript cannot tell the two apart and a folder whose np did not answer gets drawn grey.
+    expect(interfaceKeys(ipcTs, 'ModelStatus').sort()).toEqual(rustFields(ipcRust, 'EmbeddingsStatus').sort())
+  })
+})
+
 describe('the consent card payload', () => {
   it('carries every key Rust sends about np’s configuration', () => {
     // The card is the only thing standing between "Allow download" and a person editing np's config by guesswork.
