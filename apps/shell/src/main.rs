@@ -66,29 +66,36 @@ fn main() {
             let np_bundle = if candidate.is_dir() { candidate } else { PathBuf::new() };
             app.manage(ipc::App::startup(np_bundle));
 
-            // The window is built here rather than named in `tauri.conf.json`, for two reasons measured in the
-            // crates we build against — both written down with their evidence in
-            // `crates/jott-core/tests/shell_window.rs`, which fails if either regresses:
+            // The window is built here rather than named in `tauri.conf.json` for one reason, measured in the crates
+            // we build against and pinned by `crates/jott-core/tests/shell_window.rs`.
             //
-            // 1. Tauri creates a config window (`app.rs:2691`) before anything can move it, and the window-state
-            //    plugin restores the saved position after that. So every launch after the first showed the window
-            //    where Windows had put it and then slid it a few centimetres to where it belonged. Built hidden,
-            //    restored during `build()`, shown once below: no jump for anyone to watch.
-            // 2. A colour named in the config reaches the *window* only (`tauri-runtime-wry:889`). The webview's own
-            //    colour comes from `webview_attributes.background_color` alone (same file, 4779), and that is what
-            //    wry gives WebView2 as `SetDefaultBackgroundColor` — so the surface covering everything before the
-            //    page paints kept WebView2's default, white, however Jott's config was spelled. The builder method
-            //    sets both halves (`webview_window.rs:1248-1250`), which is why the colour is set here rather than
-            //    there.
+            // Tauri creates a config window (`tauri-2.12.5/src/app.rs:2691`) and shows it — `visible` defaults to true
+            // (`tauri-utils:2072`, applied at `tauri-runtime-wry:857`, made visible in tao's `init`) — before our
+            // setup closure runs. The window-state plugin restores the saved position inside that same creation:
+            // `on_window_ready` (plugin `lib.rs:433`) → `restore_state` → plain `set_position`/`set_size` (`:213`,
+            // `:230`). So a launch with a saved state showed the window where Windows put it and then moved it.
+            // Built hidden, restored during `build()`, shown once below: nobody watches the move.
+            //
+            // The precondition matters, because the report did not say it: with no `.window-state.json` there is
+            // nothing to restore (`restore_state` takes its else-branch at `:245` and never calls `set_position`), so
+            // a jump on somebody's genuinely first launch is a different bug — DPI renegotiation moves windows after
+            // `show()` too (`tao-0.37.2/.../event_loop.rs:1837+`). The `event: "window"` line says which case it was.
+            //
+            // The colour below is not a second fix, and said so here after a review caught me claiming otherwise: a
+            // config colour reaches both layers as well (`tauri-runtime-2.12.2/src/webview.rs:498` fills the very
+            // `webview_attributes.background_color` that `tauri-runtime-wry:4779` hands to wry), so moving it from
+            // config to code changes nothing about the white first frame. It is here because, with no config window,
+            // this is now the only place it can be set. The white stays unexplained.
             let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
                 .title("Jott")
                 .inner_size(1200.0, 760.0)
                 .min_inner_size(720.0, 480.0)
-                // The light paper of `src/app.css` and `index.html`, as the surface behind the page. Someone on a
-                // dark-mode desktop still sees *this* rather than the ink paper for those first frames: lighter
-                // than the white it replaces, and honest about being a guess — no machine that runs our tests has
-                // a display, so §2b-ix of `docs/testing-on-windows.md` asks a person to look.
+                // The light paper of `src/app.css` and `index.html`, pinned to it by a test. A dark-mode desktop
+                // still sees this light paper before the page paints: nothing in Jott knows the scheme before there
+                // is a page to ask, and no machine that runs our tests has a display.
                 .background_color(Color(250, 250, 249, 255))
+                // Redundant with tauri's `devtools` feature (`tauri-runtime-wry:5146` forwards
+                // `devtools.unwrap_or(true)`), kept because the line says out loud what this build is for.
                 .devtools(true)
                 .visible(false)
                 .build()?;

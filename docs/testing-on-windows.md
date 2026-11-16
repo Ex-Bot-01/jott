@@ -467,22 +467,31 @@ These came from someone with notes open and opinions, so they are about the wind
    something is still hiding it; an ink colour with nothing visible points at something else — the paper colour behind it,
    say — which is a different fix again.
 
-## 2b-ix. Since 0.0.19: the window arrives once, in the right place, and painted
+## 2b-ix. Since 0.0.19: the window arrives once, in the right place
 
 Reported by you, from a fresh install: *it opens as a white window, then jumps about 5 cm to the right, then opens
-correctly.* Both halves were real, both were ours, and neither could be seen by whoever fixed it — so this section says
-what to look for and what to send back if it is still wrong.
+correctly.* The jump is fixed and its mechanism is measured line by line. **The white is not fixed**: my first explanation
+of it was wrong — checked one crate too shallow, see `docs/release-notes.md` — so this section asks you to say *which*
+pale you see rather than promising one of them has gone away.
 
 **What should happen now**
 
-1. **No slide.** Launch Jott twice: once with the folder you used last open, once from a fresh state. The window should
-   appear at its saved size and position and stay there. Nothing should move after it appears. (On the very first launch
-   ever there was never a move to make — Windows chose the spot and Jott kept it.)
-2. **Paper, not white.** For the moment before the page paints you should see the paper colour of the app — `#fafaf9`,
-   near-white but warm — rather than the flat white of a browser with nothing in it. On a dark-mode desktop this is
-   still light paper for those first frames; that part is an acknowledged guess, not a fix.
-3. **The window still behaves.** Drag it somewhere, close Jott, reopen: it should come back where you left it. That is
-   the plugin doing its job while the window is hidden, which is the whole change.
+1. **No slide, when there is a saved position to restore.** Drag the window somewhere, close Jott, reopen: it should come
+   back exactly there, and nothing should move after it appears. That is the plugin doing its job while the window is
+   still hidden — which is the whole change.
+2. **The very first run never moved, and never will,** because with no saved state there is nothing to restore. An
+   install *over* an older Jott keeps that file: `%APPDATA%\dev.jott.desktop\.window-state.json`. To test from a genuinely
+   fresh state, quit Jott and delete that one file — note it lives under `dev.jott.desktop`, not in the `%APPDATA%\jott`
+   folder the rest of this guide describes.
+3. **Say which pale you see.** In the moment before the page paints: flat white, like a browser with nothing in it, or
+   warm near-white paper (`#fafaf9`)? Either is still possible and the difference decides what to investigate next, so
+   look at it deliberately — start Jott while Alt-Tabbing back in, or record the screen if you can. On a dark-mode
+   desktop, light paper for those frames is expected and is not a new bug: nothing in Jott knows your colour scheme until
+   the page exists to be asked.
+4. **One case where moving after appearing is normal.** A monitor change or a scaling change — plugging in a projector,
+   moving between screens with different scales, dragging the DPI slider — makes Windows reposition and resize a window
+   *after* it is shown. If your setup has two displays at different scales, say so: that is a different bug from the one
+   fixed here, and this release does not claim to have it.
 
 **If it still misbehaves, send one line instead of a description**
 

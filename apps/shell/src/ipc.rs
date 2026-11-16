@@ -193,18 +193,22 @@ impl App {
 /// *and* the saved rectangle still intersects a monitor, so the sentence stops at what can be checked here.
 pub fn note_window(handle: &AppHandle, window: &tauri::WebviewWindow) {
     let app = handle.state::<App>();
+    // The plugin's own constant, not a string copied from its source: it honours `with_filename`, and a literal
+    // here would quietly start reporting "no state file yet" about a file that exists under another name.
     let state_file = handle
         .path()
         .app_config_dir()
-        .map(|dir| dir.join(".window-state.json").is_file())
+        .map(|dir| dir.join(tauri_plugin_window_state::DEFAULT_FILENAME).is_file())
         .unwrap_or(false);
     let saved = if state_file { "state file present" } else { "no state file yet" };
     let detail = match (window.inner_size(), window.outer_position()) {
         (Ok(size), Ok(pos)) => {
             format!("{}x{} with its top-left at +{}+{}; {saved}", size.width, size.height, pos.x, pos.y)
         }
-        // A refusal is the fact worth writing: it says the window was still being moved when we asked, which is
-        // precisely the situation a report about a jumping window describes.
+        // Reachable on platforms whose getters refuse; on Windows tao does not return here — `outer_position`
+        // panics on a failed `GetWindowRect` (tao-0.37.2 windows/window.rs:177-181). No story is attached to this
+        // arm beyond "we could not read it": inventing "the window was mid-move" would be exactly the sort of
+        // sentence this log exists to make unnecessary.
         _ => format!("geometry unreadable at show time; {saved}"),
     };
     let _ = app.journal.record_local(&LocalRecord::new("window").with_detail(detail));
