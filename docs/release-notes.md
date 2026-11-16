@@ -34,6 +34,20 @@ before the first window exists, nothing in Jott knows whether your desktop wants
 page, which does not exist yet. Trading one wrong colour for another is not a fix pretending to be one, and it is said
 plainly here rather than fixed with a registry read to win a few milliseconds.
 
+## The installed app never had a console. It does now
+
+While checking whether this fix could be *seen*, one more thing turned out to be fiction: `tauri.conf.json` also said
+`"devtools": true`, and the released Jott ignored that too. wry turns devtools off in any build that is not a debug
+build (`wry-0.57.2/src/lib.rs:873-875`), and Tauri passes its own setting along only when the `devtools` feature is
+compiled in (`tauri-runtime-wry/src/lib.rs:5146`) — a feature Jott never asked for. So **Ctrl+Shift+I has done nothing in
+every installed build since 0.0.4**, including in the instructions this guide has been giving since then: "press it and
+paste this", "that is a new bug and I want the console output". If you ever tried one and no window appeared, nothing
+was wrong with your machine.
+
+Jott now builds with tauri's `devtools` feature, so an installed copy has a real console: **Ctrl+Shift+I**, or right-click
+→ Inspect. The reason is not tidiness — for two weeks the only instrument between a report and a fix has been your
+description of what you saw, and half of them have pointed at the wrong thing.
+
 ## One thing we can read from your log
 
 Nobody who builds Jott has ever seen it run: this crate needs WebView2 or webkit even to compile, and no machine in the

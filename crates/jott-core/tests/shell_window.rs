@@ -21,6 +21,11 @@
 //! a display, and jsdom cannot compute style. The visible result is §2b-ix of `docs/testing-on-windows.md`, and the
 //! geometry Jott actually showed at is written to the log (`event: "window"`) so the next report can be read rather
 //! than guessed at.
+//!
+//! One pin here is not about the window at all, and sits with these because it was found by reading the same config
+//! field's neighbours: the installed build had no developer console, while `docs/testing-on-windows.md` spent sixteen
+//! releases telling people to open one. A config key nobody reads (`"devtools": true`) is the same mistake twice in
+//! one object.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -102,6 +107,26 @@ fn the_paper_behind_the_page_is_the_paper_in_the_stylesheet() {
     assert!(
         main.contains("Color(250, 250, 249, 255)"),
         "app.css says #{light} but the shell does not hand those bytes to the window"
+    );
+}
+
+#[test]
+fn the_installed_build_still_has_a_console() {
+    // Everything this release asks a tester to look at comes down to "open the console and paste this". In a
+    // release build that key does nothing unless the app asks for it: wry defaults devtools to off outside debug
+    // builds (`wry-0.57.2/src/lib.rs:873-875`), and tauri forwards its own `devtools` setting only under
+    // `cfg(any(debug_assertions, feature = "devtools"))` (`tauri-runtime-wry-2.12.3/src/lib.rs:5146`). Jott's config
+    // said `"devtools": true` for sixteen releases and the installed build ignored it, exactly as it ignored the
+    // colour next to it.
+    let manifest = read("apps/shell/Cargo.toml");
+    let tauri_line = manifest
+        .lines()
+        .find(|l| l.trim_start().starts_with("tauri = "))
+        .expect("the shell depends on tauri");
+    assert!(
+        tauri_line.contains("devtools"),
+        "the installed Jott has no developer console without tauri's `devtools` feature — and every diagnostic in \
+         the tester guide assumes one: {tauri_line}"
     );
 }
 

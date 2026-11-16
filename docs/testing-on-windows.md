@@ -441,7 +441,8 @@ These came from someone with notes open and opinions, so they are about the wind
    you answered when asked. Then press `[embed]` and watch whether it changes without restarting.
 4. Click the dot. Settings should open.
 5. Open `INDEX.md`: the pane header should say `read-only` and **close** should still work.
-6. If the caret is *still* missing — **Ctrl+Shift+I**, paste this into the console, then click back into your note and
+6. If the caret is *still* missing — **Ctrl+Shift+I** (which opens a console in an installed Jott only from 0.0.19 on:
+   earlier builds had none, whatever their config said — see §2b-ix), paste this into the console, then click back into your note and
    type. It waits three seconds before reporting on purpose: clicking the console takes focus away from the editor, and a
    snapshot taken at that moment describes an unfocused window rather than the thing you were looking at. Send me the one
    line it prints — this box has no screen, and I would rather fix the right bug than ship a fourth guess.
@@ -501,6 +502,12 @@ It looks like this:
 launches' worth of that line — before and after you moved the window — tells us more than any description of the move.
 A screenshot of the first frame, if you can catch one, is worth having too: nobody building Jott has a display, so your
 screen is the only evidence there is.
+
+**A console, at last.** **Ctrl+Shift+I** (or right-click → Inspect) opens one in the installed app from this release.
+It never worked before: Jott's config asked for devtools, and a release build ignored that unless tauri's `devtools`
+feature was compiled in — which it was not. So instructions in §2b-viii and elsewhere that said "press Ctrl+Shift+I and
+paste this" could not be followed on 0.0.4 through 0.0.18, and nobody should have felt clumsy for failing to find one.
+Anything in this guide that asks for console output now means it.
 
 **What was deliberately not done.** The standard trick for a white first frame is to keep the window hidden until the
 page says it has painted. That turns a broken bundle into an app with no window at all — which is how 0.0.8 shipped a
@@ -601,7 +608,7 @@ Three things worth knowing before you file it:
 
 - **A window the colour of paper, with no text at all**, on a Windows set to dark mode was 0.0.3's bug — white
   ink on near-white background. Fixed in 0.0.4; if you are on 0.0.4 and see it, that is a new bug and I want
-  the console output.
+  the console output (an installed Jott has had a console only since 0.0.19 — see §2b-ix).
 - **A black console window titled `np.exe`.** Windows gives a console to any console program a GUI starts, and
   np is one. Fixed in 0.0.7 (`CREATE_NO_WINDOW`). On 0.0.6 that window was the helper doing its job quietly — nothing
   had gone wrong, but it looked like something had.
