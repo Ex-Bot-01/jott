@@ -550,6 +550,52 @@ async fn deleting_a_file_outside_jott_also_asks_np_to_re_index() {
     session.close().await;
 }
 
+/// The other half of the same story: a path that is absent is not automatically a note that was deleted.
+/// np's catalogue rename leaves `INDEX.md.tmp` gone, an editor's swap file vanishes, and a folder removal
+/// reports children that were already missing. Nothing here may turn one of those into a rescan request —
+/// that is the loop that wrote 6,885 scan lines in under three minutes.
+#[tokio::test]
+async fn a_path_that_was_never_a_note_does_not_ask_for_a_rescan() {
+    let _turn = SERIAL.lock().await;
+    let harness = Harness::new();
+    // np's own temporary, mid-rename: created and removed inside one scan.
+    harness.write("INDEX.md.tmp", b"half-written catalogue\n");
+
+    let record = harness.data.path().join("calls.ndjson");
+    std::fs::write(&record, "").expect("empty call record");
+    let scenario = json!({ "record": record.display().to_string(), "replies": { "scan": common::fixture_result(1) } });
+    let scenario_file = harness.data.path().join("scenario.json");
+    std::fs::write(&scenario_file, scenario.to_string()).expect("write scenario");
+    std::env::set_var("FAKE_NP_SCENARIO", &scenario_file);
+
+    let (_sentinel, info) = ipc::np_absent();
+    let session = VaultSession::open_in_with(
+        NpSource::Env(common::repo_root().join("tests/fake-np/np.py")),
+        info,
+        None,
+        harness.vault.path(),
+        Consent::Granted,
+        Some(harness.data.path().join("np-config.toml")),
+        harness.data.path().to_path_buf(),
+    );
+    std::fs::write(&record, "").expect("clear the record");
+
+    std::fs::remove_file(harness.vault.path().join("INDEX.md.tmp")).expect("np renamed its temporary away");
+
+    // Long enough that a loop would have filled the file many times over: at the rate in the tester's log
+    // this window alone would hold ~150 scan lines.
+    tokio::time::sleep(std::time::Duration::from_millis(1_200)).await;
+    let asked: Vec<String> = std::fs::read_to_string(&record)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter_map(|line| line["method"].as_str().map(str::to_string))
+        .collect();
+    assert!(!asked.iter().any(|m| m == "scan"), "np's own rename was read as a deleted note: {asked:?}");
+
+    session.close().await;
+}
+
 #[tokio::test]
 async fn renaming_never_overwrites_and_says_who_links_to_it() {
     let _turn = SERIAL.lock().await;
@@ -2244,4 +2290,34 @@ async fn a_price_is_only_ever_quoted_for_the_model_it_belongs_to() {
         "309855456 is embeddinggemma-2's price; quoting it for some-other-model would be Jott's arithmetic"
     );
     session.close().await;
+}
+
+#[test]
+fn a_window_that_fell_behind_keeps_its_stream() {
+    use tokio::sync::broadcast::error::RecvError;
+    // The bridge used to end on any error, so one slow paint left the window permanently deaf — including during
+    // a model download. `Lagged` names rows nobody read; it does not name a closed session.
+    assert!(
+        jott_core::ipc::bridge_stays(&RecvError::Lagged(7)),
+        "a window that fell behind is a window still there"
+    );
+    assert!(
+        !jott_core::ipc::bridge_stays(&RecvError::Closed),
+        "a dropped session is the only real end"
+    );
+}
+
+#[tokio::test]
+async fn the_next_row_arrives_after_a_window_fell_behind() {
+    // Surviving the error in principle is not enough: what matters is that the *next* event still gets through.
+    let (tx, mut rx) = tokio::sync::broadcast::channel::<u32>(2);
+    for n in 0..5 {
+        let _ = tx.send(n);
+    }
+    let error = rx.recv().await.expect_err("the small buffer must report the lag");
+    assert!(jott_core::ipc::bridge_stays(&error), "and the policy must keep going: {error:?}");
+    // A two-slot buffer that took five rows still holds the last two. The point is not which row survives — it is
+    // that the stream carries on instead of ending, so the *next* thing the window needs to hear still arrives.
+    assert_eq!(rx.recv().await.unwrap(), 3, "the newest rows are still delivered");
+    assert_eq!(rx.recv().await.unwrap(), 4, "and the one after them too");
 }

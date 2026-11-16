@@ -81,7 +81,35 @@ pub fn should_report(rel: &str, writes: &SelfWrites) -> bool {
     // which is what looked like the window flickering while it indexed. The names are np's rule (§18.5), shared
     // with the tree's greyed-out rows, so the two can never disagree about who owns that file.
     let name = rel.rsplit('/').next().unwrap_or(rel);
-    !crate::vault::walk::is_generated_index(name)
+    !is_np_generated(name)
+}
+
+/// Whether this file name belongs to note-processor rather than to anybody's note — including the **temporary**
+/// it renames into place (`scan.rs:106`, `TEMP_SUFFIX = ".tmp"`).
+///
+/// That suffix is why this exists separately from `walk::is_generated_index`: `INDEX.md.tmp` does not end in `.md`,
+/// so the catalogue rule missed it, and every scan of a vault briefly produced a path the watcher reported as an
+/// external change. Reading that disappearance as a deleted note asks np to scan, which produces another one — the
+/// loop behind 6,885 scan lines in 142 seconds in a tester's log.
+///
+/// Narrow by construction: `<something>.tmp` counts only when the name underneath it is one of np's own catalogue
+/// names. An editor's `draft.md.tmp` beside a real note stays news.
+pub fn is_np_generated(name: &str) -> bool {
+    if crate::vault::walk::is_generated_index(name) {
+        return true;
+    }
+    name.strip_suffix(".tmp")
+        .is_some_and(crate::vault::walk::is_generated_index)
+}
+
+/// Could note-processor have indexed this path? Its walk reads `.md` files as notes and writes nothing else, so a
+/// vanished path that is not a markdown note cannot be a retired note — and must not start a rescan.
+///
+/// This is the second of two independent guards against the loop above: the watcher filter keeps np's own churn from
+/// being reported at all, and this keeps anything that does get reported from being mistaken for an indexed note.
+pub fn could_be_indexed(rel: &str) -> bool {
+    let name = rel.rsplit('/').next().unwrap_or(rel);
+    name.ends_with(".md") && !is_np_generated(name)
 }
 
 fn interesting(kind: &EventKind) -> bool {

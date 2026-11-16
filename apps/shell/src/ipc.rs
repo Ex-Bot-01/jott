@@ -242,9 +242,26 @@ fn with_nested_warning(mut listing: VaultListing, nested: Option<String>) -> Vau
 fn bridge(handle: &AppHandle, session: &Arc<VaultSession>) {
     let mut events = session.subscribe_events();
     let sink = handle.clone();
+    let watched = session.clone();
     tauri::async_runtime::spawn(async move {
-        while let Ok(event) = events.recv().await {
-            let _ = sink.emit("ingest://event", &event);
+        loop {
+            match events.recv().await {
+                Ok(event) => {
+                    let _ = sink.emit("ingest://event", &event);
+                }
+                // A window that fell behind is a window still there. Ending the loop here is what left the
+                // status line frozen at whatever it last showed — including through a 295 MB model download
+                // that had plenty to say. `Closed` is the only real end.
+                Err(error) if ipc::bridge_stays(&error) => {
+                    let missed = match &error {
+                        tokio::sync::broadcast::error::RecvError::Lagged(n) => *n,
+                        _ => 0,
+                    };
+                    watched.note_events_lagged(missed);
+                    continue;
+                }
+                Err(_) => break,
+            }
         }
     });
 

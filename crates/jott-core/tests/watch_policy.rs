@@ -170,3 +170,32 @@ fn np_writing_its_own_catalogue_is_not_a_change_to_somebodys_note() {
     assert!(jott_core::vault::watch::should_report("index.md", &writes), "lower-case is somebody's note");
     assert!(jott_core::vault::watch::should_report("INDEXES.md", &writes));
 }
+
+#[test]
+fn note_processors_own_temporary_catalog_files_are_not_reported() {
+    // np writes its catalogue as `<generated>.tmp` and renames it into place (`scan.rs:106`,
+    // `TEMP_SUFFIX = ".tmp"`), then clears any `INDEX*.tmp` corpse a dead run left behind. So every scan
+    // creates one of these inside the vault and removes it again a moment later.
+    //
+    // Jott's filter asks `is_generated_index(name)`, which is false for `INDEX.md.tmp` — the name does not end in
+    // `.md`. Until 0.0.21 that only cost a wasted tree re-list. Since 0.0.21 a vanished path is read as "a note was
+    // deleted", which asks np to scan, which writes another temporary: **6,885 scans in 142 seconds** in a tester's
+    // log, growing `jott.jsonl` until they noticed it in Explorer.
+    let writes = SelfWrites::new();
+    assert!(
+        !jott_core::vault::watch::should_report("INDEX.md.tmp", &writes),
+        "np's own temporary is not a change to anybody's note"
+    );
+    assert!(
+        !jott_core::vault::watch::should_report("notes/INDEX-a-m.md.tmp", &writes),
+        "nor is one of its shards, in a subfolder, mid-rename"
+    );
+
+    // Narrow on purpose: the rule is np's naming scheme, not "anything with tmp in it".
+    // Corrected while writing this: `INDEX-notes.md` *is* one of np's names — its shards are `INDEX-<range>.md`, so
+    // the stem rule matches it and Jott greys it out as np's too. The name that has to stay reportable is one np
+    // does not claim, which `INDEXX.md` is: same opening letters, no dash after `INDEX`.
+    assert!(jott_core::vault::watch::should_report("INDEXX.md", &writes), "a note that merely starts like a catalogue is still a note");
+    assert!(jott_core::vault::watch::should_report("notes/my-INDEX.md", &writes), "and so is one that ends like one");
+    assert!(jott_core::vault::watch::should_report("draft.md.tmp", &writes), "an editor's swap file beside a real note is still news — and cannot be mistaken for np's, which only ever renames its own INDEX names");
+}

@@ -722,7 +722,18 @@ impl Worker {
         // Saved here rather than only at the end of the loop: a pass that indexed and then stopped at
         // the consent gate should not lose its index stamp because someone closed the window.
         self.save_stamps();
-        self.emit(IngestEvent::Indexed(scanned));
+        // Say something only when there was something to say. A watcher-triggered walk that found nothing used to
+        // announce `Indexed` anyway, and every such event asks the window to re-list the tree. That was the loud
+        // half of a runaway: 6,885 announcements into a 128-slot stream (`ipc.rs`'s bridge comment for the whole
+        // story), pushing out the rows the window actually needed — including a model download's progress.
+        let worth_a_relist = !owed.is_empty()
+            || scanned.added > 0
+            || scanned.modified > 0
+            || scanned.moved > 0
+            || scanned.removed > 0;
+        if worth_a_relist {
+            self.emit(IngestEvent::Indexed(scanned));
+        }
         if owed.is_empty() {
             // This pass exists because a file stopped existing. There is nothing to embed, and falling
             // through would ask np for a model listing on behalf of a deletion.
