@@ -9,7 +9,7 @@
 use jott_core::about::AboutInfo;
 use jott_core::app_paths::app_data_dir;
 use jott_core::sync::guarded;
-use jott_core::diagnostics::{Journal, RunRecord};
+use jott_core::diagnostics::{Journal, LocalRecord, RunRecord};
 use jott_core::ingest::consent::np_config_path;
 use jott_core::ingest::queue::ConsentOffer;
 use jott_core::ipc::{
@@ -180,6 +180,34 @@ impl App {
         set_window_title(handle, path);
         Ok(with_nested_warning(session.listing()?, nested))
     }
+}
+
+/// One line per launch about the window itself, written the moment it appears.
+///
+/// Nobody who builds Jott can see it: this crate needs WebView2 or webkit even to compile, and no machine in our
+/// loop runs one with a display attached. So when somebody reports "it opened white, then moved", the answer has to
+/// come out of their log — what size the window came up at, where its top-left landed, and whether there was a saved
+/// state file for this folder profile at all. Numbers and one word about a file; no paths, no note text.
+///
+/// "State file present" is not "the position was restored": the plugin restores only if the label is in that file
+/// *and* the saved rectangle still intersects a monitor, so the sentence stops at what can be checked here.
+pub fn note_window(handle: &AppHandle, window: &tauri::WebviewWindow) {
+    let app = handle.state::<App>();
+    let state_file = handle
+        .path()
+        .app_config_dir()
+        .map(|dir| dir.join(".window-state.json").is_file())
+        .unwrap_or(false);
+    let saved = if state_file { "state file present" } else { "no state file yet" };
+    let detail = match (window.inner_size(), window.outer_position()) {
+        (Ok(size), Ok(pos)) => {
+            format!("{}x{} with its top-left at +{}+{}; {saved}", size.width, size.height, pos.x, pos.y)
+        }
+        // A refusal is the fact worth writing: it says the window was still being moved when we asked, which is
+        // precisely the situation a report about a jumping window describes.
+        _ => format!("geometry unreadable at show time; {saved}"),
+    };
+    let _ = app.journal.record_local(&LocalRecord::new("window").with_detail(detail));
 }
 
 /// The title says which folder is open.

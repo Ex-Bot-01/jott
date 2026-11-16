@@ -466,6 +466,47 @@ These came from someone with notes open and opinions, so they are about the wind
    something is still hiding it; an ink colour with nothing visible points at something else — the paper colour behind it,
    say — which is a different fix again.
 
+## 2b-ix. Since 0.0.19: the window arrives once, in the right place, and painted
+
+Reported by you, from a fresh install: *it opens as a white window, then jumps about 5 cm to the right, then opens
+correctly.* Both halves were real, both were ours, and neither could be seen by whoever fixed it — so this section says
+what to look for and what to send back if it is still wrong.
+
+**What should happen now**
+
+1. **No slide.** Launch Jott twice: once with the folder you used last open, once from a fresh state. The window should
+   appear at its saved size and position and stay there. Nothing should move after it appears. (On the very first launch
+   ever there was never a move to make — Windows chose the spot and Jott kept it.)
+2. **Paper, not white.** For the moment before the page paints you should see the paper colour of the app — `#fafaf9`,
+   near-white but warm — rather than the flat white of a browser with nothing in it. On a dark-mode desktop this is
+   still light paper for those first frames; that part is an acknowledged guess, not a fix.
+3. **The window still behaves.** Drag it somewhere, close Jott, reopen: it should come back where you left it. That is
+   the plugin doing its job while the window is hidden, which is the whole change.
+
+**If it still misbehaves, send one line instead of a description**
+
+Every launch now records what the window came up as:
+
+```powershell
+Get-Content $env:APPDATA\jott\logs\jott.jsonl | Select-String '"event":"window"' | Select-Object -Last 3
+```
+
+It looks like this:
+
+```json
+{"event":"window","detail":"1200x760 with its top-left at +312+180; state file present","at_ms":1731000000000}
+```
+
+`no state file yet` on a second launch means the position was never saved, which is a different bug from a jump. Two
+launches' worth of that line — before and after you moved the window — tells us more than any description of the move.
+A screenshot of the first frame, if you can catch one, is worth having too: nobody building Jott has a display, so your
+screen is the only evidence there is.
+
+**What was deliberately not done.** The standard trick for a white first frame is to keep the window hidden until the
+page says it has painted. That turns a broken bundle into an app with no window at all — which is how 0.0.8 shipped a
+blank screen nobody could diagnose — so Jott shows its window immediately, unconditionally, and if paper still does not
+land the next step is a reveal-with-timeout rather than a hope.
+
 ## 2c. Since 0.0.11: press **Ctrl+Shift+D** when something is odd
 
 A drawer opens at the bottom of the window with what this run has actually been doing:

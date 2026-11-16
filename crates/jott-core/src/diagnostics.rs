@@ -148,7 +148,7 @@ impl RunRecord {
 #[derive(Debug, Clone, Serialize)]
 pub struct LocalRecord {
     /// `save`, `write-failed`, `conflict`, `mirror-replayed`, `mirror-discarded`, `deleted`, `consent`,
-    /// `index-now`, `watcher-unavailable`, `state-root-fallback`.
+    /// `index-now`, `watcher-unavailable`, `state-root-fallback`, `window`.
     pub event: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rel: Option<String>,
