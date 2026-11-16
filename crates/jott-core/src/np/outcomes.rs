@@ -508,6 +508,23 @@ pub struct ModelListing {
     /// table compiled into the binary, so a GUI can name a download's size before any transport is asked. Empty on
     /// 0.3.1, which quoted nothing — that is *unknown*, and the prompt says "a model" instead of a number.
     pub pinned: Vec<PinnedModel>,
+    /// What np is downloading **right now**, read from its fetch markers. A marker is a file on disk, so this
+    /// answers even when no progress line reached the window — which is what makes a 295 MB fetch something a
+    /// person can see rather than something they hope for.
+    ///
+    /// A marker outlives a killed process: np leaves it where it was. So `Some` here means "bytes were counted",
+    /// not "bytes are moving"; the window shows this only while the count advances (`modelStatus.ts`,
+    /// `bytesAdvanced`), and asks again rather than trusting one reading.
+    pub fetching: Vec<FetchProgress>,
+}
+
+/// One of np's fetch markers: a model id and how far its bytes have come.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchProgress {
+    pub id: String,
+    pub bytes_done: u64,
+    /// The size the transfer announced, when it announced one (np's §12 rule 12). `None` is unknown, not zero.
+    pub bytes_total: Option<u64>,
 }
 
 /// One entry of np's `pinned` table: an id, the members it needs, and their total bytes when np knew them.
@@ -535,6 +552,14 @@ impl ModelListing {
     /// The price of what a fresh np would fetch on its own: the built-in default, quoted as the table's one entry.
     /// Deliberately refuses to guess when np quoted several and none was named — picking one at random is how a
     /// consent prompt ends up promising 310 MB for an 865 MB download.
+    /// The download to speak about, when np reports one. A vision model arrives as `main` plus an `mmproj`, so
+    /// several markers can exist at once; the window names one and says how many there are rather than adding two
+    /// byte counts that measure different files. Lowest id first, because a person re-reading the banner seconds
+    /// later must not see it switch models for no reason.
+    pub fn download(&self) -> Option<FetchProgress> {
+        self.fetching.iter().min_by(|a, b| a.id.cmp(&b.id)).cloned()
+    }
+
     pub fn only_price(&self) -> Option<u64> {
         match self.pinned.as_slice() {
             [one] => one.bytes_total,
@@ -549,6 +574,17 @@ struct RawListing {
     models_dir_error: Option<String>,
     #[serde(default)]
     pinned: Option<Vec<RawPinned>>,
+    #[serde(default)]
+    fetching: Option<Vec<RawFetching>>,
+}
+
+#[derive(Deserialize)]
+struct RawFetching {
+    id: String,
+    #[serde(default)]
+    bytes_done: u64,
+    #[serde(default)]
+    bytes_total: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -569,6 +605,12 @@ pub fn model_listing(value: &Value) -> Result<ModelListing, NpFault> {
                 .unwrap_or_default()
                 .into_iter()
                 .map(|p| PinnedModel { id: p.id, bytes_total: p.bytes_total })
+                .collect(),
+            fetching: r
+                .fetching
+                .unwrap_or_default()
+                .into_iter()
+                .map(|f| FetchProgress { id: f.id, bytes_done: f.bytes_done, bytes_total: f.bytes_total })
                 .collect(),
         })
         .map_err(|e| shape_fault("models.list", e))

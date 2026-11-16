@@ -997,6 +997,8 @@ impl VaultSession {
         if unreadable {
             return EmbeddingsStatus {
                 provider: None,
+                // Nothing was asked of np, so nothing is known about a download. Not "no download": nobody spoke.
+                downloading: None,
                 model_id: None,
                 present: None,
                 bytes_total: None,
@@ -1010,6 +1012,7 @@ impl VaultSession {
         if !provider.as_deref().is_some_and(|named| !named.eq_ignore_ascii_case("none")) {
             return EmbeddingsStatus {
                 provider,
+                downloading: None,
                 model_id: None,
                 present: None,
                 bytes_total: None,
@@ -1036,6 +1039,7 @@ impl VaultSession {
             // and the two halves that need np stay `None`.
             return EmbeddingsStatus {
                 provider,
+                downloading: None,
                 model_id: configured_model,
                 present: None,
                 bytes_total: None,
@@ -1059,7 +1063,22 @@ impl VaultSession {
         // Deliberately no `or_else(only_price)`: once a model is named, "the table's one entry" can only be another
         // model's price, and 309855456 bytes attached to the wrong file is a number Jott made up.
         let bytes_total = model_id.as_deref().and_then(|id| listing.price_of(id));
-        EmbeddingsStatus { provider, model_id, present, bytes_total, config_unreadable: false, models_dir_error }
+        // np's own marker, chosen for steadiness rather than recency: the same download keeps the same words
+        // between polls instead of naming whichever member was written last.
+        let downloading = listing.download().map(|f| Downloading {
+            model_id: f.id,
+            bytes_done: f.bytes_done,
+            bytes_total: f.bytes_total,
+        });
+        EmbeddingsStatus {
+            provider,
+            downloading,
+            model_id,
+            present,
+            bytes_total,
+            config_unreadable: false,
+            models_dir_error,
+        }
     }
 
     /// The consent prompt's two buttons, taken to np over the pipe.
@@ -1416,6 +1435,9 @@ pub struct ConsentHelp {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct EmbeddingsStatus {
+    /// A download np says is running for this folder: which model, how far, and the size when np announced one.
+    /// `None` means np's marker list was empty — nobody is fetching, or nobody answered.
+    pub downloading: Option<Downloading>,
     /// np's `embeddings.provider`, quoted as written — including `"none"`, which is an answer and not an absence.
     pub provider: Option<String>,
     /// The model this folder would embed with: np's configured one, else the single entry its `pinned` table names.
@@ -1486,3 +1508,15 @@ fn hold_np_fetching_until_asked(consent: Consent, np_config: Option<&std::path::
 pub fn bridge_stays(error: &tokio::sync::broadcast::error::RecvError) -> bool {
     matches!(error, tokio::sync::broadcast::error::RecvError::Lagged(_))
 }
+
+/// One download in flight, as np's fetch marker described it. Bytes only — no speed, no finish time: an estimate
+/// of either would be Jott's arithmetic wearing np's authority, and a person watching a bar cares more about a
+/// true number than a smooth one.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Downloading {
+    pub model_id: String,
+    pub bytes_done: u64,
+    pub bytes_total: Option<u64>,
+}
+

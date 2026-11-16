@@ -2077,6 +2077,7 @@ async fn the_model_dot_reports_what_note_processor_said_about_the_model() {
             "modelId": "embeddinggemma-2",
             "present": true,
             "bytesTotal": 309855456,
+            "downloading": null,
             "configUnreadable": false,
             "modelsDirError": null
         })
@@ -2320,4 +2321,60 @@ async fn the_next_row_arrives_after_a_window_fell_behind() {
     // that the stream carries on instead of ending, so the *next* thing the window needs to hear still arrives.
     assert_eq!(rx.recv().await.unwrap(), 3, "the newest rows are still delivered");
     assert_eq!(rx.recv().await.unwrap(), 4, "and the one after them too");
+}
+
+/// A download in flight, read from np's own fetch markers rather than from a progress line that may never have
+/// reached the window. Two markers arrive (a vision model is `main` plus an `mmproj`), so the banner names one
+/// steadily — and both figures are np's, because a byte count Jott added up would be Jott's arithmetic.
+#[tokio::test]
+async fn a_download_in_flight_is_reported_from_nps_own_marker() {
+    let _turn = SERIAL.lock().await;
+    // Shaped from what bundled np 0.5.1 actually answered for `models.list` while fetching: id, bytes, nonce,
+    // path, started_at, marker_error — measured, not guessed.
+    let listing = json!({
+        "models": [],
+        "fetching": [
+            { "id": "mmproj", "bytes_done": 4_000_000, "bytes_total": 940_000_000u64,
+              "nonce": "n-2", "path": "/models/.fetching.mmproj.json", "started_at": 1, "marker_error": null },
+            { "id": "embeddinggemma-2", "bytes_done": 184_550_345, "bytes_total": 309_855_456u64,
+              "nonce": "n-1", "path": "/models/.fetching.embeddinggemma-2.json", "started_at": 1,
+              "marker_error": null },
+        ],
+        "unclaimed": [], "models_dir_error": null,
+        "pinned": [{ "id": "embeddinggemma-2", "bytes_total": 309_855_456 }]
+    });
+    let scenario_dir = scenario(json!({ "replies": { "models.list": listing } }));
+
+    let harness = Harness::new();
+    let config = harness.data.path().join("np-config.toml");
+    // A provider has to be configured or the status stops before asking np — it would be answering from the
+    // settings file alone, and there would be no marker list to read.
+    std::fs::write(
+        &config,
+        "[models]\nauto_fetch = true\n\n[embeddings]\nprovider = \"local-model\"\nmodel = \"embeddinggemma-2\"\n",
+    )
+    .expect("config");
+    let session = VaultSession::open_in(
+        fake_np(),
+        info(),
+        harness.vault.path(),
+        Consent::Granted,
+        Some(config),
+        harness.data.path().to_path_buf(),
+    );
+
+    let status = session.embeddings_status().await;
+    let down = status.downloading.as_ref().expect("np said bytes were moving");
+    assert_eq!(down.model_id, "embeddinggemma-2", "the same one every poll, not whichever marker was written last");
+    assert_eq!(down.bytes_done, 184_550_345);
+    assert_eq!(down.bytes_total, Some(309_855_456));
+
+    let wire = serde_json::to_value(&status).expect("serialize");
+    assert_eq!(
+        wire["downloading"],
+        json!({ "modelId": "embeddinggemma-2", "bytesDone": 184_550_345, "bytesTotal": 309_855_456 }),
+        "the keys the webview reads, pinned"
+    );
+
+    drop(scenario_dir);
 }
