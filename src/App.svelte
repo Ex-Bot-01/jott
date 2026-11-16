@@ -35,6 +35,7 @@
   import { markTerms } from './lib/highlight'
   import { consentSentence, modelReadySentence, statusFor, type Status } from './lib/statusLine'
   import { cardClipboard, cardSentences, NP_ISSUE } from './lib/consentHelp'
+  import { createBlocked } from './lib/createHere'
   import type { ConsentOutcome } from './lib/ipc'
   import { openUrl } from '@tauri-apps/plugin-opener'
   import { getCurrentWindow } from '@tauri-apps/api/window'
@@ -137,6 +138,9 @@
     kind: 'new' | 'rename' | 'folder' | 'move'
     value: string
     folder?: string
+    /** Why this cannot be done yet, in words. Set when a note or folder is asked for with no folder open: the dialog
+     *  stays up with what was typed, and submitting sends nothing rather than collecting a refusal nobody sees. */
+    blocked?: string | null
     rel?: string
     /** The move dialog's second half: a destination that does not exist yet. */
     newFolder?: string
@@ -188,27 +192,35 @@
   function adopt(next: VaultListing) {
     const changedFolder = listing !== null && listing.vault !== next.vault
     listing = next
-    // A model was downloaded for one folder's index, and a search widened itself in one folder's results; carried
-    // across they let the window describe yesterday's news as a property of the folder someone just opened — the same
-    // class of claim v0.0.14 exists to stop making.
-    if (!changedFolder) return
-    modelReady = null
-    consentHelp = null
-    lastRefusal = null
-    consentOutcome = null
-    cardClipFailed = false
-    prefixOnce = false
-    // The search answer on screen is note-processor's report about the folder it was asked in — `vectors`, `indexed`,
-    // which words it widened. Carried across, the settings panel warns "this folder has no vectors yet" about a
-    // folder Jott has never searched, and the results pane lists files that are not in this vault. The open note goes
-    // with them: a `rel` means nothing in another folder, and leaving a dirty buffer attached after core switched
-    // sessions is how one folder's typing ends up written into another's file.
-    results = null
-    searchQuery = ''
-    hitQuery = ''
-    selected = null
-    note = null
-    bufferVault = null
+    if (changedFolder) {
+      // A model was downloaded for one folder's index, and a search widened itself in one folder's results; carried
+      // across they let the window describe yesterday's news as a property of the folder someone just opened — the
+      // same class of claim v0.0.14 exists to stop making. Otherwise this is a re-list of the folder already on
+      // screen, and its news stays.
+      modelReady = null
+      consentHelp = null
+      lastRefusal = null
+      consentOutcome = null
+      cardClipFailed = false
+      prefixOnce = false
+      // The search answer on screen is note-processor's report about the folder it was asked in — `vectors`,
+      // `indexed`, which words it widened. Carried across, the settings panel warns "this folder has no vectors yet"
+      // about a folder Jott has never searched, and the results pane lists files that are not in this vault. The open
+      // note goes with them: a `rel` means nothing in another folder, and leaving a dirty buffer attached after core
+      // switched sessions is how one folder's typing ends up written into another's file.
+      results = null
+      searchQuery = ''
+      hitQuery = ''
+      selected = null
+      note = null
+      bufferVault = null
+    }
+
+    // Every path that installs a listing comes through here, so this is where the embeddings offer is asked. It used
+    // to be asked only by `refresh()`, which meant a folder that arrived by being *opened* — at startup or through the
+    // picker — never asked about, and the banner that tells someone their notes are indexed but cannot be searched by
+    // meaning had no way to appear until some later re-list happened to come along.
+    void askOffer()
   }
 
   async function openRecent(folder: string) {
@@ -485,10 +497,10 @@
     menu = null
     switch (action) {
       case 'new-note':
-        dialog = { kind: 'new', value: '', folder: targetFolder(row) }
+        dialog = { kind: 'new', value: '', folder: targetFolder(row), blocked: createBlocked(listing !== null) }
         return
       case 'new-folder':
-        dialog = { kind: 'folder', value: '', folder: targetFolder(row) }
+        dialog = { kind: 'folder', value: '', folder: targetFolder(row), blocked: createBlocked(listing !== null) }
         return
       case 'rename':
         if (selected === null) return
@@ -522,6 +534,9 @@
     const next = await call(ipc.pickVault)
     if (!next) return
     adopt(next)
+    // A dialog that was waiting on this folder can go on: the name typed is kept, so picking finishes the intention
+    // instead of starting it over.
+    if (dialog) dialog = { ...dialog, blocked: null }
     openFolders = new Set()
     selected = null
     note = null
@@ -678,8 +693,9 @@
 
   async function createFolder(rel: string) {
     const made = await call(() => ipc.createFolder(rel))
+    if (made === null) return // the dialog stays up: a folder that was not made is not a thing to close on
     dialog = null
-    if (made !== null) await refresh()
+    await refresh()
   }
 
   async function moveEntry(from: string, to: string) {
@@ -814,7 +830,10 @@
       const reopened = await ipc.openVault(last).catch(() => null)
       if (reopened) adopt(reopened)
     } else {
-      await refresh()
+      // Nothing to come back to. Asking `list_vault` anyway used to be how a first run began: core answers
+      // "no vault is open" — true, and not an error worth showing — and the sentence went into state that the empty
+      // layout had nowhere to draw. The empty state asks for a folder; that is the message.
+      listing = null
     }
 
     void ipc.onIngestEvent((event) => {
@@ -908,6 +927,13 @@
         About
       </button>
     </header>
+
+    {#if problem}
+      <!-- Refusals go where the eyes already are. This one used to live inside a branch that only renders when a
+           folder is open, so every sentence produced before a folder was chosen — including "no vault is open", which
+           a first run produced at startup — was written to state and never drawn. -->
+      <p class="warn" role="alert" data-testid="global-problem">{problem}</p>
+    {/if}
 
     <div class="tools">
       <input
@@ -1093,9 +1119,7 @@
         <!-- Sentences from the backend, shown as written (§4). -->
         <p class="warn">{warning}</p>
       {/each}
-      {#if problem}
-        <p class="warn">{problem}</p>
-      {/if}
+
       {#if notice}
         <p class="note-said">
           {notice}
@@ -1130,12 +1154,23 @@
           event.preventDefault()
           const value = dialog?.value.trim() ?? ''
           if (!value) return
+          // Nowhere to put it: keep the name, keep the dialog, send nothing. The sentence beside the field is the
+          // whole answer, and a command sent here would only be refused somewhere the person cannot see.
+          if (dialog?.blocked) return
           if (dialog?.kind === 'new') void createNote(prefixed(dialog, value))
           else if (dialog?.kind === 'folder') void createFolder(prefixed(dialog, value))
           else if (dialog?.kind === 'move' && dialog.rel) void moveEntry(dialog.rel, moveTo(dialog.rel, value))
           else void renameEntry(value)
         }}
       >
+        {#if dialog.blocked}
+          <!-- Said here, in the thing the person is looking at, rather than in a status area that only exists once a
+               folder is open. The button is the way out, and the name they typed survives it. -->
+          <p class="warn" role="alert" data-testid="create-blocked">
+            {dialog.blocked}
+            <button type="button" data-testid="dialog-open-folder" onclick={() => void pickFolder()}>Choose a folder</button>
+          </p>
+        {/if}
         {#if dialog.kind === 'move'}
           <label for="rel">Move {dialog.rel} into:</label>
           <select id="rel" bind:value={dialog.value}>

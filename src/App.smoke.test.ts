@@ -74,6 +74,29 @@ const media = vi.hoisted(() => {
 const moveCalls = vi.hoisted(() => ({ current: [] as Record<string, unknown>[] }))
 /** Make `create_folder` refuse, to check what the dialog does when half a plan fails. */
 const moveSays = vi.hoisted(() => ({ createFails: false, moveFails: false }))
+/** What the desktop folder picker answers. `null` is a cancelled dialog; a path is a chosen folder. */
+const picked = vi.hoisted(() => ({ current: null as string | null }))
+/** The listing each scene answers with, whichever command asks for it. Opening a folder and re-listing it must not be
+ *  able to disagree about what is inside — and `list_vault` with no session open is a refusal, not an empty listing. */
+const listingFor = vi.hoisted(() => (scene: string, path?: string) => {
+  const base = {
+    vault: path || 'C:\\notes',
+    nodes: [
+      { rel: 'inbox.md', kind: 'Note', size: 12, mtimeMs: 1_700_000_000_000, state: 'Waiting' },
+      { rel: 'INDEX.md', kind: 'Generated', size: 900, mtimeMs: null, state: null },
+    ],
+    warnings: ['One folder could not be read.'],
+  }
+  if (scene === 'needs-embedding') {
+    return { ...base, nodes: [{ rel: 'inbox.md', kind: 'Note', size: 12, mtimeMs: 1_700_000_000_000, state: 'Indexed' }] }
+  }
+  if (scene === 'indexed') {
+    return { ...base, nodes: [{ rel: 'inbox.md', kind: 'Note', size: 12, mtimeMs: 1_700_000_000_000, state: 'Embedded' }] }
+  }
+  return base
+})
+/** Whether `open_vault` succeeds. A folder can be chosen and then refused — missing, unreadable, nested in another. */
+const openVaultSays = vi.hoisted(() => ({ fails: false }))
 
 /** Whether `read_note` answers with note-processor's catalogue (read-only) for `INDEX.md`. */
 const readNoteSays = vi.hoisted(() => ({ catalogue: false }))
@@ -125,17 +148,23 @@ vi.mock('@tauri-apps/api/core', () => ({
     switch (cmd) {
       case 'registry_info':
         return Promise.resolve(
-          scenario.current === 'vault'
-            ? {
-                recent: extraRecent.current ? ['C:\\notes', extraRecent.current] : ['C:\\notes'],
+          scenario.current === 'empty'
+            ? { recent: [], consent: 'undecided' }
+            : {
+                recent:
+                  scenario.current === 'vault' && extraRecent.current
+                    ? ['C:\\notes', extraRecent.current]
+                    : ['C:\\notes'],
                 consent: 'undecided',
-              }
-            : { recent: [], consent: 'undecided' },
+              },
         )
       case 'open_vault':
+        if (openVaultSays.fails) {
+          return Promise.reject({ kind: 'io', message: 'C:\\gone is not a folder any more' })
+        }
         // The listing answers for the folder that was asked for. Handing back the same path every time hid a real
         // bug: the window could not tell a new folder from a re-list of the one already open.
-        return Promise.resolve({ ...vault, vault: String((args as { path?: string } | undefined)?.path ?? vault.vault) })
+        return Promise.resolve(listingFor(scenario.current, (args as { path?: string } | undefined)?.path))
       case 'app_info':
         return Promise.resolve({
           jottVersion: '0.0.5',
@@ -337,39 +366,43 @@ vi.mock('@tauri-apps/api/core', () => ({
         })
       case 'create_folder':
         moveCalls.current.push({ cmd, ...(args as Record<string, unknown>) })
+        if (scenario.current === 'empty') {
+          // Core has no session to make a folder in. Stubbing this as a success is how the window could look
+          // correct while its first-run buttons did nothing at all.
+          return Promise.reject({ kind: 'noVault', message: 'no vault is open' })
+        }
         if (moveSays.createFails) {
           // The shape Tauri hands back for a refused command: an object with a sentence in it.
           return Promise.reject({ kind: 'io', message: 'could not create ideas: permission denied' })
         }
-        return Promise.resolve({ hash: 'b'.repeat(64), mtimeMs: 1_700_000_000_500 })
+        // `Result<(), IpcError>` over the wire is `null`. A stub that invented an object here let the window read
+        // every real success as a failure and skip the refresh that follows one.
+        return Promise.resolve(null)
+      case 'create_note': {
+        moveCalls.current.push({ cmd, ...(args as Record<string, unknown>) })
+        if (scenario.current === 'empty') {
+          return Promise.reject({ kind: 'noVault', message: 'no vault is open' })
+        }
+        return Promise.resolve({ hash: 'c'.repeat(64), mtimeMs: 1_700_000_000_500 })
+      }
       case 'move_entry':
         moveCalls.current.push({ cmd, ...(args as Record<string, unknown>) })
         if (moveSays.moveFails) {
           return Promise.reject({ kind: 'intoItself', message: 'cannot move a folder into itself' })
         }
-        // A `void` command resolves undefined. Returning null here would be indistinguishable from App's own
-        // "the command failed" marker, and the dialog would stay open on a successful move.
-        return Promise.resolve(undefined)
+        // What core actually sends for `Result<(), IpcError>`: null. The window must tell "nothing to report" from
+        // "it failed" without pretending the wire carries more than it does.
+        return Promise.resolve(null)
       case 'save_note':
         return Promise.resolve({ hash: 'b'.repeat(64), mtimeMs: 1_700_000_000_500 })
       case 'list_vault':
-        if (scenario.current === 'needs-embedding') {
-          return Promise.resolve({
-            vault: 'C:\\notes',
-            nodes: [
-              { rel: 'inbox.md', kind: 'Note', size: 12, mtimeMs: 1_700_000_000_000, state: 'Indexed' },
-            ],
-            warnings: [],
-          })
+        if (scenario.current === 'empty') {
+          // With no session open, core refuses rather than inventing an empty listing (`app.current()?` in the shell).
+          // The `{ vault: '' }` this stub used to answer is a state that cannot happen, and it let every "no folder is
+          // open" test describe a window that was quietly holding one.
+          return Promise.reject({ kind: 'noVault', message: 'no vault is open' })
         }
-        if (scenario.current === 'indexed') {
-          return Promise.resolve({
-            vault: 'C:\\notes',
-            nodes: [{ rel: 'inbox.md', kind: 'Note', size: 12, mtimeMs: 1_700_000_000_000, state: 'Embedded' }],
-            warnings: [],
-          })
-        }
-        return Promise.resolve({ vault: '', nodes: [], warnings: [] })
+        return Promise.resolve(listingFor(scenario.current))
       default:
         return Promise.reject(new Error(`the window asked for a command nobody stubbed: ${cmd}`))
     }
@@ -412,7 +445,7 @@ vi.mock('@tauri-apps/api/event', () => ({
   },
 }))
 vi.mock('@tauri-apps/plugin-dialog', () => ({
-  open: async () => undefined,
+  open: async () => picked.current ?? undefined,
   confirm: async () => confirmed.current,
 }))
 
@@ -502,6 +535,8 @@ describe('the window mounts', () => {
     notified.sent = []
     focused.current = true
     moveCalls.current = []
+    picked.current = null
+    openVaultSays.fails = false
     moveSays.createFails = false
     moveSays.moveFails = false
     // Reset where they are set: both of these were restored at the *end* of their tests, so a failing assertion left
@@ -623,7 +658,8 @@ describe('the window mounts', () => {
     // merely *loading a folder* should cost 8 MB of idle model-fetcher.
     scenario.current = 'indexed'
     await start()
-    await vi.waitFor(() => expect(commands).toContain('list_vault'))
+    // A second run comes back to its folder by itself, so the listing arrives through `open_vault`.
+    await vi.waitFor(() => expect(commands).toContain('open_vault'))
     expect(commands).not.toContain('embeddings_offer')
   })
 
@@ -634,6 +670,7 @@ describe('the window mounts', () => {
     scenario.current = 'needs-embedding'
     confirmed.current = true
     const { errors } = await start()
+
 
     await vi.waitFor(() => expect(document.body.textContent ?? '').toContain('indexed but not embedded'))
     const button = [...document.querySelectorAll('button')].find((b) => b.textContent === 'Set up embeddings')
@@ -1885,7 +1922,7 @@ describe('the window mounts', () => {
 
     await vi.waitFor(() => expect(moveCalls.current.map((c) => c.cmd)).toEqual(['create_folder', 'move_entry']), { timeout: 2000 })
     await vi.waitFor(() => {
-      const said = document.querySelector('[role="alert"]')?.textContent ?? ''
+      const said = document.querySelector('.ask [role="alert"]')?.textContent ?? ''
       expect(said, 'the dialog owns up to the folder it created').toContain('Created ideas')
     }, { timeout: 2000 })
     expect(document.querySelector('[data-testid="new-folder-name"]'), 'and leaves the dialog up').not.toBeNull()
@@ -1894,5 +1931,156 @@ describe('the window mounts', () => {
     expect(errors).toEqual([])
   })
 
+
+  it('says what is missing when a note is asked for with no folder open', async () => {
+    // Reported from Windows: first run, no folder open, click "+ folder", type a name, press Enter — nothing at all.
+    // The window did have the sentence ("no vault is open"); it drew it in a branch that needs an open folder, so
+    // nobody ever saw it. A refusal a person cannot read is the same as no refusal.
+    scenario.current = 'empty'
+    const { errors } = await start()
+    await vi.waitFor(() => expect(document.querySelector('button[title^="New note"]')).not.toBeNull(), { timeout: 2000 })
+
+    ;(document.querySelector('button[title^="New note"]') as HTMLButtonElement).click()
+    const blocked = await vi.waitFor(() => {
+      const el = document.querySelector('[data-testid="create-blocked"]')
+      expect(el, 'the dialog says why this cannot happen yet. FORM=' + (document.querySelector('.ask')?.outerHTML ?? 'NO FORM')).not.toBeNull()
+      return el!
+    }, { timeout: 2000 })
+    expect((blocked.textContent ?? '').toLowerCase()).toContain('no folder is open')
+
+    const field = (await vi.waitFor(() => {
+      const el = document.querySelector('#rel') as HTMLInputElement | null
+      expect(el).not.toBeNull()
+      return el!
+    }, { timeout: 2000 })) as HTMLInputElement
+    field.value = 'hello.md'
+    field.dispatchEvent(new Event('input', { bubbles: true }))
+    ;(document.querySelector('.ask button[type="submit"]') as HTMLButtonElement).click()
+    await new Promise((resolve) => setTimeout(resolve, 40))
+
+    expect(moveCalls.current, 'a blocked intention sends no command').toEqual([])
+    const kept = document.querySelector('#rel') as HTMLInputElement
+    expect(kept, 'the dialog stays open with the name typed').not.toBeNull()
+    expect(kept.value).toBe('hello.md')
+    expect(errors).toEqual([])
+  })
+
+  it('finishes the note it was asked for once a folder has been picked', async () => {
+    // The other half of the report: "maybe open the folder as a workspace if nothing is opened yet." The dialog keeps
+    // what was typed, so choosing a folder finishes the intention rather than starting it over.
+    scenario.current = 'empty'
+    const { errors } = await start()
+    await vi.waitFor(() => expect(document.querySelector('button[title^="New note"]')).not.toBeNull(), { timeout: 2000 })
+    ;(document.querySelector('button[title^="New note"]') as HTMLButtonElement).click()
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="create-blocked"]')).not.toBeNull(), { timeout: 2000 })
+
+    const field = document.querySelector('#rel') as HTMLInputElement
+    field.value = 'hello.md'
+    field.dispatchEvent(new Event('input', { bubbles: true }))
+
+    picked.current = 'C:\\notes'
+    ;(document.querySelector('[data-testid="dialog-open-folder"]') as HTMLButtonElement).click()
+    await vi.waitFor(() => expect(commands).toContain('open_vault'), { timeout: 2000 })
+
+    const submit = (await vi.waitFor(() => {
+      const el = document.querySelector('.ask button[type="submit"]')
+      expect(el, 'the dialog is still open after picking').not.toBeNull()
+      return el!
+    }, { timeout: 2000 })) as HTMLButtonElement
+    submit.click()
+
+    await vi.waitFor(() => expect(moveCalls.current.map((c) => c.cmd)).toEqual(['create_note']), { timeout: 2000 })
+    expect(moveCalls.current[0]).toMatchObject({ cmd: 'create_note', rel: 'hello.md' })
+    expect(errors).toEqual([])
+  })
+
+  it('shows a refusal even when no folder is open to make room for one', async () => {
+    // The class of bug behind "nothing happens": the window had the sentence and drew it in a branch that needs an
+    // open folder. Whatever refuses, before or after a folder is chosen, the answer belongs above the tools.
+    scenario.current = 'empty'
+    const { errors } = await start()
+    await vi.waitFor(() => expect(document.querySelector('button[title^="New note"]')).not.toBeNull(), { timeout: 2000 })
+    ;(document.querySelector('button[title^="New note"]') as HTMLButtonElement).click()
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="create-blocked"]')).not.toBeNull(), { timeout: 2000 })
+
+    picked.current = 'C:\\gone'
+    openVaultSays.fails = true
+    ;(document.querySelector('[data-testid="dialog-open-folder"]') as HTMLButtonElement).click()
+
+    const said = await vi.waitFor(() => {
+      const el = document.querySelector('[data-testid="global-problem"]')
+      expect(el, 'the refusal is on screen').not.toBeNull()
+      return el!
+    }, { timeout: 2000 })
+    expect(said.textContent).toContain('C:\\gone is not a folder any more')
+    expect(errors).toEqual([])
+  })
+
+  it('asks for the tree again after making a folder', async () => {
+    // Half of "+ folder → nothing happens" was this: `Ok(())` crosses the wire as `null`, and `null` is the window's
+    // own marker for "the command failed", so every successful create skipped the refresh that would have shown it.
+    scenario.current = 'vault'
+    const { errors } = await start()
+    await vi.waitFor(() => expect(document.querySelector('button[title^="New folder"]')).not.toBeNull(), { timeout: 2000 })
+
+    ;(document.querySelector('button[title^="New folder"]') as HTMLButtonElement).click()
+    const field = (await vi.waitFor(() => {
+      const el = document.querySelector('#rel') as HTMLInputElement | null
+      expect(el).not.toBeNull()
+      return el!
+    }, { timeout: 2000 })) as HTMLInputElement
+    field.value = 'ideas'
+    field.dispatchEvent(new Event('input', { bubbles: true }))
+
+    commands.length = 0
+    ;(document.querySelector('.ask button[type="submit"]') as HTMLButtonElement).click()
+
+    await vi.waitFor(() => expect(moveCalls.current.map((c) => c.cmd)).toEqual(['create_folder']), { timeout: 2000 })
+    await vi.waitFor(() => expect(commands, 'the tree is asked for again').toContain('list_vault'), { timeout: 2000 })
+    expect(document.querySelector('.ask'), 'and the dialog closes on a folder that was made').toBeNull()
+    expect(errors).toEqual([])
+  })
+
+  it('closes the move dialog when the move succeeded', async () => {
+    // Same wire shape, same trap: a successful `move_entry` answers null, and the window read that as a failure —
+    // leaving the dialog open over a tree that had already changed.
+    scenario.current = 'vault'
+    const { errors } = await start()
+
+    let row!: HTMLElement
+    await vi.waitFor(() => {
+      row = document.querySelector('.tree button[data-kind="Note"]') as HTMLElement
+      expect(row, 'the fixture has a note to move').not.toBeNull()
+    }, { timeout: 2000 })
+    row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 40, clientY: 90 }))
+    const moveItem = await vi.waitFor(() => {
+      const el = [...document.querySelectorAll('.row-menu [role="menuitem"]')].find((b) => b.textContent === 'Move to…')
+      expect(el, 'a note offers a move').not.toBeUndefined()
+      return el as HTMLButtonElement
+    }, { timeout: 2000 })
+    moveItem.click()
+
+    const target = (await vi.waitFor(() => {
+      const el = document.querySelector('#rel') as HTMLSelectElement | null
+      expect(el).not.toBeNull()
+      return el!
+    }, { timeout: 2000 })) as HTMLSelectElement
+    const into = [...target.options].map((o) => o.value).filter((v) => v !== '')
+    if (into.length === 0) {
+      // The vault fixture has no folders, so the destination has to be named instead of chosen.
+      const name = document.querySelector('[data-testid="new-folder-name"]') as HTMLInputElement
+      name.value = 'archive'
+      name.dispatchEvent(new Event('input', { bubbles: true }))
+      ;(document.querySelector('[data-testid="create-and-move"]') as HTMLButtonElement).click()
+    } else {
+      target.value = into[0]
+      target.dispatchEvent(new Event('change', { bubbles: true }))
+      ;(document.querySelector('.ask button[type="submit"]') as HTMLButtonElement).click()
+    }
+
+    await vi.waitFor(() => expect(moveCalls.current.map((c) => c.cmd)).toContain('move_entry'), { timeout: 2000 })
+    await vi.waitFor(() => expect(document.querySelector('.ask'), 'a move that worked closes its dialog').toBeNull(), { timeout: 2000 })
+    expect(errors).toEqual([])
+  })
 
 })
