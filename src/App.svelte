@@ -35,7 +35,7 @@
     wideningSentence,
   } from './lib/searchState'
   import { markTerms } from './lib/highlight'
-  import { SCORE_TITLE, formatScore, meaningLabel, rowLabel } from './lib/scoreLabel'
+  import { SCORE_TITLE, figuresNote, formatScore, meaningLabel, rowLabel } from './lib/scoreLabel'
   import { consentSentence, modelReadySentence, statusFor, type Status } from './lib/statusLine'
   import { cardClipboard, cardSentences, NP_ISSUE } from './lib/consentHelp'
   import { createBlocked } from './lib/createHere'
@@ -1161,7 +1161,9 @@
                 <!-- note-processor's own figure, unconverted. The tooltip is where it says what the number is, because
                      every search UI is tempted to turn a ranking into "87% similar" and this one was asked for as a
                      "similarity score". -->
-                <span class="hit-score" data-testid="hit-score" title={SCORE_TITLE}>{formatScore(hit.score)}</span>
+                <span class="hit-score" data-testid="hit-score" title={`${SCORE_TITLE}${figuresNote(hit)}`}>
+                  {formatScore(hit.score)}
+                </span>
                 {#if meaning !== null}
                   <!-- Only rows where vectors actually ran get a meaning figure; np answers `cosine: null` otherwise,
                        and "meaning 0" would describe a measurement nobody took. -->
@@ -1439,6 +1441,7 @@
   <StatusLine
     {status}
     consent={consent}
+    mode={searchMode}
     model={modelFacts}
     onmodelclick={() => (showSettings = true)}
     onembed={() => void ipc.ingestAll()}

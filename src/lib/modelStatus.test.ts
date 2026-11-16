@@ -116,3 +116,22 @@ describe('what the dot says when nobody could answer', () => {
 })
 
 })
+
+describe('the word beside the dot', () => {
+  it('says what was measured, not what a search did', () => {
+    // "meanings on" was this label, and a tester read it as *then why is my search using words only?* — a fair
+    // reading of words that claim more than the dot can know. It measures np's provider, the weights on disk and
+    // how many notes in this folder carry vectors; nothing about the next query.
+    expect(DOT_LABEL.active.toLowerCase()).toContain('embedded')
+    for (const label of Object.values(DOT_LABEL)) {
+      expect(label.toLowerCase()).not.toContain('meanings on')
+    }
+  })
+
+  it('still leaves the mode to the setting beside it', () => {
+    // The dot must not start spelling the search mode, or the two facts merge back into one ambiguous word.
+    for (const label of Object.values(DOT_LABEL)) {
+      expect(label.toLowerCase()).not.toMatch(/words only|both\b|meanings only/)
+    }
+  })
+})

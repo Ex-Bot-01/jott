@@ -41,7 +41,10 @@ export type DotState = 'active' | 'ready' | 'waiting' | 'off' | 'unknown' | 'oth
  * pasted into a bug report all need the word, so it leads the aria-label and is drawn as text in forced-colors mode.
  */
 export const DOT_LABEL: Record<DotState, string> = {
-  active: 'meanings on',
+  // Was "meanings on", and a tester read it exactly as it sounds: *then why is my search using words?*. This dot
+  // measures the model and this folder's vectors; it has no idea what the next search will ask for, and Settings'
+  // own choice is now spelled in the corner beside it. So the word names the fact that was measured.
+  active: 'notes embedded',
   ready: 'model ready',
   waiting: 'model not downloaded',
   off: 'embeddings off',

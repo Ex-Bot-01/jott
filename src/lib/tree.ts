@@ -13,6 +13,10 @@ export interface Row {
   hasChildren: boolean
   /** `●` owed, `·` embedded, `!` refused, `` nothing to show. §9's legend, §11's states. */
   marker: string
+  /** Which colour that mark wears, named here rather than in the stylesheet: a class CSS invents and this file
+      never emits is a rule nobody can see (we have been burned by exactly that twice — `.greyed` with its rule
+      deleted, and `--cm-cursor`, a variable CodeMirror does not have). */
+  tone: MarkerTone
   /** The tooltip. For a refusal this is where np's reason goes, because the row has no room for it. */
   title: string
   /** np's own catalog files: visible, greyed, never edited here (§9). */
@@ -42,6 +46,7 @@ export function flattenTree(nodes: NodeEntry[], open: Set<string>): Row[] {
       depth,
       hasChildren: isFolder && nodes.some((other) => other.rel.startsWith(`${node.rel}/`)),
       marker: marker.marker,
+      tone: marker.tone,
       title: node.kind === 'Generated' ? GENERATED_TITLE : marker.title,
       greyed: node.kind === 'Generated',
     })
@@ -51,24 +56,43 @@ export function flattenTree(nodes: NodeEntry[], open: Set<string>): Row[] {
   return rows
 }
 
+/** The five looks a marker can have. `none` is drawn as nothing at all: a folder, or a state from a newer core
+    than this file knows, has no claim to make about indexing. */
+export type MarkerTone = 'embedded' | 'queued' | 'waiting' | 'refused' | 'none'
+
 /** The §9 legend. `Indexed` and `Waiting` share `●` — both mean something is owed — and say which in
  * the tooltip, because two dots that differ only in weight read as a rendering glitch. */
-function markerFor(state: StampState | null): { marker: string; title: string } {
-  if (state === null || state === undefined) return { marker: '', title: '' }
-  if (state === 'Embedded') return { marker: '·', title: 'embedded' }
+export function markerFor(state: StampState | null): { marker: string; tone: MarkerTone; title: string } {
+  if (state === null || state === undefined) return { marker: '', tone: 'none', title: '' }
+  if (state === 'Embedded') return { marker: '·', tone: 'embedded', title: 'embedded' }
   // Two dots that both said "waiting" — for the index, and to embed — described opposite states, which is how
   // a tester ended up reporting that the app contradicted itself. The words now say what each state *is*.
-  if (state === 'Indexed') return { marker: '●', title: 'indexed · awaiting embedding' }
+  if (state === 'Indexed') return { marker: '●', tone: 'queued', title: 'indexed · awaiting embedding' }
   // Not "never indexed": `Waiting` also means "changed since np last saw it" (`stamps.rs`). The plan's word
   // for both is *waiting*, and saying more than that would be a claim about history nobody has (§4).
-  if (state === 'Waiting') return { marker: '○', title: 'not indexed yet' }
+  if (state === 'Waiting') return { marker: '○', tone: 'waiting', title: 'not indexed yet' }
   if (typeof state === 'object' && 'Refused' in state) {
     // §18.5: when np gave no reason, the marker says refused and stops there.
-    return { marker: '!', title: state.Refused ? `refused · ${state.Refused}` : 'refused' }
+    return { marker: '!', tone: 'refused', title: state.Refused ? `refused · ${state.Refused}` : 'refused' }
   }
   // A state from a newer core than this file knows: draw nothing rather than guess (§4).
-  return { marker: '', title: '' }
+  return { marker: '', tone: 'none', title: '' }
 }
+
+/** One sample per colour, and the legend's words are `markerFor`'s own sentences for them — so the key beside
+    the tree and the tooltip on a row cannot drift into two descriptions of one dot. */
+const LEGEND_SAMPLES: { tone: Exclude<MarkerTone, 'none'>; sample: StampState }[] = [
+  { tone: 'embedded', sample: 'Embedded' },
+  { tone: 'queued', sample: 'Indexed' },
+  { tone: 'waiting', sample: 'Waiting' },
+  { tone: 'refused', sample: { Refused: '' } },
+]
+
+export const MARKER_LEGEND = LEGEND_SAMPLES.map((entry) => ({
+  ...entry,
+  marker: markerFor(entry.sample).marker,
+  word: markerFor(entry.sample).title,
+}))
 
 /** What the greyed `INDEX.md` row says when you hover it. The file is np's, not yours and not Jott's, and a
     person who has never seen one appear in their folder deserves to be told that in a sentence. */

@@ -2,7 +2,7 @@
   // The vault tree (§9's left column). All the deciding is in `tree.ts` — which rows show, how deep they
   // sit, what the marker means — so this file only draws and reports clicks.
 
-  import type { Row } from './tree'
+  import { MARKER_LEGEND, type Row } from './tree'
 
   let {
     rows,
@@ -84,11 +84,13 @@
         <span class="twisty" class:faint={row.kind === 'Folder' && !row.hasChildren} aria-hidden="true">
           {row.kind === 'Folder' ? (row.hasChildren ? (open.has(row.rel) ? '▾' : '▸') : '·') : ''}
         </span>
-        {#if row.marker}
-          <span class="marker" title={row.title}>{row.marker}</span>
-        {:else}
-          <span class="marker" aria-hidden="true"></span>
-        {/if}
+        <!-- Colour tells it at a glance; the shape tells it to a colour-blind eye, to forced-colours mode and to a
+             screenshot in a bug report. A refusal keeps its `!` rather than going quietly amber: it is the one state
+             where the colour is not enough. -->
+        <span class="marker" data-tone={row.tone} title={row.title}>
+          <span class="disc" aria-hidden="true"></span>
+          <span class="glyph" aria-hidden="true">{row.marker}</span>
+        </span>
         <span class="name">{row.name}</span>
         {#if row.kind === 'Folder' && !row.hasChildren}
           <!-- Says the quiet thing out loud: it is empty, not missing. -->
@@ -100,6 +102,23 @@
     <li class="empty">Nothing here yet.</li>
   {/each}
 </ul>
+
+{#if rows.some((row) => row.kind !== 'Folder')}
+  <!-- Four dots, said once, in the same words the tooltips use (`MARKER_LEGEND` is built from `markerFor`, so the
+       key and a row cannot disagree). A folder carries no marker, which is why an all-folders tree leaves this out
+       rather than explaining dots that appear nowhere. -->
+  <div class="legend" data-testid="marker-legend">
+    {#each MARKER_LEGEND as entry (entry.tone)}
+      <span class="key">
+        <span class="marker" data-tone={entry.tone} aria-hidden="true">
+          <span class="disc"></span>
+          <span class="glyph">{entry.marker}</span>
+        </span>
+        {entry.word}
+      </span>
+    {/each}
+  </div>
+{/if}
 
 <style>
   .tree {
@@ -155,8 +174,69 @@
   .marker {
     width: 0.9rem;
     flex: none;
-    text-align: center;
-    color: color-mix(in srgb, currentColor 70%, transparent);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--muted);
+  }
+  /* The disc, coloured from the five tones `tree.ts` can emit — and only those. A test reads that file's own type
+     and refuses a colour here for a tone nothing produces, or a tone with no colour, either way a dot that means
+     nothing. Hues are the status line's, so green never means one thing in the tree and another at the bottom. */
+  .marker .disc {
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: 50%;
+    background: transparent;
+  }
+  .marker[data-tone='embedded'] .disc {
+    background: #2f9e44;
+  }
+  .marker[data-tone='queued'] .disc {
+    /* Half-filled: indexed, no vectors yet. Two solid dots of different colours would be a colour-matching test,
+       and this is the one pair a person has to tell apart at 8 px. */
+    background: color-mix(in srgb, #0c8599 45%, transparent);
+    box-shadow: inset 0 0 0 1.5px #0c8599;
+  }
+  .marker[data-tone='waiting'] .disc {
+    /* Hollow: nothing is in np's index. Deliberately the same drawing as "unknown" on the model dot — both mean
+       nobody has measured this yet. */
+    background: transparent;
+    box-shadow: inset 0 0 0 1.5px color-mix(in srgb, currentColor 55%, transparent);
+  }
+  .marker[data-tone='refused'] .disc {
+    background: #d9832b;
+  }
+  :global(.dark) .marker[data-tone='refused'] .disc {
+    background: #d9a441;
+  }
+  /* The second channel, normally hidden behind the disc. */
+  .marker .glyph {
+    display: none;
+  }
+  /* A refusal is the state worth noticing, so it keeps its shape as well as its colour — amber on a grey day is
+     still amber, but `!` survives even where colour does not. */
+  .marker[data-tone='refused'] .disc {
+    display: none;
+  }
+  .marker[data-tone='refused'] .glyph {
+    display: inline;
+    color: #b8863b;
+    font-weight: 700;
+  }
+  @media (prefers-color-scheme: dark) {
+    .marker[data-tone='refused'] .glyph {
+      color: #d9a441;
+    }
+  }
+  /* Forced colours throws away every hue above, so the glyphs are the only thing left that says which state a row
+     is in. This is the case a colour-only design forgets. */
+  @media (forced-colors: active) {
+    .marker .disc {
+      display: none;
+    }
+    .marker .glyph {
+      display: inline;
+    }
   }
   .folder .name {
     font-weight: 600;
@@ -185,5 +265,25 @@
   .empty {
     padding: 0.5rem 0.7rem;
     color: var(--muted);
+  }
+  /* Small, muted, and out of the way until a person wants it — four lines of key would crowd out the notes. */
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.15rem 0.75rem;
+    padding: 0.4rem 0.7rem 0.5rem;
+    margin-top: auto;
+    border-top: 1px solid var(--line);
+    font-size: 0.6875rem;
+    color: var(--muted);
+  }
+  .legend .key {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    white-space: nowrap;
+  }
+  .legend .marker {
+    width: auto;
   }
 </style>
