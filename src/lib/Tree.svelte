@@ -60,8 +60,12 @@
           return false
         }}
       >
-        <span class="twisty" aria-hidden="true">
-          {row.hasChildren ? (open.has(row.rel) ? '▾' : '▸') : ''}
+        <!-- A folder carries a mark at every age. It used to get one only once it had children, which meant the folder
+             you had just made was bold text and nothing else — indistinguishable from a note, and read as "nothing
+             happened". `·` is a folder with nothing in it yet: the column never jumps, and closing an empty folder does
+             not pretend there was something to close. -->
+        <span class="twisty" class:faint={row.kind === 'Folder' && !row.hasChildren} aria-hidden="true">
+          {row.kind === 'Folder' ? (row.hasChildren ? (open.has(row.rel) ? '▾' : '▸') : '·') : ''}
         </span>
         {#if row.marker}
           <span class="marker" title={row.title}>{row.marker}</span>
@@ -69,6 +73,10 @@
           <span class="marker" aria-hidden="true"></span>
         {/if}
         <span class="name">{row.name}</span>
+        {#if row.kind === 'Folder' && !row.hasChildren}
+          <!-- Says the quiet thing out loud: it is empty, not missing. -->
+          <span class="empty-hint" data-testid="folder-empty">(empty)</span>
+        {/if}
       </button>
     </li>
   {:else}
@@ -130,6 +138,15 @@
   }
   .folder .name {
     font-weight: 600;
+  }
+  .twisty.faint {
+    /* The dot for an empty folder is a place-holder, not a claim about contents. */
+    color: color-mix(in srgb, currentColor 45%, transparent);
+  }
+  .empty-hint {
+    margin-inline-start: 0.35rem;
+    color: color-mix(in srgb, currentColor 55%, transparent);
+    font-style: italic;
   }
   .name {
     overflow: hidden;

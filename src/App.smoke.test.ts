@@ -28,7 +28,7 @@ import { MODE_KEY, PREFIX_KEY } from './lib/searchSettings'
 import type { IngestEvent } from './lib/ipc'
 
 /** Which backend this window believes it is talking to. */
-type Scene = 'empty' | 'vault' | 'indexed' | 'needs-embedding'
+type Scene = 'empty' | 'vault' | 'indexed' | 'needs-embedding' | 'folders'
 const scenario = vi.hoisted(() => ({ current: 'empty' as unknown as Scene }))
 /** What the native confirm dialog answers. Tests set it before pressing a button that asks. */
 const confirmed = vi.hoisted(() => ({ current: false }))
@@ -86,6 +86,21 @@ const listingFor = vi.hoisted(() => (scene: string, path?: string) => {
       { rel: 'INDEX.md', kind: 'Generated', size: 900, mtimeMs: null, state: null },
     ],
     warnings: ['One folder could not be read.'],
+  }
+  if (scene === 'folders') {
+    // One folder with something in it, one that was just made and has nothing. The difference is the whole of item B:
+    // a brand-new folder used to be bold text and nothing else.
+    return {
+      ...base,
+      nodes: [
+        { rel: 'notes', kind: 'Folder', size: 0, mtimeMs: 1_700_000_000_000, state: null },
+        { rel: 'notes/a.md', kind: 'Note', size: 9, mtimeMs: 1_700_000_000_000, state: 'Indexed' },
+        { rel: 'ideas', kind: 'Folder', size: 0, mtimeMs: 1_700_000_000_000, state: null },
+        // One of each kind the walk knows that is not a note, for the sentence about what note-processor reads.
+        { rel: 'scan.pdf', kind: 'Attachment', size: 4096, mtimeMs: 1_700_000_000_000, state: null },
+        { rel: 'photo.png', kind: 'Image', size: 2048, mtimeMs: 1_700_000_000_000, state: null },
+      ],
+    }
   }
   if (scene === 'needs-embedding') {
     return { ...base, nodes: [{ rel: 'inbox.md', kind: 'Note', size: 12, mtimeMs: 1_700_000_000_000, state: 'Indexed' }] }
@@ -2080,6 +2095,126 @@ describe('the window mounts', () => {
 
     await vi.waitFor(() => expect(moveCalls.current.map((c) => c.cmd)).toContain('move_entry'), { timeout: 2000 })
     await vi.waitFor(() => expect(document.querySelector('.ask'), 'a move that worked closes its dialog').toBeNull(), { timeout: 2000 })
+    expect(errors).toEqual([])
+  })
+
+  it('shows a folder as a folder before anything is put in it', async () => {
+    // "The folder in the left sidebar is not good differentiable from files." Everything that marked a folder row was
+    // `font-weight: 600`, and the twisty appeared only once the folder had children — so the folder just made looked
+    // like nothing had happened, which is exactly what the tester reported.
+    scenario.current = 'folders'
+    const { errors } = await start()
+
+    let folders!: HTMLElement[]
+    await vi.waitFor(() => {
+      folders = [...document.querySelectorAll<HTMLElement>('.tree button[data-kind="Folder"]')]
+      expect(folders.length).toBe(2)
+    }, { timeout: 2000 })
+
+    const twisties = folders.map((row) => row.querySelector('.twisty')?.textContent?.trim() ?? '')
+    expect(twisties, 'every folder row carries a twisty, so the column says what it is').toEqual(['▸', '·'])
+
+    const empty = folders.find((row) => row.textContent?.includes('ideas'))!
+    expect(empty.textContent).toContain('(empty)')
+    expect(folders[0].textContent ?? '', 'a folder with a note in it does not claim to be empty').not.toContain('(empty)')
+
+    // Open the folder that has something in it: a note row must still carry no twisty, or the mark stops meaning
+    // "folder" and starts meaning "row".
+    folders[0].click()
+    const noteRow = (await vi.waitFor(() => {
+      const el = document.querySelector('.tree button[data-kind="Note"]')
+      expect(el, 'opening a folder shows what is in it').not.toBeNull()
+      return el!
+    }, { timeout: 2000 })) as HTMLElement
+    expect(noteRow.querySelector('.twisty')?.textContent?.trim() ?? '', 'a note has no twisty to confuse').toBe('')
+    expect(errors).toEqual([])
+  })
+
+  it('makes the note the person asked for, not a file with no extension', async () => {
+    // "For creating a file I just entered the name of the file and it just created this — no markdown file." A name
+    // without an extension becomes `.md`, because that is what a note is to note-processor.
+    scenario.current = 'vault'
+    const { errors } = await start()
+    await vi.waitFor(() => expect(document.querySelector('button[title^="New note"]')).not.toBeNull(), { timeout: 2000 })
+    ;(document.querySelector('button[title^="New note"]') as HTMLButtonElement).click()
+
+    const field = (await vi.waitFor(() => {
+      const el = document.querySelector('#rel') as HTMLInputElement | null
+      expect(el).not.toBeNull()
+      return el!
+    }, { timeout: 2000 })) as HTMLInputElement
+    field.value = 'trip plan'
+    field.dispatchEvent(new Event('input', { bubbles: true }))
+    ;(document.querySelector('.ask button[type="submit"]') as HTMLButtonElement).click()
+
+    await vi.waitFor(() => expect(moveCalls.current.map((c) => c.cmd)).toContain('create_note'), { timeout: 2000 })
+    expect(moveCalls.current.find((c) => c.cmd === 'create_note')).toMatchObject({ rel: 'trip plan.md' })
+    expect(errors).toEqual([])
+  })
+
+  it('keeps an extension that was typed on purpose and says what note-processor will do with it', async () => {
+    // Refusing `todo.txt` would be a smaller world for the person who wants it. The window keeps the name and gives up
+    // the thing a silent create would hide: it will never be searchable.
+    scenario.current = 'vault'
+    const { errors } = await start()
+    await vi.waitFor(() => expect(document.querySelector('button[title^="New note"]')).not.toBeNull(), { timeout: 2000 })
+    ;(document.querySelector('button[title^="New note"]') as HTMLButtonElement).click()
+
+    const field = (await vi.waitFor(() => {
+      const el = document.querySelector('#rel') as HTMLInputElement | null
+      expect(el).not.toBeNull()
+      return el!
+    }, { timeout: 2000 })) as HTMLInputElement
+    field.value = 'todo.txt'
+    field.dispatchEvent(new Event('input', { bubbles: true }))
+    ;(document.querySelector('.ask button[type="submit"]') as HTMLButtonElement).click()
+
+    await vi.waitFor(() => expect(moveCalls.current.map((c) => c.cmd)).toContain('create_note'), { timeout: 2000 })
+    expect(moveCalls.current.find((c) => c.cmd === 'create_note')).toMatchObject({ rel: 'todo.txt' })
+    const said = await vi.waitFor(() => {
+      const el = document.querySelector('[data-testid="notice"]')
+      expect(el, `the window says what it made. TEXT=${(document.body.textContent ?? '').slice(0, 200)}`).not.toBeNull()
+      return el!
+    }, { timeout: 2000 })
+    expect(said.textContent).toContain('todo.txt')
+    expect(errors).toEqual([])
+  })
+
+  it('refuses a name that cannot become a file instead of inventing one', async () => {
+    scenario.current = 'vault'
+    const { errors } = await start()
+    await vi.waitFor(() => expect(document.querySelector('button[title^="New note"]')).not.toBeNull(), { timeout: 2000 })
+    ;(document.querySelector('button[title^="New note"]') as HTMLButtonElement).click()
+
+    const field = (await vi.waitFor(() => {
+      const el = document.querySelector('#rel') as HTMLInputElement | null
+      expect(el).not.toBeNull()
+      return el!
+    }, { timeout: 2000 })) as HTMLInputElement
+    field.value = 'notes.'
+    field.dispatchEvent(new Event('input', { bubbles: true }))
+    ;(document.querySelector('.ask button[type="submit"]') as HTMLButtonElement).click()
+    await new Promise((resolve) => setTimeout(resolve, 40))
+
+    expect(moveCalls.current, 'nothing is created').toEqual([])
+    const said = document.querySelector('[data-testid="dialog-said"]')
+    expect(said, 'and the reason is on screen').not.toBeNull()
+    expect(errors).toEqual([])
+  })
+
+  it('says which files in a folder note-processor can read as notes', async () => {
+    // A tester with "a lot of different file formats" needs this sentence more than any setting: the folder opens, the
+    // tree lists everything, and search answers nothing because only `.md` is parsed.
+    scenario.current = 'folders'
+    const { errors } = await start()
+
+    const line = await vi.waitFor(() => {
+      const el = document.querySelector('[data-testid="formats-notice"]')
+      expect(el, 'the folder says what it holds').not.toBeNull()
+      return el!
+    }, { timeout: 2000 })
+    expect(line.textContent).toContain('.md')
+    expect(line.textContent, 'one note, two files that are not notes').toContain('2')
     expect(errors).toEqual([])
   })
 

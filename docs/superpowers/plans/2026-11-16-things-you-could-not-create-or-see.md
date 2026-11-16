@@ -89,15 +89,15 @@ as a note. The user's intent ("a note called hello") is lost at the last step.
 - a dot whose suffix is a recognised text kind (`md`, `markdown`) → normalised to `.md`;
 - a recognised non-markdown kind (`txt`, image extensions the tree already knows: `png jpg jpeg gif webp bmp`) → left
   exactly as typed, because asking for `hello.txt` means something;
-- any other suffix that is shaped like an extension (`hello.bak`, `notes.new`) → left as typed, and the window says what
-  it made and that Jott will not be able to edit it as a note;
+- any other suffix that is shaped like an extension (`hello.bak`, `notes.new`, `hello.tar.gz`) → left exactly as typed,
+  and the window says what it made and that note-processor will not read it as a note;
 - trailing/leading dots, spaces, and a bare `.` are refused with a sentence rather than silently renamed.
 
 Whether the recognised list is editable in Settings is **R2**.
 
 **Tests.** Table-driven unit tests for the rules above (including `hello.MD`, `.md`, `hello.`, `my note`,
-`hello.tar.gz` — which keeps `.gz`? no: it becomes `hello.tar.md`, and the test says so out loud because a rule nobody
-can predict is not a rule). Smoke: typing `hello` in **new note** creates and opens `hello.md`; typing `hello.txt`
+`hello.tar.gz` — which keeps `.gz`, because the last dot decides and a rule nobody can predict is not a rule; an earlier
+draft of this plan promised `hello.tar.md` there, and that was a worse promise than silence). Smoke: typing `hello` in **new note** creates and opens `hello.md`; typing `hello.txt`
 creates `hello.txt` and says what it made.
 
 ---
@@ -147,7 +147,15 @@ selected it stays at the root.
   rule — an editor for a list nobody has disagreed with yet is a setting that only grows. Say the word if you want it
   editable now and I will build it as part of item C.
 
-- **R3 — should `+ note` also be the place that offers `.txt`/image creation at all?** Today the dialog creates any
+- **R3 — answered: keep it, and explain it.** A person opening a folder of `notes.txt`, `ideas.org` and `scan.pdf` needs
+  to be told what happens to them, so the explanation is in the window (a line under the tree, counted from the rows the
+  walk already produced) and *new note* keeps any extension that was typed on purpose. Filed upstream as
+  [note-processor#12](https://github.com/Ex-Bot-01/note-processor/issues/12): measured over JSON-RPC, `np 0.5.1` answers
+  `scan` with `added: 5, notes: 1` for a folder where four of five files were plain text — the rule is documented in np's
+  own walker (`MARKDOWN_SUFFIX`, matched case-insensitively) and `unindexable` stays `null` because nothing was lost. The
+  ask is either `[index] note_suffixes` or an attachment count a front end can quote instead of inferring.
+
+- **R3a — the older form of this question:** should `+ note` Today the dialog creates any
   name, which is how `hello.txt` gets made by accident or on purpose. Keeping it (per C) means Jott will happily create
   files it cannot edit; alternative is refusing non-text names in *new note* and pointing at the file manager.
   My recommendation: keep it and say what was made — refusing is a smaller world for the person who wants `todo.txt`.

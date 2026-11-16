@@ -36,6 +36,7 @@
   import { consentSentence, modelReadySentence, statusFor, type Status } from './lib/statusLine'
   import { cardClipboard, cardSentences, NP_ISSUE } from './lib/consentHelp'
   import { createBlocked } from './lib/createHere'
+  import { formatsSentence, planNoteName } from './lib/noteName'
   import type { ConsentOutcome } from './lib/ipc'
   import { openUrl } from '@tauri-apps/plugin-opener'
   import { getCurrentWindow } from '@tauri-apps/api/window'
@@ -77,6 +78,16 @@
   let awaitingIndex = $derived(listing ? notesAwaitingIndex(listing.nodes) : 0)
   /** Indexed but never embedded: search finds these notes' words and not their meanings. */
   let awaitingEmbed = $derived(listing ? notesAwaitingEmbedding(listing.nodes) : 0)
+/** Notes against everything else in this folder. note-processor parses only `.md`, so a vault of `notes.txt` and
+    `scan.pdf` is a folder whose files Jott can list but cannot search — said once, from the rows already walked. */
+  let formatsNotice = $derived(
+    listing
+      ? formatsSentence({
+          notes: listing.nodes.filter((n) => n.kind === 'Note').length,
+          others: listing.nodes.filter((n) => n.kind === 'Attachment' || n.kind === 'Image').length,
+        })
+      : null,
+  )
   /** What np would need to set embeddings up — its model, its folder, the size when anybody measured one.
       `null` means either "nothing to offer" or "not asked yet for this vault", and `offerAskedFor` says which. */
   let embeddingsOffer = $state<ipc.ConsentOffer | null>(null)
@@ -741,13 +752,23 @@
     if (selected === rel) selected = plan.to
   }
 
-  async function createNote(rel: string) {
-    const created = await call(() => ipc.createNote(rel))
-    dialog = null
-    if (created) {
-      await refresh()
-      await openNote(rel)
+  /** Make the note the person asked for, under the name that will actually be a note. */
+  async function createNote(typed: string, folder: string) {
+    const plan = planNoteName(typed, folder)
+    if (plan.rel === null) {
+      // Refused in words, dialog up, name kept. Renaming it behind their back is how a note ends up called `untitled2`.
+      dialogSaid = plan.said ?? 'That name will not work.'
+      return
     }
+    // Held in a local because narrowing does not follow a property into a closure: `() => ipc.createNote(plan.rel)`
+    // would be asking for a `string | null`.
+    const rel = plan.rel
+    const created = await call(() => ipc.createNote(rel))
+    if (created === null) return
+    dialog = null
+    if (plan.said !== null) notice = plan.said
+    await refresh()
+    await openNote(rel)
   }
 
   async function renameEntry(to: string) {
@@ -1048,6 +1069,11 @@
           onmenu={openMenu}
         />
       </div>
+      {#if formatsNotice}
+        <!-- The sentence a folder of `.txt` and `.pdf` files deserves the first time it is opened, from the rows the walk
+             already produced. Without it the only "answer" is a search that finds nothing in a folder full of writing. -->
+        <p class="quiet formats" data-testid="formats-notice">{formatsNotice}</p>
+      {/if}
     {/if}
 
     {#if modelReady}
@@ -1121,7 +1147,7 @@
       {/each}
 
       {#if notice}
-        <p class="note-said">
+        <p class="note-said" data-testid="notice">
           {notice}
           <button type="button" onclick={() => (notice = null)}>ok</button>
         </p>
@@ -1157,7 +1183,7 @@
           // Nowhere to put it: keep the name, keep the dialog, send nothing. The sentence beside the field is the
           // whole answer, and a command sent here would only be refused somewhere the person cannot see.
           if (dialog?.blocked) return
-          if (dialog?.kind === 'new') void createNote(prefixed(dialog, value))
+          if (dialog?.kind === 'new') void createNote(value, dialog.folder ?? '')
           else if (dialog?.kind === 'folder') void createFolder(prefixed(dialog, value))
           else if (dialog?.kind === 'move' && dialog.rel) void moveEntry(dialog.rel, moveTo(dialog.rel, value))
           else void renameEntry(value)
@@ -1171,6 +1197,7 @@
             <button type="button" data-testid="dialog-open-folder" onclick={() => void pickFolder()}>Choose a folder</button>
           </p>
         {/if}
+        {#if dialogSaid !== null}<p class="warn" role="alert" data-testid="dialog-said">{dialogSaid}</p>{/if}
         {#if dialog.kind === 'move'}
           <label for="rel">Move {dialog.rel} into:</label>
           <select id="rel" bind:value={dialog.value}>
@@ -1199,7 +1226,6 @@
               create and move
             </button>
           </span>
-          {#if dialogSaid !== null}<p class="warn" role="alert">{dialogSaid}</p>{/if}
         {:else}
           <label for="rel">
             {dialog.kind === 'new'
