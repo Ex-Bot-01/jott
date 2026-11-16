@@ -2557,4 +2557,52 @@ describe('the window mounts', () => {
     expect(errors).toEqual([])
   })
 
+  it('puts note-processor’s number beside the row it ranked', async () => {
+    // The ask was "a similarity score beside each file". What np sends is a fused *rank* score, not a percentage, so
+    // the row prints np's own figure and says what it is — and shows the cosine only on the rows where vectors ran.
+    widening.on = true
+    const { errors } = await start()
+
+    const box = document.querySelector('input[type="search"]') as HTMLInputElement
+    box.value = 'grand'
+    box.dispatchEvent(new Event('input', { bubbles: true }))
+
+    const row = await vi.waitFor(() => {
+      const el = document.querySelector('.hit-path')?.closest('button') as HTMLButtonElement | undefined
+      // `toBeTruthy`, not `not.toBeNull()`: optional chaining hands back `undefined` when the row is missing, and
+      // `undefined` is not null — a waitFor written that way succeeds on the first tick and awaits nothing.
+      expect(el, 'the widened search answers').toBeTruthy()
+      return el!
+    }, { timeout: 2000 })
+
+    expect(row.textContent).toContain('1.1') // the fixture's `score`, unconverted
+    expect(row.textContent).toContain('meaning 0.82') // its `cosine`, because this fixture had vectors
+    const score = row.querySelector('[data-testid="hit-score"]') as HTMLElement
+    expect(score.title).toContain('not a percentage')
+    expect(score.textContent).not.toContain('%')
+
+    // `widening.on` is reset in beforeEach, where every switch gets reset — a mid-test failure must not leak it.
+    expect(errors).toEqual([])
+  })
+
+  it('says nothing about meanings when note-processor compared none', async () => {
+    scenario.current = 'vault'
+    const { errors } = await start()
+
+    const box = document.querySelector('input[type="search"]') as HTMLInputElement
+    box.value = 'grandmother'
+    box.dispatchEvent(new Event('input', { bubbles: true }))
+
+    const row = await vi.waitFor(() => {
+      const el = document.querySelector('.hit-path')?.closest('button') as HTMLButtonElement | undefined
+      expect(el, 'the keyword search answers').toBeTruthy()
+      return el!
+    }, { timeout: 2000 })
+
+    // The fixture's `cosine` is null — vectors never ran. "meaning 0" would be a statement about a measurement nobody
+    // took, which is the mistake this row refuses to make.
+    expect(row.textContent).not.toContain('meaning')
+    expect(row.querySelector('[data-testid="hit-score"]')?.textContent).toBe('1.4')
+    expect(errors).toEqual([])
+  })
 })

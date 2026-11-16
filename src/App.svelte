@@ -34,6 +34,7 @@
     wideningSentence,
   } from './lib/searchState'
   import { markTerms } from './lib/highlight'
+  import { SCORE_TITLE, formatScore, meaningLabel } from './lib/scoreLabel'
   import { consentSentence, modelReadySentence, statusFor, type Status } from './lib/statusLine'
   import { cardClipboard, cardSentences, NP_ISSUE } from './lib/consentHelp'
   import { createBlocked } from './lib/createHere'
@@ -1084,6 +1085,7 @@
           </li>
         {/if}
         {#each results.hits as hit (hit.path)}
+        {@const meaning = meaningLabel(hit.cosine)}
           <li>
             <button type="button" onclick={() => void openNote(hit.path, searchQuery.trim())}>
               <span class="hit-path">{hit.path}</span>
@@ -1091,6 +1093,17 @@
                 {#each markTerms(hit.snippet ?? '', searchQuery, prefixOn) as part, index}
                   {#if part.matched}<mark>{part.text}</mark>{:else}{part.text}{/if}
                 {/each}
+              </span>
+              <span class="hit-numbers">
+                <!-- note-processor's own figure, unconverted. The tooltip is where it says what the number is, because
+                     every search UI is tempted to turn a ranking into "87% similar" and this one was asked for as a
+                     "similarity score". -->
+                <span class="hit-score" data-testid="hit-score" title={SCORE_TITLE}>{formatScore(hit.score)}</span>
+                {#if meaning !== null}
+                  <!-- Only rows where vectors actually ran get a meaning figure; np answers `cosine: null` otherwise,
+                       and "meaning 0" would describe a measurement nobody took. -->
+                  <span class="hit-meaning">{meaning}</span>
+                {/if}
               </span>
               {#if hitSuffix(hit.matchedExactly)}
                 <!-- np reached this note by a word beginning, so the row says which kind of match it is. Only rows np
@@ -1518,6 +1531,19 @@
     font-size: 0.75rem;
     color: color-mix(in srgb, currentColor 60%, transparent);
   }
+  .hit-numbers {
+    float: inline-end;
+    font-variant-numeric: tabular-nums;
+    font-size: 0.75rem;
+    opacity: 0.7;
+    white-space: nowrap;
+  }
+  .hit-score,
+  .hit-meaning {
+    display: inline-block;
+    margin-inline-start: 0.45rem;
+  }
+
   .hit-kind {
     font-size: 0.75rem;
     opacity: 0.75;
