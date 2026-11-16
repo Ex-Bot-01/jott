@@ -1122,3 +1122,67 @@ async fn a_single_member_fetch_says_nothing_about_parts() {
         assert_eq!(seen, Some((None, None)), "one file is not a sequence: {events:?}");
     }
 }
+
+// ---- paths that stopped existing (the deleted-note ghost, reported by a Windows tester on 0.0.20)
+
+#[tokio::test]
+async fn a_file_that_stopped_existing_asks_np_to_re_index() {
+    let _turn = SERIAL.lock().await;
+    // Measured against the np 0.5.1 Jott ships: delete `ghost.md`, then `scan` answers `removed: 1` and the
+    // following search returns `hits: []`. Without that scan the note keeps answering — np marks a gone path
+    // stale and never deletes it (`scan.rs:161`), which is its documented choice, not a bug.
+    //
+    // Nothing here is *owed*: no bytes changed and there is nothing to embed. That is precisely why the old
+    // code never asked — the batch returned early on an empty owed list, so a deletion cost np nothing to
+    // learn about and a search kept offering a file Jott had already put in the trash.
+    let h = Harness::new(scan_and_embed()).await;
+    let queue = h.queue();
+
+    queue.paths_changed();
+    tokio::time::sleep(Duration::from_millis(700)).await;
+
+    assert_eq!(
+        h.calls(),
+        vec!["scan".to_string()],
+        "a deletion costs a scan and nothing else — there is nothing to embed: {:?}",
+        h.calls()
+    );
+}
+
+#[tokio::test]
+async fn five_files_deleted_in_a_row_cost_one_scan() {
+    let _turn = SERIAL.lock().await;
+    // The context menu offers one delete at a time, but a person selecting eight files and pressing Delete
+    // eight times is one afternoon. np takes a workspace, not a path (§18.2), so eight rescans would be the
+    // same walk eight times — and each one rewrites np's own catalog files.
+    let h = Harness::new(scan_and_embed()).await;
+    let queue = h.queue();
+
+    for n in 0..5 {
+        queue.paths_changed();
+        queue.note_saved(&format!("notes/{n}.md"));
+    }
+    tokio::time::sleep(Duration::from_millis(1_200)).await;
+
+    let scans = h.calls().iter().filter(|m| m.as_str() == "scan").count();
+    assert_eq!(scans, 1, "the changes coalesce into one walk of the folder: {:?}", h.calls());
+}
+
+#[tokio::test]
+async fn a_rescan_that_finds_np_busy_is_asked_again() {
+    let _turn = SERIAL.lock().await;
+    // np holds a write lock while it indexes for another client. A rescan that is refused must not be
+    // forgotten: the ghost stays in the index until somebody asks again, and "somebody" is this queue.
+    let h = Harness::new(json!({"replies": {"scan": {"command": "scan", "locked": true, "waited_ms": 400}}}))
+        .await;
+    let queue = h.queue().with_backoff_floor(Duration::from_millis(300));
+
+    queue.paths_changed();
+    tokio::time::sleep(Duration::from_millis(1_200)).await;
+
+    assert!(
+        h.calls().iter().filter(|m| m.as_str() == "scan").count() >= 2,
+        "a locked rescan is retried rather than dropped: {:?}",
+        h.calls()
+    );
+}

@@ -450,6 +450,107 @@ async fn deleting_says_where_the_file_went() {
 }
 
 #[tokio::test]
+async fn deleting_asks_np_to_re_index_so_the_ghost_stops_answering() {
+    // The tester's report: "when I delete it and search again the deleted file is in my list of found files."
+    // np marks a gone path stale and never deletes it (`scan.rs:161`), so the index keeps answering until a
+    // scan retires it. Measured on the bundled np 0.5.1: after `scan` answers `removed: 1`, the same search
+    // returns `hits: []`. The window that moved the file to the trash is the one that has to say so.
+    let _turn = SERIAL.lock().await;
+    let harness = Harness::new();
+    harness.write("ghost.md", b"# ghost\n");
+
+    let record = harness.data.path().join("calls.ndjson");
+    std::fs::write(&record, "").expect("empty call record");
+    let scenario = json!({ "record": record.display().to_string(), "replies": { "scan": common::fixture_result(1) } });
+    let scenario_file = harness.data.path().join("scenario.json");
+    std::fs::write(&scenario_file, scenario.to_string()).expect("write scenario");
+    std::env::set_var("FAKE_NP_SCENARIO", &scenario_file);
+
+    let (_sentinel, info) = ipc::np_absent();
+    let session = VaultSession::open_in_with(
+        NpSource::Env(common::repo_root().join("tests/fake-np/np.py")),
+        info,
+        None,
+        harness.vault.path(),
+        Consent::Granted,
+        Some(harness.data.path().join("np-config.toml")),
+        harness.data.path().to_path_buf(),
+    );
+
+    // Whatever opening the folder asked for is not what this test is about.
+    std::fs::write(&record, "").expect("clear the record");
+    session.delete_entry("ghost.md").expect("deleted");
+
+    // The rescan is background work: the delete's own reply must not wait on np.
+    let mut asked = Vec::new();
+    for _ in 0..40 {
+        asked = std::fs::read_to_string(&record)
+            .expect("the stand-in recorded")
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter_map(|line| line["method"].as_str().map(str::to_string))
+            .collect();
+        if asked.iter().any(|m| m == "scan") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(asked.iter().any(|m| m == "scan"), "np was never told the file is gone: {asked:?}");
+
+    session.close().await;
+}
+
+/// The same ghost arrives through the file manager as well as through Jott's own `delete`. The watcher only
+/// reports that a path changed, so the question "is it still there?" is asked of the disk before anything is
+/// concluded about it.
+#[tokio::test]
+async fn deleting_a_file_outside_jott_also_asks_np_to_re_index() {
+    let _turn = SERIAL.lock().await;
+    let harness = Harness::new();
+    harness.write("outside.md", b"# outside\n");
+
+    let record = harness.data.path().join("calls.ndjson");
+    std::fs::write(&record, "").expect("empty call record");
+    let scenario = json!({ "record": record.display().to_string(), "replies": { "scan": common::fixture_result(1) } });
+    let scenario_file = harness.data.path().join("scenario.json");
+    std::fs::write(&scenario_file, scenario.to_string()).expect("write scenario");
+    std::env::set_var("FAKE_NP_SCENARIO", &scenario_file);
+
+    let (_sentinel, info) = ipc::np_absent();
+    let session = VaultSession::open_in_with(
+        NpSource::Env(common::repo_root().join("tests/fake-np/np.py")),
+        info,
+        None,
+        harness.vault.path(),
+        Consent::Granted,
+        Some(harness.data.path().join("np-config.toml")),
+        harness.data.path().to_path_buf(),
+    );
+    std::fs::write(&record, "").expect("clear the record");
+
+    std::fs::remove_file(harness.vault.path().join("outside.md")).expect("removed outside Jott");
+
+    // Watcher backends are OS-level and this box may not have one; `watch_policy.rs` makes the same
+    // allowance. Four seconds covers notify's own coalescing interval.
+    let mut asked = Vec::new();
+    for _ in 0..80 {
+        asked = std::fs::read_to_string(&record)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter_map(|line| line["method"].as_str().map(str::to_string))
+            .collect();
+        if asked.iter().any(|m| m == "scan") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(asked.iter().any(|m| m == "scan"), "an outside delete went unnoticed by the index: {asked:?}");
+
+    session.close().await;
+}
+
+#[tokio::test]
 async fn renaming_never_overwrites_and_says_who_links_to_it() {
     let _turn = SERIAL.lock().await;
     let harness = Harness::new();
