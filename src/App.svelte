@@ -1013,13 +1013,6 @@
         oninput={onQueryInput}
         aria-label="Search the vault"
       />
-      <label
-        class="prefix-toggle"
-        title="Also match word beginnings: “grand” finds grandmother. note-processor says which words it widened."
-      >
-        <input type="checkbox" checked={prefixOn} onchange={togglePrefix} aria-label="Match word beginnings" />
-        match word beginnings
-      </label>
       <span class="tool-buttons">
         <!-- The destination is in the tooltip because it used to be a secret: both of these always meant the vault root,
              whatever had just been clicked. -->
@@ -1317,6 +1310,21 @@
       </div>
     {/if}
 
+    {#if selected !== null}
+      <!-- The tester asked twice for "a button to close a file from the editor". One existed since 0.0.16 — up in the
+           sidebar toolbar, among the tree's rename/delete, nowhere near the page of text they were reading. A control
+           belongs beside the thing it acts on. -->
+      <div class="note-bar">
+        <span class="note-name" title={selected}>{selected}</span>
+        {#if note?.readonly}
+          <span class="quiet">read-only</span>
+        {/if}
+        <button type="button" data-testid="editor-close" title="Close this note (Escape)" onclick={closeNote}>
+          close
+        </button>
+      </div>
+    {/if}
+
     <Editor
       saveSignal={saveSignal}
       highlight={hitQuery}
@@ -1439,6 +1447,24 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  .note-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.2rem 0.5rem;
+    border-block-end: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+    font-size: 0.8125rem;
+  }
+  .note-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 600;
+  }
+  .note-bar button {
+    margin-inline-start: auto;
+  }
+
   .tools {
     display: flex;
     flex-direction: column;
@@ -1452,14 +1478,6 @@
     border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
     background: none;
     color: inherit;
-  }
-  .prefix-toggle {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.25rem;
-    font-size: 0.8rem;
-    white-space: nowrap;
-    user-select: none;
   }
 
   .tool-buttons {

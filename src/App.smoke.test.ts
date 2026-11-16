@@ -550,6 +550,18 @@ function ingest(event: IngestEvent) {
 /** Mount a fresh window. The returned handle lets a test unmount it and mount another, which is the only honest way
     to ask "does this survive closing the app?" — `localStorage` outlives the component either way, but an orphaned
     instance left mounted would keep answering events behind the next window's back. */
+/** Open the settings panel and hand back its word-beginnings checkbox — that is where the choice lives now. */
+async function prefixToggleInSettings(): Promise<HTMLInputElement> {
+  const button = document.querySelector('button[aria-label="Settings"]') as HTMLButtonElement | null
+  expect(button, 'the header offers settings').not.toBeNull()
+  button!.click()
+  return (await vi.waitFor(() => {
+    const el = document.querySelector('[data-testid="settings-prefix"]') as HTMLInputElement | null
+    expect(el, 'the panel carries the word-beginnings choice').not.toBeNull()
+    return el!
+  }, { timeout: 2000 })) as HTMLInputElement
+}
+
 async function start(): Promise<{ errors: unknown[]; app: Component }> {
   document.body.innerHTML = '<div id="app"></div><div id="boot"><p>Jott is starting…</p></div>'
   const errors: unknown[] = []
@@ -1198,8 +1210,11 @@ describe('the window mounts', () => {
     await vi.waitFor(() => expect(searchCalls.length).toBeGreaterThan(0))
     expect(searchCalls.at(-1)?.prefix, 'an untouched window searches whole words').toBe(false)
 
-    const toggle = document.querySelector('input[aria-label="Match word beginnings"]') as HTMLInputElement
-    expect(toggle, 'the window offers the choice').not.toBeNull()
+    // Asked for by name: a control beside the search box is one more thing competing with the question being typed,
+    // and the tester asked for it in settings instead.
+    expect(document.querySelectorAll('.tools input[type="checkbox"]').length, 'the toolbar no longer carries it').toBe(0)
+
+    const toggle = await prefixToggleInSettings()
     expect(toggle.checked).toBe(false)
 
     toggle.checked = true
@@ -1212,7 +1227,7 @@ describe('the window mounts', () => {
     unmount(first.app)
     const second = await start()
 
-    const again = document.querySelector('input[aria-label="Match word beginnings"]') as HTMLInputElement
+    const again = await prefixToggleInSettings()
     expect(again.checked, 'the choice is the app’s memory, not this window’s').toBe(true)
     const box2 = document.querySelector('input[type="search"]') as HTMLInputElement
     box2.value = 'grand'
@@ -1325,7 +1340,7 @@ describe('the window mounts', () => {
     await vi.waitFor(() => expect(searchCalls.at(-1)?.prefix).toBe(true))
     // The remembered choice is untouched — that is what the checkbox beside the box is for.
     expect(localStorage.getItem(PREFIX_KEY)).toBeNull()
-    const toggle = document.querySelector('input[aria-label="Match word beginnings"]') as HTMLInputElement
+    const toggle = await prefixToggleInSettings()
     expect(toggle.checked, 'a one-off offer must not move the toggle').toBe(false)
 
     // Typing a new question starts from the remembered setting again.
@@ -2508,6 +2523,37 @@ describe('the window mounts', () => {
     const stillOpen = document.querySelector('#rel') as HTMLInputElement | null
     expect(stillOpen, 'a refused rename keeps its dialog').not.toBeNull()
     expect(stillOpen!.value, 'and the name that was typed').toBe('taken.md')
+    expect(errors).toEqual([])
+  })
+
+  it('offers a way to close the note beside the note itself', async () => {
+    // v0.0.16 added a **close** button and the tester still reported "there is no button to close a file from the
+    // editor" — because it sat up in the sidebar toolbar among the tree's own actions, far from the page of text they
+    // were looking at. A control belongs where the thing it acts on is.
+    scenario.current = 'vault'
+    const { errors } = await start()
+
+    let row!: HTMLElement
+    await vi.waitFor(() => {
+      row = document.querySelector('.tree button[data-kind="Note"]') as HTMLElement
+      expect(row, 'the fixture has a note').not.toBeNull()
+    }, { timeout: 2000 })
+    row.click()
+
+    const bar = await vi.waitFor(() => {
+      const el = document.querySelector('[data-testid="editor-close"]') as HTMLButtonElement | null
+      expect(el, 'the pane holding the note offers to close it').not.toBeNull()
+      return el!
+    }, { timeout: 2000 })
+    expect(bar.disabled).toBe(false)
+    expect(document.querySelector('.note-bar')?.textContent).toContain('inbox.md')
+
+    bar.click()
+    await vi.waitFor(() =>
+      expect((document.querySelector('[data-testid="close-note"]') as HTMLButtonElement).disabled).toBe(true),
+      { timeout: 2000 },
+    )
+    expect(document.querySelector('[data-testid="editor-close"]'), 'nothing open, nothing to close').toBeNull()
     expect(errors).toEqual([])
   })
 
