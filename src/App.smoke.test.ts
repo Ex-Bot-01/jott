@@ -2655,7 +2655,7 @@ describe('the window mounts', () => {
     expect(errors).toEqual([])
   })
 
-  it('shows a model dot that says which of four things is true', async () => {
+  it('shows a model dot that says which of six things is true', async () => {
     // "A green dot when the embedding model is active" is three states in one sentence — configured, downloaded, and
     // used by this folder — and the tester deserves to tell them apart. Each comes from a different fact: np's settings
     // file, np's `models.list`, and Jott's own per-file markers.

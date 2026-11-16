@@ -47,13 +47,22 @@ review at the end.
    the whole download.
 6. **A colour carries nothing alone.** Every state ships a word (`meanings on`, `model ready`, `model not downloaded`,
    `embeddings off`, `model state unknown`, `another provider`) in the aria-label, plus a forced-colours border.
-7. **Draw before colouring.** CodeMirror: `.cm-cursor { display: none }` until `.cm-focused`, and
-   `.cm-content { caret-color: transparent !important }`. So the window records focus itself (`focusin`/`focusout` with
-   `relatedTarget`) and forces the layer to draw; the native caret takes over only under `:not(.cm-focused)`, so exactly
-   one caret is ever on screen. `min-height: 1em` catches a zero-height measurement.
-8. **`--cm-cursor` does not exist.** A test reads `@codemirror/view/dist/index.js` and fails if it ever mentions that
-   variable, so the 0.0.16 claim cannot return. Two releases of caret work coloured a variable nobody read; the comment
-   that asserted it sent the next reader past the rule that was hiding the caret.
+7. **The caret belongs to the browser here, and this window was hiding it.** `drawSelection()` — the only extension that
+   creates `.cm-cursor` elements — is not installed, so every rule written in two releases (the ink `border-left`, the
+   blink keyframes, `--cm-cursor`, and a fallback added earlier in this branch) selected elements that do not exist. The
+   real cause was ours: `Editor.svelte` set `'.cm-content': { caretColor: 'transparent' }` since c6665c7 (0.0.16), under a
+   comment asserting CodeMirror hides the native caret itself — it does not, `hideNativeSelection` ships inside
+   `drawSelection()` too. So: name the caret in ink in the theme (the only layer that can decide it, since CM injects
+   after the bundle), delete the dead rules rather than keep them "in case", give forced-colours mode `CanvasText`, and pin
+   the invariant that would have caught this in 0.0.16 — *styling `.cm-cursor` requires installing `drawSelection()`*, both
+   halves checked so neither can arrive alone.
+8. **A claim about a dependency gets checked against the dependency.** `--cm-cursor` does not exist in CodeMirror; a test
+   now reads `@codemirror/view/dist/index.js` and fails if it ever mentions that variable. The lesson is not the variable,
+   it is the comment: an unverified assertion about internal machinery sent two releases past the line that was hiding the
+   caret, and the pins written to "prove" the fix were regexes on source text pointing at elements never created — they
+   stayed green while the bug shipped. Where jsdom cannot compute styles (it reports `rgb(0, 0, 0)` for `.cm-content` no
+   matter what is injected), a source pin is a claim about what somebody wrote, not what a user sees, and it must be sold
+   as that.
 
 ## Where the harness was more generous than reality
 
@@ -61,12 +70,47 @@ Two `vi.waitFor` waits were written `expect(el).not.toBeNull()` on `document.que
 Optional chaining yields `undefined`; `undefined` is not `null`; the wait succeeded on its first tick and awaited nothing,
 then handed back `undefined` as a "found" element. Both now assert truthiness. A wait that cannot fail is not a wait.
 
+## What the whole-branch review found
+
+Blocked on Ruling 7: the caret claim was false as shipped. Also accepted and fixed:
+
+- **An unreadable np settings file drawn as "embeddings off"** — the exact flattening `SettingsGap::ConfigUnreadable`
+  refuses on the consent card. `configUnreadable` now travels, the dot says the file could not be read, and no `models.list`
+  is asked for a file nobody can parse.
+- **Four causes of `unknown`, one sentence.** np answers an unlistable models directory with a *result* carrying
+  `models_dir_error`; saying "did not answer" about a process that answered — and named what it could not do — is wrong in
+  an actionable way. `modelsDirError` now quotes np's own sentence.
+- **A price attached to the wrong model**: `price_of(id).or_else(only_price)` can only produce a number when the named
+  model has no pin and exactly one *other* model does. The fallback is gone; a named-but-unpinned model gets `null`.
+- **A late `models.list` answer overwriting the folder on screen** (A configured, slow because its child must start; B
+  unconfigured, answers at once). Guarded by capturing the folder before the await, the same shape as search's guard since
+  0.0.12; and `modelFacts` returns nothing when no folder is open, so a closed or trashed vault stops being described by
+  old facts.
+- **Cost of the dot disclosed rather than glossed**: it does wake np's second child at folder-open, a deliberate departure
+  from 0.0.12's lazy-connections ruling, now pinned (one ask per folder; none before a folder is open; none per keystroke;
+  exactly one extra after a pass finishes) and stated in the release notes.
+- **Stub honesty**: `embeddings_status` answered with no session while core refuses — so deleting App's guard left a
+  first-run window showing "embeddings off" with the suite green. Fixed, plus the missing `beforeEach` reset and a type
+  that accepted `number` where core sends a boolean.
+- **Fixtures that could not occur**: scores of `1.1`/`1.4` never exercised the rounding the module exists for; they now
+  hold measured values. And "not a percentage" lived only in a `title`, so keyboard and screen-reader users got a bare
+  number — `rowLabel` puts the explanation in the row's accessible name.
+
+**The two theatre tests, because this is the reusable part.** The race test passed with its guard deleted, twice: first
+because both answers were delayed equally (so the "late" one was still the earlier one), then because the stub read its
+switch *inside* the timer, so the delayed reply carried the new folder's facts and there was no stale answer to drop. A
+race test is only evidence once it has been shown red without the guard — and a fake that reads its scenario when it
+answers rather than when it is asked silently defangs every timing test written with it.
+
 ## Gate record
 
-306 Rust tests (np off `PATH`), clippy `-D warnings`, 367 front-end tests by exit code, `npm run build`, svelte-check
-0/0, Windows-target `cargo check` printing `Checking jott-shell v0.0.18`. CI floor raised 295 → 300. Each change was red
-before it was green, and the dot's rules were mutation-checked afterwards (answering `unknown` as `off`, pinning every
-configured folder to `active`, deleting the `!important` caret fallback).
+Before the review: 306 Rust / 367 front-end. After remediation: **309 Rust** tests (np off `PATH`) exit 0, clippy
+`-D warnings` exit 0, **373 front-end** tests exit 0 (one deleted with its subject — the focus-tracking class the caret
+finding made pointless), `npm run build` exit 0, svelte-check 0/0, Windows-target `cargo check` printing
+`Checking jott-shell v0.0.18`. CI floor 295 → 300. Every change was red before it was green, and mutation-checked after:
+answering `unknown` as `off`, pinning configured folders to `active`, deleting the stale-answer guard, deleting the
+no-vault guard, restoring `only_price()`, and restoring `caretColor: 'transparent'` each turn their own tests red.
 
-**Unfinished by construction:** this box has no screen. The caret work removes both known ways to lose it; whether that is
-the one on the tester's display is answered by the devtools line in `docs/testing-on-windows.md` §2b-viii, not by me.
+**Unfinished by construction:** this box has no screen. The caret cause found in review is ours and is removed; whether
+anything else stands between the tester and a visible caret is answered by the devtools line in
+`docs/testing-on-windows.md` §2b-viii check 6, not by me.

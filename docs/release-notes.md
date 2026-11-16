@@ -27,44 +27,64 @@ them needed nothing but reading a dependency.
   only on rows where np actually compared meanings — never `meaning 0` on a keyword hit, which would describe a
   measurement nobody took. Nothing new crossed the wire: core has carried these three fields since 0.0.13 and spent none
   of them.
-- **A status light that knows five things apart.** "Green when the model is active/downloaded/online" is three states in
+- **A status light that knows six things apart.** "Green when the model is active/downloaded/online" is three states in
   one sentence, measured in three places: np's `embeddings.provider` for *configured*, np's `models.list` for *the bytes
-  are on this disk*, and Jott's own per-file markers for *this folder has vectors*. So there are five — plus the one that
-  keeps happening in the field, **nobody answered**: np unreachable or its models directory unlistable is drawn as a
-  hollow bead reading "note-processor did not answer", never as grey, because telling somebody with 296 MiB of weights on
-  their disk that their embeddings are switched off is how they go and download them again. A provider Jott does not
+  are on this disk*, and Jott's own per-file markers for *this folder has vectors*. So there are six — plus the one that
+  keeps happening in the field, **nobody could say**: drawn as a hollow bead, never as grey, because telling somebody with
+  296 MiB of weights on their disk that their embeddings are switched off is how they go and download them again. Four
+  things produce it and the dot names which: np did not answer; its settings file will not parse (which is *not*
+  "embeddings off" — advice nobody could follow); np is running but could not list its models directory, in which case the
+  dot quotes np's own sentence; or np named no model for this folder. A provider Jott does not
   recognise (`openai`, somebody's own server) gets its own state: "on this disk" is a story about `local-model`, and np
   lists no rows for an endpoint, which would otherwise read as a download that never arrives. Each state carries a word —
-  `meanings on`, `model ready`, `model not downloaded`, `embeddings off`, `model state unknown` — because a bead alone
+  `meanings on`, `model ready`, `model not downloaded`, `embeddings off`, `model state unknown`, `another provider` —
+  because a bead alone
   says nothing to a screen reader, a colour-blind tester, or a screenshot in a bug report. Clicking it opens Settings,
   the one place the state can be changed. It is asked once per opened folder over np's *reader* connection, so it cannot
   queue behind an embed in progress: when a download finishes, that is the call which learns about it.
-- **The caret had to be drawn before it could be the right colour.** Third attempt, and the first that read
-  CodeMirror's own stylesheet instead of guessing at it:
+- **The caret was being hidden by Jott, not by CodeMirror — and the release that "fixed" it is what hid it.** Third
+  attempt at "the cursor looks like no cursor"; this one read the dependency instead of the comments. Two things came
+  back:
 
-  ```css
-  ".cm-cursor": { display: "none" }
-  "&.cm-focused > .cm-scroller > .cm-cursorLayer .cm-cursor": { display: "block" }
-  ".cm-content": { caretColor: "transparent !important" }
+  ```js
+  function drawSelection(config = {}) {      // @codemirror/view
+      return [selectionConfig.of(config), cursorLayer, selectionLayer, hideNativeSelection, …];
+  }
   ```
 
-  Two independent ways to have no caret while typing, and neither is colour or width. If CodeMirror's own idea of focus
-  disagrees with where the DOM focus is, its caret layer is `display: none` — and no `border-left` rescues an element
-  that was never rendered; meanwhile the browser's real caret, which would have shown, is hidden behind an `!important`
-  that our 0.0.17 `caret-color: var(--ink)` could not answer. So the window now tracks focus itself and draws the caret
-  on that, and only when CodeMirror says it is *not* focused does the native caret take over in ink — one caret on
-  screen either way, not two blinking at each other. A `min-height: 1em` catches a line measured zero pixels tall, which
-  is an invisible caret with no explanation. **And the correction matters more than the fix:** 0.0.16 set
-  `--cm-cursor: var(--ink)` and commented that CodeMirror takes its caret colour from that variable. It does not — the
-  base theme hardcodes `borderLeft: "1.2px solid black"`. A test now reads the dependency and fails if it ever mentions
-  `--cm-cursor`, so the claim cannot come back. Two releases of caret work coloured a variable nobody reads; a comment
-  that names an internal API without checking it sent me straight past the rule hiding the caret.
+  `cursorLayer` is the only thing that creates `.cm-cursor` elements, and **Jott never installs `drawSelection()`** — so
+  every caret rule this project has written in two releases (the ink `border-left`, the `--cm-cursor` variable, the blink
+  keyframes, and the fallback added earlier in this very branch) selected elements that do not exist. The caret this
+  window has always had is the browser's own, and `Editor.svelte` was hiding it with
+  `'.cm-content': { caretColor: 'transparent' }`, added by 0.0.16 under a comment asserting CodeMirror hides the native
+  caret itself. It does not — that hiding ships inside `drawSelection()` too. **The bug reported twice was introduced by
+  the release that claimed to fix it.**
+
+  Now the theme names the caret in ink (the only place that can decide it: CodeMirror injects its style modules after the
+  bundled stylesheet, so a global rule cannot outvote it), nothing anywhere makes a caret transparent, and Windows
+  high-contrast mode gets `CanvasText`. The dead rules are deleted rather than kept "in case", and a test now enforces the
+  invariant that would have caught this in 0.0.16: *if you style `.cm-cursor`, you must have installed
+  `drawSelection()`* — both halves checked, so neither can arrive alone. What is **not** claimed: nobody has seen your
+  screen. The bundle greps clean and the rules are pinned, but jsdom cannot resolve either stylesheet (it reports
+  `rgb(0, 0, 0)` for `.cm-content` no matter what is injected), so the last word is yours — §2b-viii item 6 has one line
+  to paste into devtools if a caret is still missing.
 
 ## The one backend-shaped thing
 
 The dot needed one new question answered in core rather than guessed in the webview: `embeddings_status`, which reads
 np's settings file for the provider and asks `models.list` whether the model's rows are there — measured on 0.5.1 as
 `pinned: [{ id, bytes_total: 309855456 }]` with `models: []` before a fetch, and a row under `models` after one. Its
+Its answer also carries `configUnreadable` and `modelsDirError`, because "no provider" and "nobody could read the file
+that would name one" need opposite advice.
+
+**What it costs, said plainly:** asking once per opened folder means np's *second* child process starts when you open a
+folder whose settings name a provider — roughly the 8 MB that connection has been kept lazy to avoid since 0.0.12. That is
+a deliberate departure, argued in the plan record and pinned by tests: a status light must be able to say "on" as well as
+"not bought yet", and it goes over the reader so it cannot queue behind an embed (measured in `np/pool.rs`: 102 s of
+queueing on one connection against 0.00 s from a second process). What has *not* changed is that nothing else about loading
+a folder talks to np — no ask per keystroke, none per re-list, and exactly one extra after a pass finishes, because a
+finished pass is what puts weights into np's models directory.
+
 `present` is `null` when np did not answer **or** when np's models directory would not list: `artifact_present` answers
 "no" in that case because a consent gate must fail closed, and a status light has no business inheriting that caution as
 a fact about somebody's disk. An answer is still exactly one writer's business — the dot reads, never writes.
@@ -79,11 +99,23 @@ a fact about somebody's disk. An answer is still exactly one writer's business �
   Optional chaining yields `undefined`, `undefined` is not `null`, so `vi.waitFor` succeeded on the first tick and waited
   for nothing. A wait that cannot fail is not a wait; both now assert truthiness.
 
+## What the review found
+
+A fresh whole-branch reviewer read the dependency rather than my notes and blocked the release on the caret (above). It
+also found the unreadable-settings flattening, a late `models.list` answer overwriting the folder on screen, a price being
+quoted for a model other than the one named, and — most usefully — three tests that passed with the bug put back. Two of
+them were my race test, which was harmless twice over: both answers were delayed equally, and the stub read its switch
+*inside* the timer, so the "late" reply carried the new folder's facts and there was no stale answer to drop. Both are
+fixed, and each guard is now shown red without its test. The third was a stub that answered `embeddings_status` where core
+refuses: with it, deleting App's no-folder guard left a first-run window displaying "embeddings off" and the suite green.
+
 ## Numbers
 
-- **306** Rust tests pass (`cargo test -p jott-core`, note-processor off `PATH`); CI prints the count and fails under its
+- **309** Rust tests pass (`cargo test -p jott-core`, note-processor off `PATH`); CI prints the count and fails under its
   floor (**300**).
-- **367** front-end tests pass (was 341 at 0.0.17), judged by Vitest's exit code rather than a grep of "passed".
+- **373** front-end tests pass (was 341 at 0.0.17), judged by Vitest's exit code rather than a grep of "passed". One test
+  was deleted along with its subject — the focus-tracking class the caret finding made pointless — and a lower count is
+  reported rather than hidden.
 - `svelte-check`: 0 errors, 0 warnings. Windows build target type-checks as `jott-shell v0.0.18`. Built stylesheet was
   grepped for both caret rules, since no browser on this box can compute them.
 

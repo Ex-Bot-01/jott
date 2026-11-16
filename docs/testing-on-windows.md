@@ -408,7 +408,7 @@ These came from someone with notes open and opinions, so they are about the wind
    figure at all, because there was nothing to measure; if you ever see `meaning 0`, that is a bug — say so.
    The honest answer to "how similar is it?" is that np quotes a rank fusion around `0.0164` for a keyword hit, and turns
    it into a percentage in nobody's interest but a screenshot's.
-4. **A dot in the bottom bar with a word next to it**, and clicking it opens Settings. Five things it can honestly say:
+4. **A dot in the bottom bar with a word next to it**, and clicking it opens Settings. Six things it can honestly say:
 
    | word | what it means | where the fact came from |
    | --- | --- | --- |
@@ -416,14 +416,21 @@ These came from someone with notes open and opinions, so they are about the wind
    | `model ready` (teal) | the model is on your disk; nothing in *this* folder is embedded yet | np's `models.list` |
    | `model not downloaded` (amber) | embeddings are allowed, the weights are not here — and it names the size | np's pinned table |
    | `embeddings off` (grey) | np's settings name no provider; search is words only | np's config file |
-   | `model state unknown` (hollow) | **np did not answer.** Not "off" — nobody knows right now | nothing answered |
+   | `model state unknown` (hollow) | **nobody could say**, and the tooltip names which of four: np did not answer; its settings file will not parse; np is running but cannot list its models directory (its own sentence is quoted); no model was named for this folder | nothing trustworthy |
+   | `another provider` (blue) | embeddings run through something other than np's built-in `local-model`, so Jott will not pretend to know where its weights live | np's config file |
 
-   The fifth one matters most: if you already allowed the download and the dot says *unknown*, that is an np problem to
-   report, not a reason to download 296 MiB again. If your provider is something other than np's built-in
-   `local-model`, you get `another provider` — Jott will not pretend to know where somebody else's weights live.
-5. **The caret.** Third attempt. CodeMirror hides its own caret (`display: none`) until it believes it has focus, and
-   hides the browser's with an `!important`; both paths are now answered, so a caret should appear whether or not
-   CodeMirror's opinion about focus is correct.
+   The grey row is the one to argue with, because it is the only one that carries advice: `embeddings off` claims np's
+   settings genuinely name no provider. If your file says otherwise — or will not open as TOML at all — you should get
+   `model state unknown`, never a suggestion to turn on something that may already be on. And if you allowed the download
+   and the dot says *unknown*, that is an np problem to report, not a reason to fetch 296 MiB again.
+5. **The caret.** Third attempt, and this time the cause turned out to be ours. Jott never asks CodeMirror to draw its own
+   caret — the extension that does it, `drawSelection()`, is not installed — so the caret has always been the browser's,
+   and since 0.0.16 our editor stylesheet hid it with `caret-color: transparent`, under a comment claiming CodeMirror
+   hides the native caret itself. Every earlier attempt recoloured a caret element this app never creates. It is now ink in
+   both schemes, and Windows high-contrast mode gets the system's text colour.
+
+   Two releases went by on a wrong premise, so treat this as *measured but not seen*: the machine that built it has no
+   display. If there is still no caret, check 6 below says which bug is left.
 
 **Six things worth trying**
 
@@ -434,13 +441,30 @@ These came from someone with notes open and opinions, so they are about the wind
    you answered when asked. Then press `[embed]` and watch whether it changes without restarting.
 4. Click the dot. Settings should open.
 5. Open `INDEX.md`: the pane header should say `read-only` and **close** should still work.
-6. If the caret is *still* missing — **Ctrl+Shift+I**, paste this into the console while typing in a note, and send me the
-   one line it prints. This box has no screen; that output says which of the two bugs it is, and I would rather fix the
-   right one than ship a fourth guess:
+6. If the caret is *still* missing — **Ctrl+Shift+I**, paste this into the console, then click back into your note and
+   type. It waits three seconds before reporting on purpose: clicking the console takes focus away from the editor, and a
+   snapshot taken at that moment describes an unfocused window rather than the thing you were looking at. Send me the one
+   line it prints — this box has no screen, and I would rather fix the right bug than ship a fourth guess.
 
    ```js
-   (()=>{const e=document.querySelector('.cm-editor'),c=e?.querySelector('.cm-cursor'),n=document.querySelector('.cm-content');const s=c&&getComputedStyle(c);return JSON.stringify({editorClass:e?.className,cursorDisplay:s?.display,border:s?.borderLeftWidth+' '+s?.borderLeftColor,nativeCaret:n&&getComputedStyle(n).caretColor,jottFocus:document.querySelector('.cm')?.className})})()
+   setTimeout(() => {
+     const e = document.querySelector('.cm-editor')
+     const n = document.querySelector('.cm-content')
+     const c = e && e.querySelector('.cm-cursor')
+     const cs = c && getComputedStyle(c)
+     console.log(JSON.stringify({
+       editorClass: e && e.className,
+       drawnCaret: cs ? cs.display + ' ' + cs.borderLeftWidth + ' ' + cs.borderLeftColor : 'no such element',
+       nativeCaret: n && getComputedStyle(n).caretColor,
+       paperBehindIt: n && getComputedStyle(n).backgroundColor,
+     }))
+   }, 3000)
    ```
+
+   What it answers: whether a `.cm-cursor` element exists at all (it should read `no such element`, because Jott does not
+   ask CodeMirror to draw one), and what colour the browser's own caret was told to be. `nativeCaret: "transparent"` means
+   something is still hiding it; an ink colour with nothing visible points at something else — the paper colour behind it,
+   say — which is a different fix again.
 
 ## 2c. Since 0.0.11: press **Ctrl+Shift+D** when something is odd
 
