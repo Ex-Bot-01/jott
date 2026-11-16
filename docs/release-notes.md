@@ -1,4 +1,38 @@
-# Jott 0.0.22 — a log that grew 48 scans a second, and a download you finally cannot miss
+# Jott 0.0.23 — the consent receipt is gone; the download is the answer
+
+A small change, asked for directly: *"can we remove this message: 'note-processor had already recorded those
+settings… The download this allows is about 295.5 MiB. Jott wrote…' — we don't need it anymore, because now the user
+accepts it by downloading the model. So only remove this message and the three buttons below the text."*
+
+They were right, and the reason is worth writing down rather than just deleting. That card answered **"what happened
+when I clicked?"** — a fair question when the alternative was np's bare state token (`keyword-only:
+embeddings.provider is not set`), which read like a refusal of an answer that had just been obeyed. Since 0.0.22 the
+answer to that question walks across the top of the window with a byte count on it, so the receipt had become a
+second, quieter description of something already visible — with three buttons for copying, retrying and complaining
+about a thing that was working.
+
+So: after a **yes that went through**, the card is not drawn at all — no sentences, no *Copy what happened*, no *Try
+again*, no *Read the note-processor request*. The rule lives in one tested function, `outcomeNeedsCard`, and what it
+still lets through is anything a person might have to act on:
+
+* **np's refusal**, quoted unchanged — a yes np could not carry out is the one thing this window must never soften.
+* **A no you pressed** — that gets confirmed, including the model id np remembered in case you change your mind.
+* **Jott's own half failing** — it could not write `models.auto_fetch`, or found no settings file to write it into.
+  A download you just agreed to may be unguarded; a silent window about that is the flattening this module was built
+  to refuse.
+
+What did *not* change is the Settings panel. It keeps saying what np recorded and where, because opening that panel
+is somebody asking "what is the state?" — and an empty answer there reads as a read still in flight. One module
+answers both surfaces (`consentHelp.ts`), with one deliberate difference, so they cannot drift into contradicting
+each other.
+
+Tests: **402 front-end**, including new pins that a clean yes leaves no card and none of those three buttons anywhere
+in the window, that np's answer is still readable in Settings, and that a refusal arriving afterwards still gets a
+card with np's sentence and never the paste-advice again. Rust unchanged at **326**.
+
+---
+
+## Jott 0.0.22 — a log that grew 48 scans a second, and a download you finally cannot miss
 
 One tester's message contained two complaints. They were the same bug, and finding that out meant reading their log
 line by line, which is exactly what the diagnostics journal exists for. Both are fixed; one of them also needed a new

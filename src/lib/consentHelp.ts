@@ -35,6 +35,25 @@ function ourKeySentence(outcome: ConsentOutcome): string {
   }
 }
 
+/** Whether a pressed button still needs the screen once it has been answered.
+ *
+ *  This function exists because of a tester's request — *"can we remove this message… we don't need it anymore,
+ *  because now the user accepts it by downloading the model"* — and they were right. The card answered "what
+ *  happened when I clicked?", which was worth answering when the only feedback was a state token; since 0.0.22 the
+ *  answer is a strip crossing the window with a byte count on it (`lib/downloadWatch.ts`). A receipt of a click the
+ *  person can see the result of, plus three buttons for copying, retrying and complaining about it, is not news.
+ *
+ *  What still earns the card is anything the person might have to *do* something about: np's refusal (its sentence,
+ *  unchanged), a decline they should see confirmed, and either way Jott's own half going wrong — a guardrail it could
+ *  not write, or no settings file to write it into. Those are facts about a download they just agreed to, and hiding
+ *  them would be the same flattening this module was built to refuse.
+ */
+export function outcomeNeedsCard(outcome: ConsentOutcome): boolean {
+  if (outcome.npRefused !== null) return true
+  if (!outcome.granted) return true
+  return outcome.autoFetch === 'failed' || outcome.autoFetch === 'noConfigPath'
+}
+
 /** The card once np has answered. Everything in the first line is np's own report — which keys it moved, into which
  *  file, what the fetch costs — with Jott's part said beside it, because they are different claims (§4). */
 function outcomeSentences(outcome: ConsentOutcome): string[] {
@@ -100,6 +119,17 @@ function guardrail(autoFetch: boolean | null): string {
 }
 
 export function cardSentences(facts: ConsentFacts): string[] {
+  return linesFor(facts, true)
+}
+
+/** The one place the wording is decided.
+ *
+ *  `hideQuietYes` is the difference between the two surfaces that read this. A card in the middle of the window has
+ *  to earn its place over the work being done, so a yes that went through says nothing (see `outcomeNeedsCard`). The
+ *  settings panel has the opposite job: somebody opened it to ask "what is the state?", and an empty answer there
+ *  reads as a read still in flight — which is the bug its own comment below records. So the panel hears the receipt,
+ *  the window does not. */
+function linesFor(facts: ConsentFacts, hideQuietYes: boolean): string[] {
   const { help, refusal } = facts
   // Which setting is short is core's verdict (`settings_gap` in Rust), read off np's own file. Re-deriving it here
   // would be a second opinion the two sides could disagree about.
@@ -108,7 +138,10 @@ export function cardSentences(facts: ConsentFacts): string[] {
   // the only version that can admit a refusal. `configUnreadable` is the exception — np will not rewrite a file it
   // cannot parse, so the sentence about the file stays true whichever button was pressed.
   if (facts.outcome && help.gap !== 'configUnreadable') {
-    const lines = outcomeSentences(facts.outcome)
+    // A clean yes says nothing at all (`outcomeNeedsCard`), and with no lines the card — buttons included — is not
+    // drawn. A refusal that turns up afterwards is still said: it is a second fact, not a receipt.
+    const quiet = hideQuietYes && !outcomeNeedsCard(facts.outcome)
+    const lines = quiet ? [] : outcomeSentences(facts.outcome)
     // A refusal that arrives *after* the press is a second fact, not a replacement for it: np wrote those settings,
     // and ten seconds later it refused something else. Clearing the receipt (which this window used to do) put the
     // paste-advice back over a file np had just written.
@@ -185,7 +218,8 @@ export function cardClipboard(facts: ConsentFacts): string {
  *  note-processor has recorded…" forever, including after a successful read that had nothing to report: a stated
  *  state with no fact behind it. This is one module answering both surfaces, so they cannot disagree. */
 export function panelLines(facts: ConsentFacts): string[] {
-  const lines = cardSentences(facts)
+  // `false`: the panel is a readout, not an interruption.
+  const lines = linesFor(facts, false)
   if (lines.length > 0 || facts.help.gap !== 'ready') return lines
   const model = facts.help.modelId === null ? '' : ` (${facts.help.modelId})`
   return [`note-processor’s settings are complete${model}: notes can be embedded, and a search can use meanings.`]

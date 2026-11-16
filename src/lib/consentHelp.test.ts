@@ -112,12 +112,42 @@ function outcome(fields: Partial<ConsentOutcome>): ConsentOutcome {
 }
 
 describe('the card once np has answered', () => {
-  it('leads with what note-processor recorded, in its own words', () => {
-    const text = cardSentences({ help: help({ autoFetch: true }), refusal: null, outcome: outcome({}) }).join(' ')
-    expect(text).toContain('embeddings.provider')
-    expect(text).toContain('embeddings.model')
-    expect(text).toContain('AppData')
-    expect(text).toContain('models.auto_fetch = true')
+  it('says nothing about a yes that went through', () => {
+    // Removed at the tester's request, and they were right to ask: *"we don't need it anymore, because now the user
+    // accepts it by downloading the model."* The card used to answer "what happened when I clicked?" — a question
+    // that is now answered by a 295 MB strip moving across the screen (`lib/downloadWatch.ts`), and answered in
+    // present tense instead of as a receipt. Its three buttons went with it: there is nothing left to copy, retry,
+    // or complain about when the thing you asked for is visibly happening.
+    const clean: Partial<ConsentOutcome>[] = [
+      // np wrote both keys…
+      {},
+      // …or they were already written; either way the answer to the click is on screen, not here.
+      { changed: [], fetchBytes: null },
+      // `untouched`: Jott's guardrail was already where a yes puts it, so there is no news in that half either.
+      { autoFetch: 'untouched' },
+    ]
+    for (const fields of clean) {
+      expect(
+        cardSentences({ help: help({ gap: 'ready', autoFetch: true }), refusal: null, outcome: outcome(fields) }),
+        `a clean yes should say nothing: ${JSON.stringify(fields)}`,
+      ).toEqual([])
+    }
+  })
+
+  it('still speaks for a yes whose own half failed', () => {
+    // Hiding the receipt is only honest when there was nothing wrong with it. Two states are actionable whatever np
+    // did: Jott could not write its guardrail, or found no settings file to write it into — either way the download
+    // they just agreed to may not be guarded, and a silent window would be hiding the one fact worth knowing.
+    const why = 'could not write C:\\Users\\chris\\AppData\\Roaming\\note-processor\\config.toml: permission denied'
+    const broken: Partial<ConsentOutcome>[] = [{ autoFetch: 'failed', autoFetchError: why }, { autoFetch: 'noConfigPath' }]
+    for (const fields of broken) {
+      const text = cardSentences({
+        help: help({ gap: 'ready', autoFetch: true }),
+        refusal: null,
+        outcome: outcome(fields),
+      }).join(' ')
+      expect(text, JSON.stringify(fields)).not.toBe('')
+    }
   })
 
   it('drops the advice to edit settings by hand', () => {
@@ -128,16 +158,6 @@ describe('the card once np has answered', () => {
     expect(said).not.toContain('provider = "local-model"')
     const clip = cardClipboard({ help: h, refusal: null, outcome: outcome({}) })
     expect(clip).not.toContain('Add these lines')
-  })
-
-  it('says so when np had nothing left to change', () => {
-    // `changed: []` after an accepted yes means it was already on — a different sentence from "we turned it on".
-    const text = cardSentences({
-      help: help({ gap: 'ready', autoFetch: true }),
-      refusal: null,
-      outcome: outcome({ changed: [], fetchBytes: null }),
-    }).join(' ')
-    expect(text).toMatch(/already/i)
   })
 
   it('quotes the refusal and says what Jott did not touch', () => {
@@ -202,7 +222,8 @@ describe('the card once np has answered', () => {
       refusal: later,
       outcome: outcome({}),
     }).join(' ')
-    expect(text).toContain('note-processor wrote embeddings.provider')
+    // The receipt half of this is gone since the tester asked for it (`outcomeNeedsCard`), but the half that can be
+    // acted on stays: np refused something, and its sentence is the fact worth reading.
     expect(text).toContain(later)
     // The paste block is still not offered: those lines are in the file already.
     expect(text).not.toContain('provider = "local-model"')
@@ -229,10 +250,39 @@ describe('what the settings panel says about embeddings', () => {
     expect(lines.join(' ').toLowerCase()).toContain('embedding')
   })
 
-  it('is the card’s sentences plus that one, and nothing else', () => {
+  it('is the card’s sentences, and answers more only where the card holds back', () => {
     // One module answering both surfaces, so the panel cannot drift into describing settings the card contradicts.
     const missing = { help: help({ gap: 'providerMissing' }), refusal: null }
     expect(panelLines(missing)).toEqual(cardSentences(missing))
+
+    // The one deliberate difference (`linesFor`'s `hideQuietYes`): a yes that went through has nothing to say in the
+    // middle of the window and something to say in a panel somebody opened to ask. The panel is never *less* than
+    // the card, so it cannot contradict it either.
+    const quiet = { help: help({ gap: 'ready', autoFetch: true }), refusal: null, outcome: outcome({}) }
+    expect(cardSentences(quiet)).toEqual([])
+    expect(panelLines(quiet).length).toBeGreaterThan(0)
+  })
+
+  it('answers a clean yes with the state, while the card stays quiet', () => {
+    // The two surfaces are allowed to differ *here* on purpose: the card has to earn its space over the download that
+    // is visibly running; a panel somebody opened to ask "what is the state?" must not answer with silence.
+    const outcome: ConsentOutcome = {
+      granted: true,
+      npRefused: null,
+      changed: ['embeddings.provider', 'embeddings.model'],
+      provider: 'local-model',
+      model: 'embeddinggemma-2',
+      persistedTo: FILE,
+      fetchBytes: 309855456,
+      autoFetch: 'written',
+      autoFetchError: null,
+    }
+    const facts = { help: help({ gap: 'ready' }), refusal: null, outcome }
+    expect(cardSentences(facts)).toEqual([])
+    const said = panelLines(facts).join(' ')
+    // What np recorded, in its own words, still readable where somebody goes looking for state.
+    expect(said).toContain('note-processor wrote embeddings.provider')
+    expect(said).toContain('AppData')
   })
 
   it('keeps np’s own answer when there is one', () => {
@@ -248,6 +298,9 @@ describe('what the settings panel says about embeddings', () => {
       autoFetchError: null,
     }
     const facts = { help: help({ gap: 'ready' }), refusal: null, outcome }
-    expect(panelLines(facts)).toEqual(cardSentences(facts))
+    // Not equality with the card — a clean yes is quiet there (`outcomeNeedsCard`) — but the panel carries every word.
+    const said = panelLines(facts).join(' ')
+    expect(said).toContain('note-processor wrote embeddings.provider')
+    expect(said).toContain('models.auto_fetch = true')
   })
 })

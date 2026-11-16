@@ -676,6 +676,19 @@ Send the log (**Ctrl+Shift+D** → **Copy all**), and say roughly what time you 
 | `"event":"events-lagged"` | the window fell behind; 0.0.21 would have gone deaf here, 0.0.22 carries on |
 | `"method":"models.list"` rows | whether np was asked about the marker at all |
 
+### And since 0.0.23: the receipt card after "Allow the download" is gone
+
+You should now see **only the download strip** after clicking Allow — no paragraph about which settings np recorded,
+and no *Copy what happened* / *Try again* / *Read the note-processor request* buttons. That wording is still there if
+you want it: **Settings → embeddings** says what np recorded and into which file.
+
+Two cases where the card still appears, on purpose:
+
+* **note-processor refused.** Its own sentence, unchanged, with *Try again* beside it.
+* **Jott could not write its own guardrail** (`models.auto_fetch`), or found no settings file to write it into.
+
+If you click Allow and see *neither* a strip nor a card, that is the bug to tell me about — say roughly what time.
+
 ## 4. The question only Windows can answer: write-lock contention
 
 np takes a lock on the workspace while it indexes, and on Windows that lock is a file others cannot open.

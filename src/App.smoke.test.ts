@@ -1317,10 +1317,11 @@ describe('the window mounts', () => {
   })
 
 
-  it('lets note-processor’s own answer fill the card', async () => {
-    // The point of np 0.5.x (`embeddings.enable`, note-processor#7): pressing Allow gets an *answer*, and the card
-    // should quote that answer instead of going on telling somebody to paste lines into a file that was just written
-    // for them.
+  it('leaves nothing on screen after a yes that went through', async () => {
+    // Removed at the tester's request: *"can we remove this message… we don't need it anymore, because now the user
+    // accepts it by downloading the model."* They were right. The card answered "what happened when I clicked?" ten
+    // seconds after a click whose result is now a strip crossing the window with a byte count on it — and it came
+    // with three buttons for copying, retrying and complaining about something that was visibly working.
     incompleteSettings.current = true
     scenario.current = 'needs-embedding'
     confirmed.current = true
@@ -1330,19 +1331,29 @@ describe('the window mounts', () => {
     const button = [...document.querySelectorAll('button')].find((b) => b.textContent === 'Set up embeddings')
     button!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
 
-    const card = await vi.waitFor(() => {
-      const el = document.querySelector('[data-testid="consent-card"]')
-      expect(el, 'an answer from np belongs on the card').not.toBeNull()
-      return el as HTMLElement
-    }, { timeout: 2000 })
+    // The press really happened — core answered it — and then the window goes quiet about it.
+    await vi.waitFor(() => expect(commands).toContain('set_consent'), { timeout: 2000 })
+    await new Promise((resolve) => setTimeout(resolve, 150))
 
-    expect(card.textContent).toContain('note-processor wrote embeddings.provider and embeddings.model')
-    expect(card.textContent).toContain('AppData')
-    // The paste block is gone: two contradictory instructions on one screen read as a window that did not hear itself.
-    expect(card.textContent).not.toContain('provider = "local-model"')
-    expect(card.textContent).toContain('Copy what happened')
-    // Jott's part, stated beside np's — the card does not claim credit for settings it never wrote.
-    expect(card.textContent).toContain('models.auto_fetch = true')
+    expect(document.querySelector('[data-testid="consent-card"]')).toBeNull()
+    const labels = [...document.querySelectorAll('button')].map((b) => b.textContent?.trim())
+    for (const gone of ['Copy what happened', 'Try again', 'Read the note-processor request']) {
+      expect(labels, `the ${gone} button went with the card`).not.toContain(gone)
+    }
+
+    // And not on screen in another form either: no receipt sentence anywhere in the window.
+    const text = document.body.textContent ?? ''
+    expect(text).not.toContain('note-processor wrote embeddings.provider')
+    expect(text).not.toContain('Jott wrote models.auto_fetch = true')
+
+    // Where it *is* still readable: the settings panel, which somebody opens precisely to ask what the state is.
+    ;(document.querySelector('button[aria-label="Settings"]') as HTMLButtonElement).click()
+    const panel = await vi.waitFor(() => {
+      const el = document.querySelector('[data-testid="settings-embeddings"]')
+      expect(el, 'the panel answers the question the card no longer needs to').not.toBeNull()
+      return el!
+    }, { timeout: 2000 })
+    expect(panel.textContent).toContain('note-processor wrote embeddings.provider')
 
     incompleteSettings.current = false
     expect(errors).toEqual([])
@@ -1457,8 +1468,9 @@ describe('the window mounts', () => {
 
 
   it('keeps what np answered when a later refusal arrives', async () => {
-    // After a press, np can still refuse the pass it was asked to run. The card used to drop the receipt at that
-    // moment and go back to describing the file — the one thing it may not do after np has just written it.
+    // After a press, np can still refuse the pass it was asked to run. The receipt is quiet now (`outcomeNeedsCard`),
+    // but a refusal is never quiet: what must not happen is the card reverting to paste-advice about a file np has
+    // already written, or losing np's sentence on the floor.
     scenario.current = 'needs-embedding'
     confirmed.current = true
     const { errors } = await start()
@@ -1468,15 +1480,10 @@ describe('the window mounts', () => {
     expect(button, 'the offer line has no way to take it up').not.toBeNull()
     button!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
 
-    const said = await vi.waitFor(() => {
-      const text = document.body.textContent ?? ''
-      if (!text.includes('note-processor wrote embeddings.provider')) {
-        console.log('BODY>>>', text.slice(0, 600))
-      }
-      expect(text).toContain('note-processor wrote embeddings.provider')
-      return text
-    }, { timeout: 1500 })
-    expect(said).toContain('Jott wrote models.auto_fetch = true')
+    // The yes went through, so nothing is said about it yet.
+    await vi.waitFor(() => expect(commands).toContain('set_consent'), { timeout: 2000 })
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    expect(document.querySelector('[data-testid="consent-card"]')).toBeNull()
 
     // np refuses the next pass, for its own reason.
     ingest({ refused: { message: 'configuration error: config io: embeddings.model names no installed model' } })
@@ -1487,10 +1494,9 @@ describe('the window mounts', () => {
       return text
     }, { timeout: 2000 })
 
-    // Both facts on one card — what np recorded, and what it says now — and never the paste-advice again, because
-    // those lines are in the file already.
-    expect(both).toContain('note-processor wrote embeddings.provider')
-    expect(both).toContain('Jott wrote models.auto_fetch = true')
+    // np's own sentence, on a card, and never the paste-advice again: those lines are in the file already, and
+    // telling somebody to add them is a contradiction the window used to print.
+    expect(both).toContain('embeddings.model names no installed model')
     expect(both).not.toContain('Copy these settings')
     expect(errors).toEqual([])
   })
