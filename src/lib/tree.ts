@@ -115,6 +115,19 @@ export function targetFolder(row: Row | null): string {
  * put inside its own child — the backend refuses it, and a menu that offers a refusal is a bug with extra steps).
  * Root is always a candidate, spelled `''`.
  */
+/**
+ * Where the toolbar's **+ note** / **+ folder** put the thing they make.
+ *
+ * It used to be a constant — the vault root, always — while the row menu offered *New note here* on any folder two
+ * pixels away. The toolbar contradicted the menu, and a person who had just clicked a folder had no way to tell the
+ * window it was the destination.
+ */
+export function toolbarTarget(selectedFolder: string | null): { folder: string; label: string } {
+  if (!selectedFolder) return { folder: '', label: 'the vault root' }
+  const folder = selectedFolder.endsWith('/') ? selectedFolder : `${selectedFolder}/`
+  return { folder, label: folder.replace(/\/$/, '') }
+}
+
 export function moveTargets(rows: Row[], rel: string): string[] {
   const here = targetFolder(rows.find((row) => row.rel === rel) ?? null)
   const prefix = rel.endsWith('/') ? rel : `${rel}/`

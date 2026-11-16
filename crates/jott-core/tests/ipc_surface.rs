@@ -199,6 +199,30 @@ async fn nps_own_catalog_is_visible_greyed_and_never_editable() {
     assert_eq!(error.kind, ErrorKind::NpGenerated);
 }
 
+/// A tester made a folder and the tree did not change until they made a file inside it. Either core does not list an
+/// empty folder, or the window is not asking again — the two need different fixes, so this settles which.
+#[tokio::test]
+async fn a_folder_with_nothing_in_it_is_still_a_row() {
+    let harness = Harness::new();
+    harness.write("inbox.md", b"hi\n");
+    let session = harness.session();
+
+    session.create_folder("ideas").expect("the folder is made");
+    let listing = session.listing().expect("the tree answers with no np at all");
+    let kinds: Vec<(String, String)> = listing
+        .nodes
+        .iter()
+        .map(|n| (n.rel.clone(), format!("{:?}", n.kind)))
+        .collect();
+    // Core spells a folder's `rel` without a trailing slash (`ideas`, not `ideas/`); the window tolerates both and
+    // normalises when it builds destinations. What matters here is that the row exists at all: a folder you cannot see
+    // is a folder you believe was never made.
+    assert!(
+        listing.nodes.iter().any(|n| n.rel == "ideas" && matches!(n.kind, jott_core::vault::walk::EntryKind::Folder)),
+        "an empty folder is not a row, so the window cannot show what it just made: {kinds:?}"
+    );
+}
+
 /// The settings panel's first control: *how search matches*. Which mode was chosen is only a fact if it reaches
 /// note-processor, and a parameter that silently never sends is a whole feature missing while every other test still
 /// passes — so this reads what crossed the wire rather than trusting the call site.

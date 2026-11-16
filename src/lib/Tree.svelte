@@ -10,6 +10,8 @@
     selected,
     ontoggle,
     onselect,
+    onselectfolder,
+    selectedFolder = null,
     onmenu,
   }: {
     rows: Row[]
@@ -20,6 +22,10 @@
     onselect: (rel: string) => void
     /** Right-click, on a row or on empty ground (`null`). The menu itself lives in the parent: it has to outlive
      *  the row it was opened from, and it needs the actions `tree.ts` decides. */
+    /** Which folder the toolbar will make its next thing inside, if any. Kept apart from `selected` because a note and
+     *  a destination are two different claims about the same click. */
+    onselectfolder?: (rel: string | null) => void
+    selectedFolder?: string | null
     onmenu?: (rel: string | null, x: number, y: number) => void
   } = $props()
 
@@ -28,8 +34,18 @@
    * the index said got silence, and silence reads as a broken file. Catalogue rows stay greyed (they are np's, not
    * yours) and open read-only; `readonly` on the file is what enforces that, not a disabled row. */
   function click(row: Row) {
-    if (row.kind === 'Folder') ontoggle(row.rel)
-    else onselect(row.rel)
+    if (row.kind === 'Folder') {
+      // One click means both things a folder row is asked for: it becomes the destination for **+ note** / **+ folder**,
+      // and it opens or closes. That is what one click has always meant in a Windows file tree; here it meant only the
+      // second, so "I cannot select the folder I want to create inside" was true of the window as built.
+      onselectfolder?.(row.rel)
+      ontoggle(row.rel)
+    } else {
+      // A note is not a destination. Leaving a folder selected while a note is open would make the toolbar's tooltip
+      // and its behaviour disagree about where the next file goes.
+      onselectfolder?.(null)
+      onselect(row.rel)
+    }
   }
 </script>
 
@@ -47,11 +63,12 @@
       <button
         type="button"
         data-kind={row.kind}
-        class:selected={selected === row.rel}
+        class:selected={selected === row.rel || selectedFolder === row.rel}
         class:greyed={row.greyed}
         class:folder={row.kind === 'Folder'}
         style:padding-inline-start={`${0.4 + row.depth * 0.85}rem`}
         title={row.title || row.rel}
+        aria-expanded={row.kind === 'Folder' ? row.hasChildren && open.has(row.rel) : undefined}
         onclick={() => click(row)}
         oncontextmenu={(event) => {
           event.stopPropagation()
@@ -60,8 +77,12 @@
           return false
         }}
       >
-        <span class="twisty" aria-hidden="true">
-          {row.hasChildren ? (open.has(row.rel) ? '▾' : '▸') : ''}
+        <!-- A folder carries a mark at every age. It used to get one only once it had children, which meant the folder
+             you had just made was bold text and nothing else — indistinguishable from a note, and read as "nothing
+             happened". `·` is a folder with nothing in it yet: the column never jumps, and closing an empty folder does
+             not pretend there was something to close. -->
+        <span class="twisty" class:faint={row.kind === 'Folder' && !row.hasChildren} aria-hidden="true">
+          {row.kind === 'Folder' ? (row.hasChildren ? (open.has(row.rel) ? '▾' : '▸') : '·') : ''}
         </span>
         {#if row.marker}
           <span class="marker" title={row.title}>{row.marker}</span>
@@ -69,6 +90,10 @@
           <span class="marker" aria-hidden="true"></span>
         {/if}
         <span class="name">{row.name}</span>
+        {#if row.kind === 'Folder' && !row.hasChildren}
+          <!-- Says the quiet thing out loud: it is empty, not missing. -->
+          <span class="empty-hint" data-testid="folder-empty">(empty)</span>
+        {/if}
       </button>
     </li>
   {:else}
@@ -130,6 +155,15 @@
   }
   .folder .name {
     font-weight: 600;
+  }
+  .twisty.faint {
+    /* The dot for an empty folder is a place-holder, not a claim about contents. */
+    color: color-mix(in srgb, currentColor 45%, transparent);
+  }
+  .empty-hint {
+    margin-inline-start: 0.35rem;
+    color: color-mix(in srgb, currentColor 55%, transparent);
+    font-style: italic;
   }
   .name {
     overflow: hidden;

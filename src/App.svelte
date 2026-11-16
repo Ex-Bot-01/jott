@@ -19,6 +19,7 @@
   notesAwaitingIndex,
   planMoveInto,
   targetFolder,
+  toolbarTarget,
 } from './lib/tree'
   import type { TreeAction } from './lib/tree'
   import { bareKeyFor, escapeAction, isTypingTarget, shortcutFor } from './lib/shortcuts'
@@ -35,6 +36,8 @@
   import { markTerms } from './lib/highlight'
   import { consentSentence, modelReadySentence, statusFor, type Status } from './lib/statusLine'
   import { cardClipboard, cardSentences, NP_ISSUE } from './lib/consentHelp'
+  import { createBlocked } from './lib/createHere'
+  import { formatsSentence, opensAsText, planNoteName } from './lib/noteName'
   import type { ConsentOutcome } from './lib/ipc'
   import { openUrl } from '@tauri-apps/plugin-opener'
   import { getCurrentWindow } from '@tauri-apps/api/window'
@@ -51,6 +54,8 @@
   /** Open folders, for this run of the app (§9). A `Set` that gets replaced rather than mutated. */
   let openFolders = $state<Set<string>>(new Set())
   let selected = $state<string | null>(null)
+/** The folder the toolbar will make its next note or folder inside, as the tree spells it (no trailing slash). */
+  let selectedFolder = $state<string | null>(null)
   let note = $state<NoteContent | null>(null)
   /** Bumped to put text into the editor from outside: a silent reload, or an accepted mirror (§14). */
   let external = $state<{ text: string; token: number } | null>(null)
@@ -76,6 +81,27 @@
   let awaitingIndex = $derived(listing ? notesAwaitingIndex(listing.nodes) : 0)
   /** Indexed but never embedded: search finds these notes' words and not their meanings. */
   let awaitingEmbed = $derived(listing ? notesAwaitingEmbedding(listing.nodes) : 0)
+/** Notes against everything else in this folder. note-processor parses only `.md`, so a vault of `notes.txt` and
+    `scan.pdf` is a folder whose files Jott can list but cannot search — said once, from the rows already walked. */
+  // A destination is a promise about where the next file goes, so it is only true while the walk still shows the folder
+  // it names. Trash or rename that folder and core would happily re-create it on the next **+ note** — it makes parents
+  // — so the tooltip would be promising to undo what was just done.
+  let destination = $derived(
+    toolbarTarget(
+      selectedFolder !== null &&
+        listing?.nodes.some((n) => n.kind === 'Folder' && (n.rel === selectedFolder || `${n.rel}/` === selectedFolder))
+          ? selectedFolder
+          : null,
+    ),
+  )
+  let formatsNotice = $derived(
+    listing
+      ? formatsSentence({
+          notes: listing.nodes.filter((n) => n.kind === 'Note').length,
+          others: listing.nodes.filter((n) => n.kind === 'Attachment' || n.kind === 'Image').length,
+        })
+      : null,
+  )
   /** What np would need to set embeddings up — its model, its folder, the size when anybody measured one.
       `null` means either "nothing to offer" or "not asked yet for this vault", and `offerAskedFor` says which. */
   let embeddingsOffer = $state<ipc.ConsentOffer | null>(null)
@@ -137,6 +163,9 @@
     kind: 'new' | 'rename' | 'folder' | 'move'
     value: string
     folder?: string
+    /** Why this cannot be done yet, in words. Set when a note or folder is asked for with no folder open: the dialog
+     *  stays up with what was typed, and submitting sends nothing rather than collecting a refusal nobody sees. */
+    blocked?: string | null
     rel?: string
     /** The move dialog's second half: a destination that does not exist yet. */
     newFolder?: string
@@ -188,27 +217,39 @@
   function adopt(next: VaultListing) {
     const changedFolder = listing !== null && listing.vault !== next.vault
     listing = next
-    // A model was downloaded for one folder's index, and a search widened itself in one folder's results; carried
-    // across they let the window describe yesterday's news as a property of the folder someone just opened — the same
-    // class of claim v0.0.14 exists to stop making.
-    if (!changedFolder) return
-    modelReady = null
-    consentHelp = null
-    lastRefusal = null
-    consentOutcome = null
-    cardClipFailed = false
-    prefixOnce = false
-    // The search answer on screen is note-processor's report about the folder it was asked in — `vectors`, `indexed`,
-    // which words it widened. Carried across, the settings panel warns "this folder has no vectors yet" about a
-    // folder Jott has never searched, and the results pane lists files that are not in this vault. The open note goes
-    // with them: a `rel` means nothing in another folder, and leaving a dirty buffer attached after core switched
-    // sessions is how one folder's typing ends up written into another's file.
-    results = null
-    searchQuery = ''
-    hitQuery = ''
-    selected = null
-    note = null
-    bufferVault = null
+    if (changedFolder) {
+      // A model was downloaded for one folder's index, and a search widened itself in one folder's results; carried
+      // across they let the window describe yesterday's news as a property of the folder someone just opened — the
+      // same class of claim v0.0.14 exists to stop making. Otherwise this is a re-list of the folder already on
+      // screen, and its news stays.
+      modelReady = null
+      consentHelp = null
+      lastRefusal = null
+      consentOutcome = null
+      cardClipFailed = false
+      prefixOnce = false
+      // The offer named one folder's model and one folder's waiting count. Carried across, the banner beside a second
+      // folder quotes a `models.list` that was asked about the first.
+      embeddingsOffer = null
+      // The search answer on screen is note-processor's report about the folder it was asked in — `vectors`,
+      // `indexed`, which words it widened. Carried across, the settings panel warns "this folder has no vectors yet"
+      // about a folder Jott has never searched, and the results pane lists files that are not in this vault. The open
+      // note goes with them: a `rel` means nothing in another folder, and leaving a dirty buffer attached after core
+      // switched sessions is how one folder's typing ends up written into another's file.
+      results = null
+      searchQuery = ''
+      hitQuery = ''
+      selected = null
+      selectedFolder = null
+      note = null
+      bufferVault = null
+    }
+
+    // Every path that installs a listing comes through here, so this is where the embeddings offer is asked. It used
+    // to be asked only by `refresh()`, which meant a folder that arrived by being *opened* — at startup or through the
+    // picker — never asked about, and the banner that tells someone their notes are indexed but cannot be searched by
+    // meaning had no way to appear until some later re-list happened to come along.
+    void askOffer()
   }
 
   async function openRecent(folder: string) {
@@ -336,6 +377,10 @@
     if (!content) return
     note = content
     selected = rel
+    // One place decides this. The tree row click was a second writer and could not cover the paths that do not go
+    // through it — opening a hit from the search results kept a folder as the destination while a note from anywhere
+    // was on screen, which is exactly the tooltip-versus-button disagreement.
+    selectedFolder = null
     bufferVault = listing?.vault ?? null
     // The announcement did its job once the person moved on to working again (§4: say it, then get out of the way).
     modelReady = null
@@ -464,7 +509,9 @@
         searchBox?.select()
         return
       }
-      runAction(shortcut === 'new-note' ? 'new-note' : shortcut === 'new-folder' ? 'new-folder' : 'rename')
+      if (shortcut === 'new-note') createInToolbar('new')
+      else if (shortcut === 'new-folder') createInToolbar('folder')
+      else runAction('rename')
       return
     }
 
@@ -479,16 +526,20 @@
 
   /** One place turns an intention into a dialog or a command, whether it came from the menu, a button or a key. */
   function runAction(action: TreeAction, on?: string | null) {
+    // Whatever was refused in the dialog before this one stays out of it. A sentence from an older intention, printed
+    // above a field nobody has typed into yet, is a stale report beside a fresh question — the same class of carry-over
+    // this window already prevents three times over in `adopt`.
+    dialogSaid = null
     // Which row the intention is about: the one the menu was opened on, else the selected one. Read before `menu`
     // is cleared, or every action would silently fall back to the root of the vault.
     const row = rowFor(on === undefined ? menu?.rel ?? null : on)
     menu = null
     switch (action) {
       case 'new-note':
-        dialog = { kind: 'new', value: '', folder: targetFolder(row) }
+        dialog = { kind: 'new', value: '', folder: targetFolder(row), blocked: createBlocked(listing !== null) }
         return
       case 'new-folder':
-        dialog = { kind: 'folder', value: '', folder: targetFolder(row) }
+        dialog = { kind: 'folder', value: '', folder: targetFolder(row), blocked: createBlocked(listing !== null) }
         return
       case 'rename':
         if (selected === null) return
@@ -522,6 +573,9 @@
     const next = await call(ipc.pickVault)
     if (!next) return
     adopt(next)
+    // A dialog that was waiting on this folder can go on: the name typed is kept, so picking finishes the intention
+    // instead of starting it over.
+    if (dialog) dialog = { ...dialog, blocked: null }
     openFolders = new Set()
     selected = null
     note = null
@@ -534,6 +588,7 @@
   function closeNote() {
     if (selected === null) return
     selected = null
+    selectedFolder = null
     note = null
     // The marks came from a search hit; with no note open there is nothing for them to be on.
     hitQuery = ''
@@ -678,8 +733,9 @@
 
   async function createFolder(rel: string) {
     const made = await call(() => ipc.createFolder(rel))
+    if (made === null) return // the dialog stays up: a folder that was not made is not a thing to close on
     dialog = null
-    if (made !== null) await refresh()
+    await refresh()
   }
 
   async function moveEntry(from: string, to: string) {
@@ -725,21 +781,49 @@
     if (selected === rel) selected = plan.to
   }
 
-  async function createNote(rel: string) {
-    const created = await call(() => ipc.createNote(rel))
-    dialog = null
-    if (created) {
-      await refresh()
-      await openNote(rel)
+  /** Make the note the person asked for, under the name that will actually be a note. */
+  /** The toolbar's two create buttons. `runAction` stays the row-menu path, which takes its target from the row the menu
+   *  was opened on; this one takes it from the folder that is selected, because there is no row to ask. */
+  function createInToolbar(kind: 'new' | 'folder') {
+    // The row menu's path clears the menu inside `runAction`; this one is reached by button and by shortcut alike, and
+    // a menu left open would float over the dialog it just opened.
+    menu = null
+    dialogSaid = null
+    dialog = { kind, value: '', folder: destination.folder, blocked: createBlocked(listing !== null) }
+  }
+
+  async function createNote(typed: string, folder: string) {
+    const plan = planNoteName(typed, folder)
+    if (plan.rel === null) {
+      // Refused in words, dialog up, name kept. Renaming it behind their back is how a note ends up called `untitled2`.
+      dialogSaid = plan.said ?? 'That name will not work.'
+      return
     }
+    // Held in a local because narrowing does not follow a property into a closure: `() => ipc.createNote(plan.rel)`
+    // would be asking for a `string | null`.
+    const rel = plan.rel
+    const created = await call(() => ipc.createNote(rel))
+    if (created === null) return
+    dialog = null
+    if (plan.said !== null) notice = plan.said
+    await refresh()
+    // An empty `photo.png` opened in an editable buffer is an invitation to write prose into a file Jott's own walk
+    // labels Image and note-processor never parses. The notice above already says what was made; there is nothing to
+    // edit here.
+    if (opensAsText(rel)) await openNote(rel)
   }
 
   async function renameEntry(to: string) {
     const from = selected
-    dialog = null
-    if (!from) return
+    if (!from) {
+      dialog = null
+      return
+    }
     const outcome = await call(() => ipc.renameEntry(from, to))
+    // A refused rename — the name is taken, the target exists — keeps the dialog and the typed name. Closing it would
+    // say "done" about something that did not happen, and the person would start over from nothing.
     if (!outcome) return
+    dialog = null
     notice = outcome.incomingLinks.length
       ? `renamed · ${outcome.incomingLinks.length} note${outcome.incomingLinks.length === 1 ? '' : 's'} still refer${outcome.incomingLinks.length === 1 ? 's' : ''} to the old name`
       : 'renamed'
@@ -814,7 +898,10 @@
       const reopened = await ipc.openVault(last).catch(() => null)
       if (reopened) adopt(reopened)
     } else {
-      await refresh()
+      // Nothing to come back to, so nothing to ask about. Asking `list_vault` anyway used to be how a first run began:
+      // core answers "no vault is open" — true, and not an error worth showing at all — and that sentence appeared in
+      // the sidebar before anyone had done anything. The empty state asks for a folder; that is the message.
+      listing = null
     }
 
     void ipc.onIngestEvent((event) => {
@@ -909,6 +996,14 @@
       </button>
     </header>
 
+    {#if problem}
+      <!-- Refusals go where the eyes already are: above the tools, beside whatever was just pressed. At v0.0.16 this
+           sentence existed and did render — below the tree in the sidebar, under whatever the walk had warned about —
+           which on a first run meant beneath an empty list, and on every run meant somewhere other than the dialog
+           that had just closed itself. -->
+      <p class="warn" role="alert" data-testid="global-problem">{problem}</p>
+    {/if}
+
     <div class="tools">
       <input
         bind:this={searchBox}
@@ -926,8 +1021,22 @@
         match word beginnings
       </label>
       <span class="tool-buttons">
-        <button type="button" title="New note (Ctrl+N)" onclick={() => runAction('new-note', null)}>+ note</button>
-        <button type="button" title="New folder (Ctrl+Shift+N)" onclick={() => runAction('new-folder', null)}>
+        <!-- The destination is in the tooltip because it used to be a secret: both of these always meant the vault root,
+             whatever had just been clicked. -->
+        <button
+          type="button"
+          title="New note in {destination.label} (Ctrl+N)"
+          data-testid="toolbar-new-note"
+          onclick={() => createInToolbar('new')}
+        >
+          + note
+        </button>
+        <button
+          type="button"
+          title="New folder in {destination.label} (Ctrl+Shift+N)"
+          data-testid="toolbar-new-folder"
+          onclick={() => createInToolbar('folder')}
+        >
           + folder
         </button>
         <button
@@ -1019,9 +1128,16 @@
           selected={selected}
           ontoggle={toggleFolder}
           onselect={(rel) => void openNote(rel)}
+          selectedFolder={selectedFolder}
+          onselectfolder={(rel) => (selectedFolder = rel)}
           onmenu={openMenu}
         />
       </div>
+      {#if formatsNotice}
+        <!-- The sentence a folder of `.txt` and `.pdf` files deserves the first time it is opened, from the rows the walk
+             already produced. Without it the only "answer" is a search that finds nothing in a folder full of writing. -->
+        <p class="quiet formats" data-testid="formats-notice">{formatsNotice}</p>
+      {/if}
     {/if}
 
     {#if modelReady}
@@ -1093,11 +1209,9 @@
         <!-- Sentences from the backend, shown as written (§4). -->
         <p class="warn">{warning}</p>
       {/each}
-      {#if problem}
-        <p class="warn">{problem}</p>
-      {/if}
+
       {#if notice}
-        <p class="note-said">
+        <p class="note-said" data-testid="notice">
           {notice}
           <button type="button" onclick={() => (notice = null)}>ok</button>
         </p>
@@ -1130,12 +1244,24 @@
           event.preventDefault()
           const value = dialog?.value.trim() ?? ''
           if (!value) return
-          if (dialog?.kind === 'new') void createNote(prefixed(dialog, value))
+          // Nowhere to put it: keep the name, keep the dialog, send nothing. The sentence beside the field is the
+          // whole answer, and a command sent here would only be refused somewhere the person cannot see.
+          if (dialog?.blocked) return
+          if (dialog?.kind === 'new') void createNote(value, dialog.folder ?? '')
           else if (dialog?.kind === 'folder') void createFolder(prefixed(dialog, value))
           else if (dialog?.kind === 'move' && dialog.rel) void moveEntry(dialog.rel, moveTo(dialog.rel, value))
           else void renameEntry(value)
         }}
       >
+        {#if dialog.blocked}
+          <!-- Said here, in the thing the person is looking at, rather than in a status area that only exists once a
+               folder is open. The button is the way out, and the name they typed survives it. -->
+          <p class="warn" role="alert" data-testid="create-blocked">
+            {dialog.blocked}
+            <button type="button" data-testid="dialog-open-folder" onclick={() => void pickFolder()}>Choose a folder</button>
+          </p>
+        {/if}
+        {#if dialogSaid !== null}<p class="warn" role="alert" data-testid="dialog-said">{dialogSaid}</p>{/if}
         {#if dialog.kind === 'move'}
           <label for="rel">Move {dialog.rel} into:</label>
           <select id="rel" bind:value={dialog.value}>
@@ -1164,7 +1290,6 @@
               create and move
             </button>
           </span>
-          {#if dialogSaid !== null}<p class="warn" role="alert">{dialogSaid}</p>{/if}
         {:else}
           <label for="rel">
             {dialog.kind === 'new'

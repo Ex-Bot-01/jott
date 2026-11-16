@@ -126,5 +126,11 @@ describe('the catalogue row still looks like something you do not edit', () => {
     // Hover says "this will do something". np's catalogue row opens read-only, which is worth showing, but it should
     // not be dressed exactly like a row that will take your typing.
     expect(treeSvelte).toMatch(/\.tree button:hover:not\(:disabled\):not\(\.greyed\)/)
+
+    // A folder has to look like a folder before it has anything in it. The twisty used to appear only once a folder had
+    // children, so a newly made one was bold text with no mark — the tester's "not good differentiable from files", and
+    // half of "+ folder → nothing happens". jsdom can read the markup; these rules are the other half.
+    expect(treeSvelte, 'an empty folder still gets a place in the twisty column').toMatch(/\.twisty\.faint/)
+    expect(treeSvelte, 'and it says so in words').toMatch(/\.empty-hint/)
   })
 })

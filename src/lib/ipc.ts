@@ -250,20 +250,32 @@ export async function pickVault(): Promise<VaultListing | null> {
 export const readNote = (rel: string) => invoke<NoteContent>('read_note', { rel })
 export const saveNote = (rel: string, text: string) => invoke<WriteResult>('save_note', { rel, text })
 export const createNote = (rel: string) => invoke<WriteResult>('create_note', { rel })
-export const createFolder = (rel: string) => invoke<void>('create_folder', { rel })
+/**
+ * What a command whose whole answer is "it happened" resolves to. `Ok(())` crosses the wire as `null`, and `null` is
+ * what `App`'s `call()` hands back for a *failure* — so a void command that answers honestly arrives indistinguishable
+ * from a refused one. Every successful folder creation then skipped the refresh that would have shown it, which is how
+ * "+ folder → nothing happens" reached a tester's screen. Wrapping once here keeps the distinction where it belongs.
+ */
+export type Done = 'done'
+async function completed<T>(what: Promise<T>): Promise<Done> {
+  await what
+  return 'done'
+}
+
+export const createFolder = (rel: string) => completed(invoke<void>('create_folder', { rel }))
 export const renameEntry = (from: string, to: string) => invoke<RenameOutcome>('rename_entry', { from, to })
 export const deleteEntry = (rel: string) => invoke<string>('delete_entry', { rel })
-export const moveEntry = (from: string, to: string) => invoke<void>('move_entry', { from, to })
+export const moveEntry = (from: string, to: string) => completed(invoke<void>('move_entry', { from, to }))
 /** Mirror text the editor holds but has not written (§18.13). Autosave calls this on its own tick. */
-export const mirrorBuffer = (rel: string, text: string) => invoke<void>('mirror_buffer', { rel, text })
+export const mirrorBuffer = (rel: string, text: string) => completed(invoke<void>('mirror_buffer', { rel, text }))
 /** §18.13's "Discard it": without this the draft would reappear next time the note is opened. */
-export const discardMirror = (rel: string) => invoke<void>('discard_mirror', { rel })
+export const discardMirror = (rel: string) => completed(invoke<void>('discard_mirror', { rel }))
 /** Ask note-processor. `prefix` (the "match word beginnings" toggle) and `mode` (which engine matches) are sent every
  *  time rather than omitted: both change what the query *means*, and leaving either out hands the decision to a
  *  default in another process — which is how a search ends up answering a question nobody asked. */
 export const searchVault = (query: string, limit: number, prefix: boolean, mode: SearchMode) =>
   invoke<SearchResults>('search_vault', { query, limit, prefix, mode })
-export const ingestAll = () => invoke<void>('ingest_all')
+export const ingestAll = () => completed(invoke<void>('ingest_all'))
 /** What np answered when the consent button was pressed (`ConsentAnswerDto` in Rust). The four words of `autoFetch`
  *  are the whole difference between "the guardrail is down" and "Jott could not lower it", so they travel as data. */
 export interface ConsentOutcome {

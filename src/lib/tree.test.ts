@@ -2,7 +2,7 @@
 // of Tree.svelte so the marker legend — the part most likely to be quietly wrong — has tests.
 
 import { describe, expect, it } from 'vitest'
-import { actionsFor, flattenTree, GENERATED_TITLE, moveTargets, moveTo, notesAwaitingEmbedding, notesAwaitingIndex, planMoveInto, targetFolder } from './tree'
+import { actionsFor, flattenTree, GENERATED_TITLE, moveTargets, moveTo, notesAwaitingEmbedding, notesAwaitingIndex, planMoveInto, targetFolder, toolbarTarget } from './tree'
 import type { Row } from './tree'
 import type { NodeEntry } from './ipc'
 
@@ -308,5 +308,24 @@ describe('a folder is moved by its own name', () => {
       folder: 'newdecade/',
       to: 'newdecade/work',
     })
+  })
+})
+
+
+describe('where the toolbar makes a thing', () => {
+  it('uses the vault root when no folder is picked', () => {
+    expect(toolbarTarget(null)).toEqual({ folder: '', label: 'the vault root' })
+  })
+
+  it('puts a new note inside the folder that was selected', () => {
+    // "I cannot select the folder in the left sidebar if I want to create a new file inside the folder." The row menu
+    // has offered this for ages; the toolbar two pixels above always meant the root.
+    expect(toolbarTarget('notes')).toEqual({ folder: 'notes/', label: 'notes' })
+    expect(toolbarTarget('work/2026/').folder).toBe('work/2026/')
+  })
+
+  it('says the destination in words a tooltip can carry', () => {
+    expect(toolbarTarget('ideas').label).toBe('ideas')
+    expect(toolbarTarget(null).label).toBe('the vault root')
   })
 })
