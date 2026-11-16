@@ -6,6 +6,9 @@
 // and §18 says to show np's words instead of a translation of them.
 
 import { invoke } from '@tauri-apps/api/core'
+import type { Downloading } from './downloadWatch'
+// Named here too, so `ipc.Downloading` resolves: the window reads this payload through the module namespace.
+export type { Downloading } from './downloadWatch'
 import type { SearchMode } from './searchSettings'
 import { listen } from '@tauri-apps/api/event'
 import { confirm, open } from '@tauri-apps/plugin-dialog'
@@ -320,6 +323,9 @@ export const embeddingsHelp = () => invoke<ConsentHelp>('embeddings_help')
 export interface ModelStatus {
   /** np's `embeddings.provider`, quoted as written (`"none"` is what `embeddings.disable` writes). */
   provider: string | null
+  /** A fetch np says is running for this folder, from its marker file. `null`: no marker, or nobody answered —
+      which is why the banner needs movement to appear rather than trusting one reading (`lib/downloadWatch.ts`). */
+  downloading: Downloading | null
   modelId: string | null
   present: boolean | null
   bytesTotal: number | null

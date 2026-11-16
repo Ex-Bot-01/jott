@@ -550,6 +550,52 @@ async fn deleting_a_file_outside_jott_also_asks_np_to_re_index() {
     session.close().await;
 }
 
+/// The other half of the same story: a path that is absent is not automatically a note that was deleted.
+/// np's catalogue rename leaves `INDEX.md.tmp` gone, an editor's swap file vanishes, and a folder removal
+/// reports children that were already missing. Nothing here may turn one of those into a rescan request —
+/// that is the loop that wrote 6,885 scan lines in under three minutes.
+#[tokio::test]
+async fn a_path_that_was_never_a_note_does_not_ask_for_a_rescan() {
+    let _turn = SERIAL.lock().await;
+    let harness = Harness::new();
+    // np's own temporary, mid-rename: created and removed inside one scan.
+    harness.write("INDEX.md.tmp", b"half-written catalogue\n");
+
+    let record = harness.data.path().join("calls.ndjson");
+    std::fs::write(&record, "").expect("empty call record");
+    let scenario = json!({ "record": record.display().to_string(), "replies": { "scan": common::fixture_result(1) } });
+    let scenario_file = harness.data.path().join("scenario.json");
+    std::fs::write(&scenario_file, scenario.to_string()).expect("write scenario");
+    std::env::set_var("FAKE_NP_SCENARIO", &scenario_file);
+
+    let (_sentinel, info) = ipc::np_absent();
+    let session = VaultSession::open_in_with(
+        NpSource::Env(common::repo_root().join("tests/fake-np/np.py")),
+        info,
+        None,
+        harness.vault.path(),
+        Consent::Granted,
+        Some(harness.data.path().join("np-config.toml")),
+        harness.data.path().to_path_buf(),
+    );
+    std::fs::write(&record, "").expect("clear the record");
+
+    std::fs::remove_file(harness.vault.path().join("INDEX.md.tmp")).expect("np renamed its temporary away");
+
+    // Long enough that a loop would have filled the file many times over: at the rate in the tester's log
+    // this window alone would hold ~150 scan lines.
+    tokio::time::sleep(std::time::Duration::from_millis(1_200)).await;
+    let asked: Vec<String> = std::fs::read_to_string(&record)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter_map(|line| line["method"].as_str().map(str::to_string))
+        .collect();
+    assert!(!asked.iter().any(|m| m == "scan"), "np's own rename was read as a deleted note: {asked:?}");
+
+    session.close().await;
+}
+
 #[tokio::test]
 async fn renaming_never_overwrites_and_says_who_links_to_it() {
     let _turn = SERIAL.lock().await;
@@ -2031,6 +2077,7 @@ async fn the_model_dot_reports_what_note_processor_said_about_the_model() {
             "modelId": "embeddinggemma-2",
             "present": true,
             "bytesTotal": 309855456,
+            "downloading": null,
             "configUnreadable": false,
             "modelsDirError": null
         })
@@ -2244,4 +2291,90 @@ async fn a_price_is_only_ever_quoted_for_the_model_it_belongs_to() {
         "309855456 is embeddinggemma-2's price; quoting it for some-other-model would be Jott's arithmetic"
     );
     session.close().await;
+}
+
+#[test]
+fn a_window_that_fell_behind_keeps_its_stream() {
+    use tokio::sync::broadcast::error::RecvError;
+    // The bridge used to end on any error, so one slow paint left the window permanently deaf — including during
+    // a model download. `Lagged` names rows nobody read; it does not name a closed session.
+    assert!(
+        jott_core::ipc::bridge_stays(&RecvError::Lagged(7)),
+        "a window that fell behind is a window still there"
+    );
+    assert!(
+        !jott_core::ipc::bridge_stays(&RecvError::Closed),
+        "a dropped session is the only real end"
+    );
+}
+
+#[tokio::test]
+async fn the_next_row_arrives_after_a_window_fell_behind() {
+    // Surviving the error in principle is not enough: what matters is that the *next* event still gets through.
+    let (tx, mut rx) = tokio::sync::broadcast::channel::<u32>(2);
+    for n in 0..5 {
+        let _ = tx.send(n);
+    }
+    let error = rx.recv().await.expect_err("the small buffer must report the lag");
+    assert!(jott_core::ipc::bridge_stays(&error), "and the policy must keep going: {error:?}");
+    // A two-slot buffer that took five rows still holds the last two. The point is not which row survives — it is
+    // that the stream carries on instead of ending, so the *next* thing the window needs to hear still arrives.
+    assert_eq!(rx.recv().await.unwrap(), 3, "the newest rows are still delivered");
+    assert_eq!(rx.recv().await.unwrap(), 4, "and the one after them too");
+}
+
+/// A download in flight, read from np's own fetch markers rather than from a progress line that may never have
+/// reached the window. Two markers arrive (a vision model is `main` plus an `mmproj`), so the banner names one
+/// steadily — and both figures are np's, because a byte count Jott added up would be Jott's arithmetic.
+#[tokio::test]
+async fn a_download_in_flight_is_reported_from_nps_own_marker() {
+    let _turn = SERIAL.lock().await;
+    // Shaped from what bundled np 0.5.1 actually answered for `models.list` while fetching: id, bytes, nonce,
+    // path, started_at, marker_error — measured, not guessed.
+    let listing = json!({
+        "models": [],
+        "fetching": [
+            { "id": "mmproj", "bytes_done": 4_000_000, "bytes_total": 940_000_000u64,
+              "nonce": "n-2", "path": "/models/.fetching.mmproj.json", "started_at": 1, "marker_error": null },
+            { "id": "embeddinggemma-2", "bytes_done": 184_550_345, "bytes_total": 309_855_456u64,
+              "nonce": "n-1", "path": "/models/.fetching.embeddinggemma-2.json", "started_at": 1,
+              "marker_error": null },
+        ],
+        "unclaimed": [], "models_dir_error": null,
+        "pinned": [{ "id": "embeddinggemma-2", "bytes_total": 309_855_456 }]
+    });
+    let scenario_dir = scenario(json!({ "replies": { "models.list": listing } }));
+
+    let harness = Harness::new();
+    let config = harness.data.path().join("np-config.toml");
+    // A provider has to be configured or the status stops before asking np — it would be answering from the
+    // settings file alone, and there would be no marker list to read.
+    std::fs::write(
+        &config,
+        "[models]\nauto_fetch = true\n\n[embeddings]\nprovider = \"local-model\"\nmodel = \"embeddinggemma-2\"\n",
+    )
+    .expect("config");
+    let session = VaultSession::open_in(
+        fake_np(),
+        info(),
+        harness.vault.path(),
+        Consent::Granted,
+        Some(config),
+        harness.data.path().to_path_buf(),
+    );
+
+    let status = session.embeddings_status().await;
+    let down = status.downloading.as_ref().expect("np said bytes were moving");
+    assert_eq!(down.model_id, "embeddinggemma-2", "the same one every poll, not whichever marker was written last");
+    assert_eq!(down.bytes_done, 184_550_345);
+    assert_eq!(down.bytes_total, Some(309_855_456));
+
+    let wire = serde_json::to_value(&status).expect("serialize");
+    assert_eq!(
+        wire["downloading"],
+        json!({ "modelId": "embeddinggemma-2", "bytesDone": 184_550_345, "bytesTotal": 309_855_456 }),
+        "the keys the webview reads, pinned"
+    );
+
+    drop(scenario_dir);
 }

@@ -64,7 +64,14 @@ const modelStatus = vi.hoisted(() => ({
     modelId: null,
     present: null,
     bytesTotal: null,
-  } as { provider: string | null; modelId: string | null; present: boolean | null; bytesTotal: number | null },
+    downloading: null,
+  } as {
+    provider: string | null
+    modelId: string | null
+    present: boolean | null
+    bytesTotal: number | null
+    downloading?: { modelId: string; bytesDone: number; bytesTotal: number | null } | null
+  },
 }))
 
 /** A stand-in for `matchMedia`, which jsdom does not have: the window asks which colour scheme the desktop is in,
@@ -2725,6 +2732,51 @@ describe('the window mounts', () => {
   })
 
 
+
+  it('shows a strip nobody can miss while np is fetching the model, with np’s own bytes', async () => {
+    // The tester asked twice for something they could not overlook, and was right: a 295 MB download ran with no
+    // bar and no words. So the fact gets a strip across the note pane rather than one more word in the corner —
+    // and the numbers are np's marker figures, quoted, not Jott's estimate of anything.
+    modelStatus.current = {
+      provider: 'local-model',
+      modelId: 'embeddinggemma-2',
+      present: false,
+      bytesTotal: 309855456,
+      downloading: { modelId: 'embeddinggemma-2', bytesDone: 184550345, bytesTotal: 309855456 },
+    }
+    scenario.current = 'vault'
+    const { errors } = await start()
+
+    // Svelte flushes state writes on its own microtask, so the strip appears a tick after np answers. Waiting for
+    // it is what a person's eye does too; asserting synchronously would only test the scheduler.
+    const banner = await vi.waitFor(() => {
+      const el = document.querySelector('[data-testid="download-banner"]')
+      expect(el, 'the strip that says a download is running').not.toBeNull()
+      return el!
+    }, { timeout: 2000 })
+    expect(banner!.textContent).toContain('downloading embeddinggemma-2 · 176 of 295 MiB')
+    const bar = banner!.querySelector('[data-testid="download-bar"]') as HTMLProgressElement | null
+    expect(bar, 'a determinate bar, because np announced a size').not.toBeNull()
+    expect(bar!.value).toBe(184550345)
+    expect(bar!.max).toBe(309855456)
+    expect(errors).toEqual([])
+  })
+
+  it('draws no download strip when np reports no marker', async () => {
+    // `downloading: null` is "no fetch, or nobody answered" — either way the window has no business showing a bar.
+    modelStatus.current = {
+      provider: 'local-model',
+      modelId: 'embeddinggemma-2',
+      present: true,
+      bytesTotal: 309855456,
+      downloading: null,
+    }
+    scenario.current = 'indexed'
+    const { errors } = await start()
+
+    expect(document.querySelector('[data-testid="download-banner"]')).toBeNull()
+    expect(errors).toEqual([])
+  })
 
   it('draws no dot and asks nothing about a model before a folder is open', async () => {
     // A first-run window has no vault, so core refuses `embeddings_status` — and the dot must simply not be there,

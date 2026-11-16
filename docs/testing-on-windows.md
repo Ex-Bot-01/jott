@@ -621,6 +621,61 @@ switch folders or quit. When you close a folder or leave the app, they should go
 Task Manager ever shows a `np.exe` still running after Jott has closed, that is a bug worth telling me about — on
 Windows it means your vault's index stays locked for the next np.
 
+## 2b-z. Since 0.0.22: indexing stops chasing its own tail, and a download you cannot miss
+
+You reported two things in the same message, and they turned out to be one bug wearing two hats. I have kept them
+apart below because the evidence for each is different.
+
+**What you told me:** after installing over an old copy, Jott never asked about the model download; there was no
+progress bar; and `jott.jsonl` grew continuously even after every file looked embedded.
+
+**What your log said:** 6,885 `scan` lines in 142 seconds — about 48 a second, for over two minutes. That is Jott
+and note-processor chasing each other. np renames a temporary catalogue (`INDEX.md.tmp`) into place on every scan;
+my filter from 0.0.21 only recognised names ending `.md`, so a vanishing temporary read as "a note was deleted
+outside Jott", which asked for another scan, which vanished another temporary. The file you watched growing was the
+sound of that loop.
+
+**And why nothing appeared on screen:** every one of those scans also sent an event to the window. When the queue of
+events overflowed, the bridge between core and the webview treated that as "finished" and stopped delivering — so
+your 295 MB download ran in a window that had gone deaf. That is not np's doing and it is not yours either.
+
+### What to try
+
+1. **The loop should be gone.** Open a folder with a few dozen notes, click **Index now**, and ten seconds apart run:
+
+   ```powershell
+   (Get-Item "$env:APPDATA\jott\logs\jott.jsonl").Length
+   ```
+
+   The number should creep up while work is happening and then stop. If it climbs by hundreds of thousands of bytes
+   every second with nothing left to index, send me the file — that means the loop found another door.
+
+2. **The download strip.** In Settings choose **Allow the download** (or click the button on the consent card).
+   Within about two seconds a strip should appear across the top of the note pane, in bold:
+
+   > **downloading embeddinggemma-2 · 137 of 295 MiB** [████████░░░░]
+
+   It should keep moving until the model is on disk, then disappear. The numbers are np's own byte counts — no
+   seconds-remaining figure appears because nobody can measure one honestly.
+
+3. **Close Jott in the middle of a download and open it again.** You may see the strip for two or three seconds and
+   then watch it vanish. That is deliberate: np keeps a marker file while fetching, and a marker left behind by a
+   killed process says "bytes were counted", not "bytes are moving". The window only shows the strip while the count
+   is actually advancing, because a bar that never clears teaches you to ignore the one light that means *wait*.
+
+4. **Search after a delete still works** (that was 0.0.21 — §2b-y). Deleting and renaming no longer set the scan loop
+   off either, so if a ghost comes back it is more likely to be a stale index than a storm.
+
+### If the strip never appears but embedding clearly works
+
+Send the log (**Ctrl+Shift+D** → **Copy all**), and say roughly what time you clicked Allow. The lines that matter:
+
+| Line | What it tells me |
+|---|---|
+| `"event":"rescan"` with a `rel` | the watcher asked for a walk, and which path made it ask |
+| `"event":"events-lagged"` | the window fell behind; 0.0.21 would have gone deaf here, 0.0.22 carries on |
+| `"method":"models.list"` rows | whether np was asked about the marker at all |
+
 ## 4. The question only Windows can answer: write-lock contention
 
 np takes a lock on the workspace while it indexes, and on Windows that lock is a file others cannot open.

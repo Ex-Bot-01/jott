@@ -1169,6 +1169,39 @@ async fn five_files_deleted_in_a_row_cost_one_scan() {
 }
 
 #[tokio::test]
+async fn a_walk_that_found_nothing_is_not_announced_as_a_change() {
+    let _turn = SERIAL.lock().await;
+    // np's own words for "nothing moved": `unchanged`, every changed counter zero. Announcing that as `Indexed`
+    // costs the window a tree re-list for no reason, and a watcher that keeps noticing its own temporaries turns
+    // it into thousands of rows — which is what starved the status line during a tester's model download
+    // (`ipc.rs`, `bridge_stays`: 6,885 announcements in 142 seconds).
+    // Built from np's real captured scan answer with the changed-counters zeroed, because `skipped` and
+    // `unindexable` have shapes of their own that a hand-written reply gets wrong.
+    let mut quiet = fixture_result(2);
+    for key in ["added", "modified", "moved", "removed"] {
+        quiet[key] = json!(0);
+    }
+    quiet["unchanged"] = json!(3);
+    let h = Harness::new(json!({"replies": {"scan": quiet}})).await;
+    let queue = h.queue();
+    let mut rx = queue.events();
+
+    queue.paths_changed();
+    let events = collect(&mut rx, Duration::from_millis(900)).await;
+
+    assert!(
+        h.calls().iter().any(|m| m.as_str() == "scan"),
+        "the walk still happened: {:?}",
+        h.calls()
+    );
+    // Progress lines are legitimate traffic (`Working`) — it is the tree-refresh announcement that costs a re-list.
+    assert!(
+        !events.iter().any(|e| matches!(e, IngestEvent::Indexed(_))),
+        "a walk that changed nothing must not be announced as a change: {events:?}"
+    );
+}
+
+#[tokio::test]
 async fn a_rescan_that_finds_np_busy_is_asked_again() {
     let _turn = SERIAL.lock().await;
     // np holds a write lock while it indexes for another client. A rescan that is refused must not be

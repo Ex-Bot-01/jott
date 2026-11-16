@@ -21,7 +21,7 @@ use crate::vault::files::{self, FileError};
 use crate::vault::stamps::{StampState, Stamps};
 use crate::vault::store::Consent;
 use crate::vault::walk::{self, EntryKind, TreeEntry};
-use crate::vault::watch::{SelfWrites, VaultWatch};
+use crate::vault::watch::{self as watch, SelfWrites, VaultWatch};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -663,6 +663,11 @@ impl VaultSession {
         self.queue.events()
     }
 
+    /// The shortest gap between two rescans this pump may ask for. Two seconds is longer than any scan in the
+    /// tester's log (8–39 ms each) and shorter than a person can delete two notes, so it stops a loop without
+    /// hiding a real edit. Deletes and renames made inside Jott do not pass through here.
+    const RESCAN_FLOOR: std::time::Duration = std::time::Duration::from_secs(2);
+
     fn start_watching(&self) {
         // No watcher backend is a degraded session, not a failed one: the tree stays as walked and the next save
         // still ingests. The status line says nothing about it, because "no live watch" is not something a user can
@@ -679,10 +684,14 @@ impl VaultSession {
         let stop = self.stop.clone();
         let vault = self.vault.clone();
         let queue = self.queue.clone();
+        let journal = self.journal.clone();
         // `next_change` waits on an OS channel with a deadline, so it belongs on a blocking thread: an
         // async task that slept a second at a time would hold a worker hostage. One second is also the
         // longest the pump can be told to stop — a task aborted mid-wait loses that one event, which the
         // next walk reports anyway.
+        // When this pump last asked for a walk, or `None` if it never has. A Cell, not a Mutex: one blocking
+        // thread owns it, and a lost update would at worst allow one extra walk two seconds early.
+        let last_rescan: std::cell::Cell<Option<std::time::Instant>> = std::cell::Cell::new(None);
         let handle = tokio::task::spawn_blocking(move || {
             let mut watch = watch;
             loop {
@@ -697,7 +706,27 @@ impl VaultSession {
                     // the tree re-walks when the window re-lists, but np's index does not, and its own rule
                     // is to mark a gone path stale rather than retire it. Checked rather than assumed — the
                     // event says "this path changed", only the disk says whether it is still there.
-                    if !vault.join(&rel).exists() {
+                    //
+                    // Two conditions were missing, and their absence was a runaway. note-processor renames
+                    // `INDEX.md.tmp` into place on every scan (`scan.rs:106`), so inside a vault that is being
+                    // indexed *some* path is always vanishing; reading that as a deleted note asks for a scan,
+                    // which vanishes another temporary. A tester's log recorded 6,885 scans in 142 seconds —
+                    // about 48 a second — with `jott.jsonl` growing the whole time. So now:
+                    //   · the path has to be one np could have indexed (`could_be_indexed`: a `.md` that is not
+                    //     one of np's catalogues or their temporaries), and
+                    //   · rescans asked for *this* way are floored two seconds apart, so any future feedback path
+                    //     degrades to slow instead of to runaway.
+                    // A delete or rename inside Jott is not rate limited — that is a person acting, once per keypress.
+                    if !vault.join(&rel).exists()
+                        && watch::could_be_indexed(&rel)
+                        && last_rescan.get().is_none_or(|at| at.elapsed() >= Self::RESCAN_FLOOR)
+                    {
+                        last_rescan.set(Some(std::time::Instant::now()));
+                        // Which path, and why: "who asked for this scan?" was the one question this bug's own log
+                        // could not answer. A file name is a fact about the vault; no note contents are involved.
+                        let _ = guarded(&journal)
+                            .clone()
+                            .record_local(&LocalRecord::new("rescan").with_rel(&rel).with_detail("gone from disk"));
                         queue.paths_changed();
                     }
                     let _ = sink.send(rel);
@@ -968,6 +997,8 @@ impl VaultSession {
         if unreadable {
             return EmbeddingsStatus {
                 provider: None,
+                // Nothing was asked of np, so nothing is known about a download. Not "no download": nobody spoke.
+                downloading: None,
                 model_id: None,
                 present: None,
                 bytes_total: None,
@@ -981,6 +1012,7 @@ impl VaultSession {
         if !provider.as_deref().is_some_and(|named| !named.eq_ignore_ascii_case("none")) {
             return EmbeddingsStatus {
                 provider,
+                downloading: None,
                 model_id: None,
                 present: None,
                 bytes_total: None,
@@ -1007,6 +1039,7 @@ impl VaultSession {
             // and the two halves that need np stay `None`.
             return EmbeddingsStatus {
                 provider,
+                downloading: None,
                 model_id: configured_model,
                 present: None,
                 bytes_total: None,
@@ -1030,7 +1063,22 @@ impl VaultSession {
         // Deliberately no `or_else(only_price)`: once a model is named, "the table's one entry" can only be another
         // model's price, and 309855456 bytes attached to the wrong file is a number Jott made up.
         let bytes_total = model_id.as_deref().and_then(|id| listing.price_of(id));
-        EmbeddingsStatus { provider, model_id, present, bytes_total, config_unreadable: false, models_dir_error }
+        // np's own marker, chosen for steadiness rather than recency: the same download keeps the same words
+        // between polls instead of naming whichever member was written last.
+        let downloading = listing.download().map(|f| Downloading {
+            model_id: f.id,
+            bytes_done: f.bytes_done,
+            bytes_total: f.bytes_total,
+        });
+        EmbeddingsStatus {
+            provider,
+            downloading,
+            model_id,
+            present,
+            bytes_total,
+            config_unreadable: false,
+            models_dir_error,
+        }
     }
 
     /// The consent prompt's two buttons, taken to np over the pipe.
@@ -1135,6 +1183,12 @@ impl VaultSession {
     ///
     /// Both from one call so the two can never disagree about whether a save happened, and neither can fail the
     /// operation it describes: the log's own rule is that a diagnostic must not stop a save (§19).
+    /// One line in the journal for a window that fell behind, so "the status line froze" has an answer in the file
+    /// somebody sends me instead of only in the code.
+    pub fn note_events_lagged(&self, missed: u64) {
+        self.local(LocalRecord::new("events-lagged").with_detail(format!("window fell behind, {missed} rows dropped")));
+    }
+
     fn local(&self, record: LocalRecord) {
         self.local_record(record, None);
     }
@@ -1381,6 +1435,9 @@ pub struct ConsentHelp {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct EmbeddingsStatus {
+    /// A download np says is running for this folder: which model, how far, and the size when np announced one.
+    /// `None` means np's marker list was empty — nobody is fetching, or nobody answered.
+    pub downloading: Option<Downloading>,
     /// np's `embeddings.provider`, quoted as written — including `"none"`, which is an answer and not an absence.
     pub provider: Option<String>,
     /// The model this folder would embed with: np's configured one, else the single entry its `pinned` table names.
@@ -1440,3 +1497,26 @@ fn hold_np_fetching_until_asked(consent: Consent, np_config: Option<&std::path::
     }
     let _ = set_auto_fetch(path, false);
 }
+
+/// A window's event stream reported an error. Is the stream worth keeping?
+///
+/// `Lagged` means the webview was not reading fast enough and some rows were dropped — about one slow paint, not
+/// about a closed session. The bridge used to treat every error as the end, so a burst of events left a window
+/// that could never show progress again: when a runaway rescan emitted 6,885 rows in 142 seconds the stream died,
+/// and a 295 MB model download ran with nothing on screen to say so. The row nobody read is gone either way; the
+/// next one is worth delivering. `Closed` — the session dropped — is the only real end.
+pub fn bridge_stays(error: &tokio::sync::broadcast::error::RecvError) -> bool {
+    matches!(error, tokio::sync::broadcast::error::RecvError::Lagged(_))
+}
+
+/// One download in flight, as np's fetch marker described it. Bytes only — no speed, no finish time: an estimate
+/// of either would be Jott's arithmetic wearing np's authority, and a person watching a bar cares more about a
+/// true number than a smooth one.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Downloading {
+    pub model_id: String,
+    pub bytes_done: u64,
+    pub bytes_total: Option<u64>,
+}
+

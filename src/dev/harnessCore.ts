@@ -146,13 +146,39 @@ function diagnostics(): DiagnosticsSnapshot {
   }
 }
 
+/** Bytes for the harness's pretend fetch. Advanced a measured ~24 MiB per reading — np 0.5.1 sent a progress line
+    about every 1.1 s at roughly this rate on a fast link — so `?s=indexing` shows what the banner looks like while a
+    real download is running, without anybody downloading 295 MB to look at it. */
+let harnessFetchBytes = 0
+
 function modelStatus(): ModelStatus {
   if (scenario === 'np-missing') {
-    return { provider: null, modelId: null, present: null, bytesTotal: null, configUnreadable: false, modelsDirError: null }
+    return {
+      provider: null,
+      downloading: null,
+      modelId: null,
+      present: null,
+      bytesTotal: null,
+      configUnreadable: false,
+      modelsDirError: null,
+    }
+  }
+  if (scenario === 'indexing') {
+    harnessFetchBytes = Math.min(harnessFetchBytes + 25_165_824, 309_855_456)
+    return {
+      provider: 'local-model',
+      downloading: { modelId: 'embeddinggemma-2', bytesDone: harnessFetchBytes, bytesTotal: 309_855_456 },
+      modelId: 'embeddinggemma-2',
+      present: false,
+      bytesTotal: 309_855_456,
+      configUnreadable: false,
+      modelsDirError: null,
+    }
   }
   if (scenario === 'consent') {
     return {
       provider: 'none',
+      downloading: null,
       modelId: 'mxbai-embed-large',
       present: false,
       bytesTotal: 309_855_456,
@@ -162,6 +188,7 @@ function modelStatus(): ModelStatus {
   }
   return {
     provider: 'local-model',
+    downloading: null,
     modelId: 'mxbai-embed-large',
     present: true,
     bytesTotal: 309_855_456,

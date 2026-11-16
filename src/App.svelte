@@ -42,6 +42,7 @@
   import { formatsSentence, opensAsText, planNoteName } from './lib/noteName'
   import type { ConsentOutcome } from './lib/ipc'
   import type { ModelFacts } from './lib/modelStatus'
+  import { downloadSentence, initialWatch, readMarker, type WatchState } from './lib/downloadWatch'
   import { openUrl } from '@tauri-apps/plugin-opener'
   import { getCurrentWindow } from '@tauri-apps/api/window'
   import { isPermissionGranted, requestPermission, sendNotification } from '@tauri-apps/plugin-notification'
@@ -114,6 +115,11 @@
       "switched off". */
   let modelStatus = $state<ipc.ModelStatus | null>(null)
   let modelAskedFor: string | null = null
+  /** The download banner's two pieces of state. `downloadShown` is what is on screen *now*; `downloadWatch` is what
+      the last poll saw, so the next reading can be compared with it. Both live in `lib/downloadWatch.ts`'s rule
+      rather than in markup, because "is this marker live?" is a question with a testable answer. */
+  let downloadShown = $state<ipc.Downloading | null>(null)
+  let downloadWatch: WatchState = initialWatch
 
   /** The dot's facts: np's answers about the model, plus how many notes in *this* folder carry vectors. Both halves are
       needed — "the weights are on my disk" and "this folder can be searched by meaning" are different sentences, and
@@ -333,6 +339,19 @@
     const vault = listing?.vault ?? null
     if (!vault || modelAskedFor === vault) return
     modelAskedFor = vault
+    await readModel(vault)
+  }
+
+  /** Ask np about the model again, past the once-per-folder guard, and update the banner from what it says. While a
+      fetch marker exists this runs every 1.5 s: one local pipe round trip to the reader child — no new process, no
+      workspace walk — and it is what keeps the bar honest when a paint drops the progress events. */
+  async function pollModel() {
+    const vault = listing?.vault ?? null
+    if (!vault) return
+    await readModel(vault)
+  }
+
+  async function readModel(vault: string) {
     const answer = await call(ipc.embeddingsStatus)
     // The folder changed while np was answering — and `models.list` goes to the reader connection, which may have had to
     // start that child first, so "while" can be seconds. A late answer about the previous folder would otherwise land on
@@ -340,7 +359,21 @@
     // `modelAskedFor` already names the new folder nothing would re-ask until an event happened to come along.
     if (listing?.vault !== vault) return
     modelStatus = answer
+    const reading = readMarker(downloadWatch, answer?.downloading ?? null)
+    downloadWatch = reading.state
+    // Only ever np's own figures, from the reading that earned them: a banner about bytes that stopped moving would
+    // describe a download nobody is running (`lib/downloadWatch.ts` explains why a marker alone proves nothing).
+    downloadShown = reading.show ? (answer?.downloading ?? null) : null
   }
+
+  // Deliberately keyed on "is there a marker", not on the marker object: an object would re-create the timer on every
+  // poll and turn a steady 1.5 s rhythm into a race with itself.
+  $effect(() => {
+    const running = (modelStatus?.downloading ?? null) !== null
+    if (!running) return
+    const timer = setInterval(() => void pollModel(), 1500)
+    return () => clearInterval(timer)
+  })
 
   /** Once per opened vault: is there still a download to talk about? Asked here rather than assumed from the
       tree, because "not embedded" has two causes with opposite answers — the bytes are on disk and embedding
@@ -1308,6 +1341,26 @@
   {/if}
 
   <section class="middle">
+
+    {#if downloadShown}
+      <!-- The tester asked, twice, for something they could not overlook: a 295 MB download had run with no bar,
+           no words, nothing. So this is a strip across the whole note pane, in bold, with np's own byte counts —
+           not another word in the corner that competes with five other facts. -->
+      <div class="download" role="status" data-testid="download-banner">
+        <span class="words">{downloadSentence(downloadShown)}</span>
+        {#if downloadShown.bytesTotal !== null}
+          <progress
+            data-testid="download-bar"
+            value={downloadShown.bytesDone}
+            max={downloadShown.bytesTotal}
+          ></progress>
+        {:else}
+          <!-- np did not announce a size, so nothing pretends to know one: a bar at zero would be a measurement
+               nobody took. A moving stripe says "bytes are arriving" and no more. -->
+          <span class="stripe" role="progressbar" aria-label="downloading the model"></span>
+        {/if}
+      </div>
+    {/if}
     {#if dialog}
       <form
         class="ask"
@@ -1483,6 +1536,41 @@
 </main>
 
 <style>
+  /* A strip, not a whisper: full width of the note pane, its own border on both edges, and text big enough to read
+     while doing something else. `--surface` keeps it in the palette rather than inventing a second app colour. */
+  .download {
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+    padding: 0.65rem 1rem;
+    border-block: 1px solid var(--line-strong);
+    background: color-mix(in oklab, #b45309 14%, var(--surface));
+  }
+
+  .download .words {
+    font-weight: 650;
+    font-size: 0.95rem;
+    white-space: nowrap;
+  }
+
+  .download progress {
+    flex: 1 1 auto;
+    min-width: 6rem;
+    height: 0.7rem;
+  }
+
+  .download .stripe {
+    display: block;
+    width: 4.5rem;
+    height: 0.55rem;
+    border-radius: 99px;
+    background: repeating-linear-gradient(
+      115deg,
+      currentColor 0 0.4rem,
+      transparent 0.4rem 0.8rem
+    );
+    opacity: 0.65;
+  }
   .window {
     display: grid;
     /* The sidebar used to start at 14 rem. At that width `Index now` and `+ note` wrapped onto two lines, the
