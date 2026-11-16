@@ -575,6 +575,45 @@ contrast theme, that is new and it is my doing.
 Nothing about your files moved: same np 0.5.1 inside, same index, same search. If something *behavioural* looks
 different, that is a regression and worth a log file — `Ctrl+Shift+D` → Copy all.
 
+## 2b-y. Since 0.0.21: deleted notes stop turning up in searches, and the dots explain themselves
+
+**The one behaviour change.** Delete a note — inside Jott, or in Explorer — then search for a word that was only in
+it. It should be gone from the results within about a second of the delete. Before 0.0.21 Jott moved your file to the
+trash and never told note-processor, so the note kept answering searches until some unrelated save happened to walk
+the folder.
+
+Three things worth trying, because each takes a different path through the code:
+
+1. **Delete one note**, wait a second, search for its most unusual word → no hit. Then open the Recycle Bin and put
+   the file back: it should be findable again on the next save or after *Index now*.
+2. **Rename or move a note** into another folder, then search for a word inside it → exactly one result, under its new
+   name. Not two (the old path still answering) and not none. A move is not a deletion; nothing in Jott throws away
+   embeddings because you tidied a folder.
+3. **Delete five notes quickly**, then search. This should cost note-processor one walk of the folder, not five — so
+   on a big vault it should feel like the first case, not like waiting.
+
+If a deleted note still answers a search, press `Ctrl+Shift+D` and copy the log: what I need is whether a `scan`
+line appears after the `deleted` one. That single detail says whether Jott failed to ask or note-processor was asked
+and said nothing.
+
+**The dots beside your files now have colour, and a key under the tree explains them:** green filled = embedded,
+teal half-filled = indexed and waiting to be embedded, hollow grey = not in the index yet, amber `!` = note-processor
+refused it (hover for its reason). Two questions I can only ask you:
+
+- Are those four still tellable apart at your Windows text scaling — try 125% and 150%, and the tree with a long file
+  name so the dots are pushed to the edge of their column?
+- Does anything in the bottom-left corner overlap or get cut off when the status sentence is long? It now carries
+  your matching choice ("Words only", "Both", "Meanings only") as well as the model state, and they read as two
+  separate facts on purpose.
+
+**And a wording change that was reported as a bug:** the green dot used to say "meanings on", which made switching to
+*Words only* in Settings look like a toggle that had not taken effect. It never meant that — it reports whether the
+model is on your disk and whether this folder has notes with vectors. It now says "notes embedded", and the matching
+choice appears beside it, so both facts are visible at once.
+
+Nothing else about search changed. note-processor is still 0.5.1 inside; keyword ranking was already bm25 (the TF-IDF
+family with length normalisation), and its figure now sits in a result's tooltip rather than on the row.
+
 ## 3. One thing worth watching: np processes
 
 Jott starts np when it opens and keeps one running; a second starts the first time you search and stays until you
