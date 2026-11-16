@@ -37,7 +37,7 @@
   import { consentSentence, modelReadySentence, statusFor, type Status } from './lib/statusLine'
   import { cardClipboard, cardSentences, NP_ISSUE } from './lib/consentHelp'
   import { createBlocked } from './lib/createHere'
-  import { formatsSentence, planNoteName } from './lib/noteName'
+  import { formatsSentence, opensAsText, planNoteName } from './lib/noteName'
   import type { ConsentOutcome } from './lib/ipc'
   import { openUrl } from '@tauri-apps/plugin-opener'
   import { getCurrentWindow } from '@tauri-apps/api/window'
@@ -83,7 +83,17 @@
   let awaitingEmbed = $derived(listing ? notesAwaitingEmbedding(listing.nodes) : 0)
 /** Notes against everything else in this folder. note-processor parses only `.md`, so a vault of `notes.txt` and
     `scan.pdf` is a folder whose files Jott can list but cannot search — said once, from the rows already walked. */
-  let destination = $derived(toolbarTarget(selectedFolder))
+  // A destination is a promise about where the next file goes, so it is only true while the walk still shows the folder
+  // it names. Trash or rename that folder and core would happily re-create it on the next **+ note** — it makes parents
+  // — so the tooltip would be promising to undo what was just done.
+  let destination = $derived(
+    toolbarTarget(
+      selectedFolder !== null &&
+        listing?.nodes.some((n) => n.kind === 'Folder' && (n.rel === selectedFolder || `${n.rel}/` === selectedFolder))
+          ? selectedFolder
+          : null,
+    ),
+  )
   let formatsNotice = $derived(
     listing
       ? formatsSentence({
@@ -218,6 +228,9 @@
       consentOutcome = null
       cardClipFailed = false
       prefixOnce = false
+      // The offer named one folder's model and one folder's waiting count. Carried across, the banner beside a second
+      // folder quotes a `models.list` that was asked about the first.
+      embeddingsOffer = null
       // The search answer on screen is note-processor's report about the folder it was asked in — `vectors`,
       // `indexed`, which words it widened. Carried across, the settings panel warns "this folder has no vectors yet"
       // about a folder Jott has never searched, and the results pane lists files that are not in this vault. The open
@@ -364,6 +377,10 @@
     if (!content) return
     note = content
     selected = rel
+    // One place decides this. The tree row click was a second writer and could not cover the paths that do not go
+    // through it — opening a hit from the search results kept a folder as the destination while a note from anywhere
+    // was on screen, which is exactly the tooltip-versus-button disagreement.
+    selectedFolder = null
     bufferVault = listing?.vault ?? null
     // The announcement did its job once the person moved on to working again (§4: say it, then get out of the way).
     modelReady = null
@@ -509,6 +526,10 @@
 
   /** One place turns an intention into a dialog or a command, whether it came from the menu, a button or a key. */
   function runAction(action: TreeAction, on?: string | null) {
+    // Whatever was refused in the dialog before this one stays out of it. A sentence from an older intention, printed
+    // above a field nobody has typed into yet, is a stale report beside a fresh question — the same class of carry-over
+    // this window already prevents three times over in `adopt`.
+    dialogSaid = null
     // Which row the intention is about: the one the menu was opened on, else the selected one. Read before `menu`
     // is cleared, or every action would silently fall back to the root of the vault.
     const row = rowFor(on === undefined ? menu?.rel ?? null : on)
@@ -764,6 +785,10 @@
   /** The toolbar's two create buttons. `runAction` stays the row-menu path, which takes its target from the row the menu
    *  was opened on; this one takes it from the folder that is selected, because there is no row to ask. */
   function createInToolbar(kind: 'new' | 'folder') {
+    // The row menu's path clears the menu inside `runAction`; this one is reached by button and by shortcut alike, and
+    // a menu left open would float over the dialog it just opened.
+    menu = null
+    dialogSaid = null
     dialog = { kind, value: '', folder: destination.folder, blocked: createBlocked(listing !== null) }
   }
 
@@ -782,15 +807,23 @@
     dialog = null
     if (plan.said !== null) notice = plan.said
     await refresh()
-    await openNote(rel)
+    // An empty `photo.png` opened in an editable buffer is an invitation to write prose into a file Jott's own walk
+    // labels Image and note-processor never parses. The notice above already says what was made; there is nothing to
+    // edit here.
+    if (opensAsText(rel)) await openNote(rel)
   }
 
   async function renameEntry(to: string) {
     const from = selected
-    dialog = null
-    if (!from) return
+    if (!from) {
+      dialog = null
+      return
+    }
     const outcome = await call(() => ipc.renameEntry(from, to))
+    // A refused rename — the name is taken, the target exists — keeps the dialog and the typed name. Closing it would
+    // say "done" about something that did not happen, and the person would start over from nothing.
     if (!outcome) return
+    dialog = null
     notice = outcome.incomingLinks.length
       ? `renamed · ${outcome.incomingLinks.length} note${outcome.incomingLinks.length === 1 ? '' : 's'} still refer${outcome.incomingLinks.length === 1 ? 's' : ''} to the old name`
       : 'renamed'
@@ -865,9 +898,9 @@
       const reopened = await ipc.openVault(last).catch(() => null)
       if (reopened) adopt(reopened)
     } else {
-      // Nothing to come back to. Asking `list_vault` anyway used to be how a first run began: core answers
-      // "no vault is open" — true, and not an error worth showing — and the sentence went into state that the empty
-      // layout had nowhere to draw. The empty state asks for a folder; that is the message.
+      // Nothing to come back to, so nothing to ask about. Asking `list_vault` anyway used to be how a first run began:
+      // core answers "no vault is open" — true, and not an error worth showing at all — and that sentence appeared in
+      // the sidebar before anyone had done anything. The empty state asks for a folder; that is the message.
       listing = null
     }
 
@@ -964,9 +997,10 @@
     </header>
 
     {#if problem}
-      <!-- Refusals go where the eyes already are. This one used to live inside a branch that only renders when a
-           folder is open, so every sentence produced before a folder was chosen — including "no vault is open", which
-           a first run produced at startup — was written to state and never drawn. -->
+      <!-- Refusals go where the eyes already are: above the tools, beside whatever was just pressed. At v0.0.16 this
+           sentence existed and did render — below the tree in the sidebar, under whatever the walk had warned about —
+           which on a first run meant beneath an empty list, and on every run meant somewhere other than the dialog
+           that had just closed itself. -->
       <p class="warn" role="alert" data-testid="global-problem">{problem}</p>
     {/if}
 

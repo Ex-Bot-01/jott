@@ -15,23 +15,33 @@ symptom, and the symptom is not negotiable.
 **Symptom (as reported).** First run, no workspace. Click **+ folder**, type a name, press Enter: no message, no
 folder, no change.
 
-**What the code does.** `runAction('new-folder', null)` opens the dialog regardless of whether a vault is open; on
-submit `createFolder('ideas')` calls `create_folder`, and core answers `IpcError::no_vault()` — `"no vault is open"`.
-`call()` puts that sentence in `problem`, which renders here:
+**What the code does — and an earlier version of this section got wrong.** `runAction('new-folder', null)` opens the
+dialog whether or not a vault is open; on submit `createFolder('ideas')` calls `create_folder`, and core answers
+`IpcError::no_vault()` — `"no vault is open"`.
 
-```svelte
-{:else if listing && awaitingIndex > 0 && !selected}   …
-{:else if listing && awaitingEmbed > 0 && !consent && embeddingsOffer}   …
-  {#if problem}<p class="warn">{problem}</p>{/if}
-```
+This plan first claimed that sentence was written to state and *never drawn*, quoting an `if/else` chain whose arms all
+need a listing. **That was wrong**, and the whole-branch review caught it: at `v0.0.16` the `{#if problem}` block sat in
+`<div class="warnings">` — after the chain's closing `{/if}`, inside `<aside>` (`git show v0.0.16:src/App.svelte`, lines
+1085-1097). It rendered unconditionally, below the tree.
 
-That block is the *last* branch of a chain whose earlier branches need `listing`. With no folder open, none of them is
-taken — so **the sentence is written to state and never drawn.** The window swallows its own refusal.
+What actually made the moment feel empty is worth writing down properly, because it is a different lesson:
+
+- `createFolder` set `dialog = null` **before** checking whether the command worked, so the dialog the person was
+  looking at vanished on failure;
+- the answer appeared as small grey text at the bottom of the left sidebar — under an empty tree, on a first run, in a
+  place nobody had looked yet;
+- and for a *successful* create, half a second later, nothing appeared either: `Ok(())` crosses the wire as `null`,
+  which is this window's marker for failure, so the re-list was skipped (item B).
+
+A refusal that is drawn somewhere other than where the person is looking, in a dialog that closed itself on the way
+there, is experienced as no refusal. That is the bug; the phantom branch was my own misreading of the layout, and it is
+kept here rather than quietly deleted because a wrong root cause in a plan sends the next person hunting for a branch
+that never existed.
 
 **Fix.** Two halves, both small:
 
-1. `problem` gets rendered where it cannot be missed whether or not a folder is open (the empty-state branch of the
-   right-hand pane), and the dialog stays open with what was typed still in it — same rule as the move dialog: closing
+1. `problem` gets one always-visible home above the tools instead of the bottom of the sidebar, and the dialog stays
+   open with what was typed still in it — same rule as the move dialog: closing
    on a failure says "done" about something that was not done.
 2. The create buttons stop offering what cannot happen, and say what to do instead. Ruling needed: see **R1**.
 
@@ -160,11 +170,19 @@ selected it stays at the root.
   files it cannot edit; alternative is refusing non-text names in *new note* and pointing at the file manager.
   My recommendation: keep it and say what was made — refusing is a smaller world for the person who wants `todo.txt`.
 
+## Deliberately not taken here
+
+- **`void ipc.ingestAll()` / `void ipc.mirrorBuffer(...)` bypass `call()`** (`App.svelte`, "Index now" and the mirror
+  tick), so a refusal there reaches no state at all and is drawn nowhere. Not caused by this work, and "Index now" is a
+  first-run button, so it deserves its own change rather than being folded into this one.
+- **`../plan` is refused by core** in filesystem words, while the move planner refuses the same shape locally in friendlier
+  ones. `noteName` now refuses climbing names too; the general tidy-up — one planner for both dialogs — is not done.
+
 ## What shipped, and where it differs from the plan above
 
 | item | commit | difference |
 | --- | --- | --- |
-| A first-run buttons | `4eee5d6` | Also found: `Ok(())` crosses the wire as `null`, which is this window's failure marker — so every *successful* `create_folder` skipped its re-list and every successful `move_entry` left its dialog open. Half of "nothing happens" was that, not presentation. The stubs were fictions: `list_vault` invented an empty listing where core refuses, `create_note` was never stubbed at all, and a folder reached by *opening* it never asked for the embeddings offer. |
+| A first-run buttons | `4eee5d6`, remediation | Also found: `Ok(())` crosses the wire as `null`, which is this window's failure marker — so every *successful* `create_folder` skipped its re-list and every successful `move_entry` left its dialog open. Half of "nothing happens" was that, not presentation. The stubs were fictions: `list_vault` invented an empty listing where core refuses, `create_note` was never stubbed at all, and a folder reached by *opening* it never asked for the embeddings offer. **The root cause first written here — "the sentence was never drawn" — was wrong**; see §A, corrected after review. Remediation also fixed a refusal from a previous dialog following the next one around (`dialogSaid`), a destination that survived trashing or renaming the folder it named, `+ note` handing an editable buffer to a file the tree calls an image, and a rename that lost its typed name when refused. |
 | B a folder looks like a folder | `4eee5d6` (cause) + this item's commit (appearance) | The twisty now exists at every age (`▸` / `▾` / `·`) and an empty folder says `(empty)`. |
 | C the name a note gets | `14af15d` | Last dot decides, so `hello.tar.gz` stays itself rather than becoming `hello.tar.md`; `.keep` is a name someone means. Added: the formats line under the tree, and [note-processor#12](https://github.com/Ex-Bot-01/note-processor/issues/12) upstream for the rule itself. |
 | D pick a folder to create inside | this item's commit | One click selects *and* toggles, as a Windows file tree has always meant; opening a note drops the destination so the tooltip cannot disagree with the button. `Ctrl+N` / `Ctrl+Shift+N` go through the same path. |

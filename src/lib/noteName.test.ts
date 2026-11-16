@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatsSentence, planNoteName } from './noteName'
+import { formatsSentence, opensAsText, planNoteName } from './noteName'
 
 const named = (name: string, folder = '') => planNoteName(name, folder)
 
@@ -54,6 +54,34 @@ describe('the name a new note actually gets', () => {
     }
   })
 
+  it('warns that a dotted name will never appear in the tree either', () => {
+    // Both walks hide names beginning with a dot — Jott's drops any segment starting with one, np excludes them at
+    // every depth. The create succeeds, so the sentence has to say the file will be invisible here as well as
+    // unsearchable, rather than "Created .keep." about something nobody will ever see again.
+    const result = named('.keep')
+    expect(result.rel).toBe('.keep')
+    expect((result.said ?? '').toLowerCase()).toContain('dot')
+  })
+
+  it('refuses `.md` on its own', () => {
+    // note-processor would read a file called `.md` as a note (its rule is a folded `ends_with(".md")`), but Jott's
+    // walk gives a leading-dot name no extension and hides the segment — so it would be an invisible note.
+    expect(named('.md').rel).toBeNull()
+  })
+
+  it('refuses a name that climbs out of the folder', () => {
+    // Core refuses `../plan` and the window now draws that sentence, but the sibling planner for moves says the same
+    // thing locally in friendlier words. Two ways to create should not mean two qualities of message.
+    const escaped = named('../plan')
+    expect(escaped.rel).toBeNull()
+    expect((escaped.said ?? '').toLowerCase()).toContain('inside')
+  })
+
+  it('still allows a nested path typed from the dialog', () => {
+    // The dialog's own label says "in a path from the vault root", so `work/2026/plan` is an intention, not an escape.
+    expect(named('work/2026/plan')).toEqual({ rel: 'work/2026/plan.md', said: null })
+  })
+
   it('does not refuse a name that merely begins with a dot', () => {
     // `.gitignore` is a real file someone means. It is not markdown, so the sentence about what np will do still comes.
     const result = named('.keep')
@@ -70,6 +98,17 @@ describe('saying which files become notes', () => {
     expect(sentence).toContain('.md')
   })
 
+  it('is grammatical in the one case the sentence exists for', () => {
+    // A folder of `.txt` files plus a single `.md` note is the reported shape, and the plural-only wording drew
+    // "1 file is notes note-processor can search" — a sentence that reads as a bug in the product someone is
+    // trusting to explain their data. Pinned exactly, because a loose `toContain('2')` also misses whether folder
+    // rows and note-processor's own catalogue were counted as files.
+    expect(formatsSentence({ notes: 1, others: 2 })).toBe(
+      'Of 3 files here, 1 file is a note note-processor can search; 2 are kept as attachments — tracked for links, never searched. note-processor reads .md files as notes.',
+    )
+    expect(formatsSentence({ notes: 4, others: 1 })).toContain('4 files are notes note-processor can search')
+  })
+
   it('says nothing when there is nothing to explain', () => {
     expect(formatsSentence({ notes: 4, others: 0 })).toBeNull()
   })
@@ -81,5 +120,27 @@ describe('saying which files become notes', () => {
     expect(sentence.toLowerCase()).not.toContain('error')
     expect(sentence.toLowerCase()).not.toContain('failed')
     expect(sentence).toContain('.md')
+  })
+})
+
+
+describe('what the window does with what it made', () => {
+  it('opens a note and a plain-text file in the editor', () => {
+    expect(opensAsText('trip plan.md')).toBe(true)
+    expect(opensAsText('todo.txt')).toBe(true)
+    expect(opensAsText('notes.json')).toBe(true)
+  })
+
+  it('does not hand an editable buffer to a file its own tree calls an image', () => {
+    // `+ note` keeps an extension typed on purpose, then used to open whatever came back. An empty `photo.png` opened
+    // as prose-in-waiting: Ctrl+S would write sentences into a file Jott's walk labels Image and never parses.
+    for (const name of ['photo.png', 'diagram.JPG', 'scan.pdf', 'clip.mp4', 'archive.zip']) {
+      expect(opensAsText(name), name).toBe(false)
+    }
+  })
+
+  it('opens a dotted name it warned about, because that is what was asked for', () => {
+    // `.keep` is text; the sentence above already says the tree will not show it.
+    expect(opensAsText('.keep')).toBe(true)
   })
 })

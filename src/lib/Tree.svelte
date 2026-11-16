@@ -68,6 +68,7 @@
         class:folder={row.kind === 'Folder'}
         style:padding-inline-start={`${0.4 + row.depth * 0.85}rem`}
         title={row.title || row.rel}
+        aria-expanded={row.kind === 'Folder' ? row.hasChildren && open.has(row.rel) : undefined}
         onclick={() => click(row)}
         oncontextmenu={(event) => {
           event.stopPropagation()

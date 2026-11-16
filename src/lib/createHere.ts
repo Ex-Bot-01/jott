@@ -2,9 +2,14 @@
  * Whether there is somewhere to put a new note or folder, and what to say when there is not.
  *
  * Reported from Windows on a first run: click **+ folder**, type a name, press Enter — nothing. No message, no folder.
- * The window did produce a sentence ("no vault is open"), but it drew that sentence in a branch of the layout which
- * only renders when a folder is already open, so the refusal existed and nobody could read it. This module exists so
- * the check happens before a command is sent rather than being reported afterwards into the void.
+ *
+ * What actually happened, checked against `v0.0.16` rather than remembered: the refusal *was* drawn — in the sidebar,
+ * below the tree — and the dialog closed on the way there whether or not the command worked. So the person pressed
+ * Enter, the thing they were looking at vanished, and a small grey sentence sat somewhere else. "Nothing happened" was
+ * an accurate description of where their eyes were.
+ *
+ * This module exists so the answer arrives before a command is sent, in the dialog that stays open, beside the button
+ * that fixes it — rather than as a report filed somewhere else after the fact.
  */
 
 /** The words the dialog shows. It names what is missing *and* the way out, because "no" without a next step is what

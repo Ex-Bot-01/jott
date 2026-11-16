@@ -18,6 +18,9 @@ const MARKDOWN = 'md'
 const MARKDOWN_SPELLINGS = ['markdown', 'mkd', 'mdown']
 /** An extension-shaped suffix: a letter first, then letters and digits, like every file type anyone has named. */
 const EXTENSION_SHAPE = /^[A-Za-z][A-Za-z0-9]{0,7}$/
+/** What Jott's own walk calls an image (`walk.rs`), plus the other binaries people keep in a notes folder. None of them
+ *  is something to type prose into, so none of them gets an editor just because `+ note` made room for the name. */
+const NOT_TEXT = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'pdf', 'mp3', 'mp4', 'mov', 'zip', 'exe', 'dll']
 
 export interface Named {
   /** The path to create, `null` when the name cannot become a file. */
@@ -40,8 +43,28 @@ function suffixOf(name: string): string | null {
   return EXTENSION_SHAPE.test(suffix) ? suffix.toLowerCase() : null
 }
 
+/** Whether the window should open what it made. Images and other binaries keep their names — `+ note` does not refuse
+ *  them — but opening one in CodeMirror invites someone to write a paragraph into a PNG and save it. */
+export function opensAsText(rel: string): boolean {
+  const name = rel.slice(rel.lastIndexOf('/') + 1)
+  const dot = name.lastIndexOf('.')
+  if (dot < 0) return true // the names this module just gave `.md`
+  const suffix = name.slice(dot + 1).toLowerCase()
+  return !NOT_TEXT.includes(suffix)
+}
+
 export function planNoteName(typed: string, folder = ''): Named {
   const name = typed.trim()
+  if (/(^|[\\/])\.\.([\\/]|$)/.test(name)) {
+    // Core refuses this too, in filesystem words, and the move planner already says it locally in friendlier ones.
+    // Two ways to make a thing should not mean two qualities of message.
+    return { rel: null, said: 'A note has to be made inside this folder — the name cannot climb out of it.' }
+  }
+  if (name === '.md') {
+    // note-processor would read a file called `.md` as a note (its rule is a folded `ends_with(".md")`), but Jott's walk
+    // sees no extension in a leading-dot name and hides the segment anyway. An invisible note is worse than a refusal.
+    return { rel: null, said: 'A note needs a name before the .md — something like `trip plan`.' }
+  }
   // `.` and `..` are the two names a filesystem already owes you, and a bare dot is not a name at all. The check sits
   // before the extension rule so `.hidden` — a file someone means — stays allowed below.
   if (name === '' || name === '.' || name === '..') {
@@ -67,7 +90,13 @@ export function planNoteName(typed: string, folder = ''): Named {
 
   // Kept exactly as typed. Someone who writes `todo.txt` gets `todo.txt`; the window's job is to say what happens to it
   // next, not to refuse a format because this program cannot edit it nicely.
-  return { rel: target, said: `Created ${target}. note-processor reads only .md files as notes, so this one will not be searchable.` }
+  const hidden = name.startsWith('.')
+    ? ' Jott does not list names that begin with a dot, so it will not appear in the tree either.'
+    : ''
+  return {
+    rel: target,
+    said: `Created ${target}. note-processor reads only .md files as notes, so this one will not be searchable.${hidden}`,
+  }
 }
 
 /**
@@ -80,7 +109,11 @@ export function planNoteName(typed: string, folder = ''): Named {
 export function formatsSentence(counts: { notes: number; others: number }): string | null {
   if (counts.others === 0) return null
   const files = counts.notes + counts.others
-  const read = `${counts.notes} ${counts.notes === 1 ? 'file is' : 'files are'} notes note-processor can search`
+  // Both spellings, because the case this sentence exists for is one `.md` note among forty `.txt` files.
+  const read =
+    counts.notes === 1
+      ? '1 file is a note note-processor can search'
+      : `${counts.notes} files are notes note-processor can search`
   const rest = `${counts.others} ${counts.others === 1 ? 'is' : 'are'} kept as attachments — tracked for links, never searched`
   return `Of ${files} files here, ${read}; ${rest}. note-processor reads .md files as notes.`
 }

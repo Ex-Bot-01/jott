@@ -130,7 +130,6 @@ describe('the catalogue row still looks like something you do not edit', () => {
     // A folder has to look like a folder before it has anything in it. The twisty used to appear only once a folder had
     // children, so a newly made one was bold text with no mark — the tester's "not good differentiable from files", and
     // half of "+ folder → nothing happens". jsdom can read the markup; these rules are the other half.
-    expect(treeSvelte).toContain("row.kind === 'Folder'")
     expect(treeSvelte, 'an empty folder still gets a place in the twisty column').toMatch(/\.twisty\.faint/)
     expect(treeSvelte, 'and it says so in words').toMatch(/\.empty-hint/)
   })
