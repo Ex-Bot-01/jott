@@ -2218,4 +2218,71 @@ describe('the window mounts', () => {
     expect(errors).toEqual([])
   })
 
+  it('makes the note inside the folder that was clicked', async () => {
+    // "I cannot select the folder in the left sidebar if I want to create a new file inside the folder." Clicking a
+    // folder only ever expanded it, and both toolbar buttons meant "the vault root", whatever was on screen.
+    scenario.current = 'folders'
+    const { errors } = await start()
+
+    let notes!: HTMLElement
+    await vi.waitFor(() => {
+      notes = [...document.querySelectorAll<HTMLElement>('.tree button[data-kind="Folder"]')].find((r) =>
+        r.textContent?.includes('notes'),
+      ) as HTMLElement
+      expect(notes, 'the fixture has a folder').not.toBeUndefined()
+    }, { timeout: 2000 })
+
+    const noteButton = () => document.querySelector('[data-testid="toolbar-new-note"]') as HTMLButtonElement
+    expect(noteButton().title, 'before anything is picked, the root is the destination').toContain('the vault root')
+
+    notes.click()
+    await vi.waitFor(() =>
+      expect((document.querySelector('[data-testid="toolbar-new-note"]') as HTMLButtonElement).title).toContain('in notes'),
+    )
+
+    noteButton().click()
+    const field = (await vi.waitFor(() => {
+      const el = document.querySelector('#rel') as HTMLInputElement | null
+      expect(el, 'the dialog says where the note will go').not.toBeNull()
+      return el!
+    }, { timeout: 2000 })) as HTMLInputElement
+    expect(document.querySelector('label[for="rel"]')?.textContent).toContain('notes/')
+    field.value = 'standup'
+    field.dispatchEvent(new Event('input', { bubbles: true }))
+    ;(document.querySelector('.ask button[type="submit"]') as HTMLButtonElement).click()
+
+    await vi.waitFor(() => expect(moveCalls.current.map((c) => c.cmd)).toContain('create_note'), { timeout: 2000 })
+    expect(moveCalls.current.find((c) => c.cmd === 'create_note')).toMatchObject({ rel: 'notes/standup.md' })
+    expect(errors).toEqual([])
+  })
+
+  it('stops treating a folder as the destination when a note is opened', async () => {
+    scenario.current = 'folders'
+    const { errors } = await start()
+
+    let notes!: HTMLElement
+    await vi.waitFor(() => {
+      notes = [...document.querySelectorAll<HTMLElement>('.tree button[data-kind="Folder"]')].find((r) =>
+        r.textContent?.includes('notes'),
+      ) as HTMLElement
+      expect(notes, 'the fixture has a folder').not.toBeUndefined()
+    }, { timeout: 2000 })
+    notes.click()
+    await vi.waitFor(() =>
+      expect((document.querySelector('[data-testid="toolbar-new-note"]') as HTMLButtonElement).title).toContain('in notes'),
+    )
+
+    const aNote = (await vi.waitFor(() => {
+      const el = document.querySelector('.tree button[data-kind="Note"]')
+      expect(el, 'the folder opened and shows its note').not.toBeNull()
+      return el!
+    }, { timeout: 2000 })) as HTMLElement
+    aNote.click()
+
+    await vi.waitFor(() =>
+      expect((document.querySelector('[data-testid="toolbar-new-note"]') as HTMLButtonElement).title).toContain('the vault root'),
+    )
+    expect(errors).toEqual([])
+  })
+
 })

@@ -19,6 +19,7 @@
   notesAwaitingIndex,
   planMoveInto,
   targetFolder,
+  toolbarTarget,
 } from './lib/tree'
   import type { TreeAction } from './lib/tree'
   import { bareKeyFor, escapeAction, isTypingTarget, shortcutFor } from './lib/shortcuts'
@@ -53,6 +54,8 @@
   /** Open folders, for this run of the app (§9). A `Set` that gets replaced rather than mutated. */
   let openFolders = $state<Set<string>>(new Set())
   let selected = $state<string | null>(null)
+/** The folder the toolbar will make its next note or folder inside, as the tree spells it (no trailing slash). */
+  let selectedFolder = $state<string | null>(null)
   let note = $state<NoteContent | null>(null)
   /** Bumped to put text into the editor from outside: a silent reload, or an accepted mirror (§14). */
   let external = $state<{ text: string; token: number } | null>(null)
@@ -80,6 +83,7 @@
   let awaitingEmbed = $derived(listing ? notesAwaitingEmbedding(listing.nodes) : 0)
 /** Notes against everything else in this folder. note-processor parses only `.md`, so a vault of `notes.txt` and
     `scan.pdf` is a folder whose files Jott can list but cannot search — said once, from the rows already walked. */
+  let destination = $derived(toolbarTarget(selectedFolder))
   let formatsNotice = $derived(
     listing
       ? formatsSentence({
@@ -223,6 +227,7 @@
       searchQuery = ''
       hitQuery = ''
       selected = null
+      selectedFolder = null
       note = null
       bufferVault = null
     }
@@ -487,7 +492,9 @@
         searchBox?.select()
         return
       }
-      runAction(shortcut === 'new-note' ? 'new-note' : shortcut === 'new-folder' ? 'new-folder' : 'rename')
+      if (shortcut === 'new-note') createInToolbar('new')
+      else if (shortcut === 'new-folder') createInToolbar('folder')
+      else runAction('rename')
       return
     }
 
@@ -560,6 +567,7 @@
   function closeNote() {
     if (selected === null) return
     selected = null
+    selectedFolder = null
     note = null
     // The marks came from a search hit; with no note open there is nothing for them to be on.
     hitQuery = ''
@@ -753,6 +761,12 @@
   }
 
   /** Make the note the person asked for, under the name that will actually be a note. */
+  /** The toolbar's two create buttons. `runAction` stays the row-menu path, which takes its target from the row the menu
+   *  was opened on; this one takes it from the folder that is selected, because there is no row to ask. */
+  function createInToolbar(kind: 'new' | 'folder') {
+    dialog = { kind, value: '', folder: destination.folder, blocked: createBlocked(listing !== null) }
+  }
+
   async function createNote(typed: string, folder: string) {
     const plan = planNoteName(typed, folder)
     if (plan.rel === null) {
@@ -973,8 +987,22 @@
         match word beginnings
       </label>
       <span class="tool-buttons">
-        <button type="button" title="New note (Ctrl+N)" onclick={() => runAction('new-note', null)}>+ note</button>
-        <button type="button" title="New folder (Ctrl+Shift+N)" onclick={() => runAction('new-folder', null)}>
+        <!-- The destination is in the tooltip because it used to be a secret: both of these always meant the vault root,
+             whatever had just been clicked. -->
+        <button
+          type="button"
+          title="New note in {destination.label} (Ctrl+N)"
+          data-testid="toolbar-new-note"
+          onclick={() => createInToolbar('new')}
+        >
+          + note
+        </button>
+        <button
+          type="button"
+          title="New folder in {destination.label} (Ctrl+Shift+N)"
+          data-testid="toolbar-new-folder"
+          onclick={() => createInToolbar('folder')}
+        >
           + folder
         </button>
         <button
@@ -1066,6 +1094,8 @@
           selected={selected}
           ontoggle={toggleFolder}
           onselect={(rel) => void openNote(rel)}
+          selectedFolder={selectedFolder}
+          onselectfolder={(rel) => (selectedFolder = rel)}
           onmenu={openMenu}
         />
       </div>

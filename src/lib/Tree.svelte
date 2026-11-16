@@ -10,6 +10,8 @@
     selected,
     ontoggle,
     onselect,
+    onselectfolder,
+    selectedFolder = null,
     onmenu,
   }: {
     rows: Row[]
@@ -20,6 +22,10 @@
     onselect: (rel: string) => void
     /** Right-click, on a row or on empty ground (`null`). The menu itself lives in the parent: it has to outlive
      *  the row it was opened from, and it needs the actions `tree.ts` decides. */
+    /** Which folder the toolbar will make its next thing inside, if any. Kept apart from `selected` because a note and
+     *  a destination are two different claims about the same click. */
+    onselectfolder?: (rel: string | null) => void
+    selectedFolder?: string | null
     onmenu?: (rel: string | null, x: number, y: number) => void
   } = $props()
 
@@ -28,8 +34,18 @@
    * the index said got silence, and silence reads as a broken file. Catalogue rows stay greyed (they are np's, not
    * yours) and open read-only; `readonly` on the file is what enforces that, not a disabled row. */
   function click(row: Row) {
-    if (row.kind === 'Folder') ontoggle(row.rel)
-    else onselect(row.rel)
+    if (row.kind === 'Folder') {
+      // One click means both things a folder row is asked for: it becomes the destination for **+ note** / **+ folder**,
+      // and it opens or closes. That is what one click has always meant in a Windows file tree; here it meant only the
+      // second, so "I cannot select the folder I want to create inside" was true of the window as built.
+      onselectfolder?.(row.rel)
+      ontoggle(row.rel)
+    } else {
+      // A note is not a destination. Leaving a folder selected while a note is open would make the toolbar's tooltip
+      // and its behaviour disagree about where the next file goes.
+      onselectfolder?.(null)
+      onselect(row.rel)
+    }
   }
 </script>
 
@@ -47,7 +63,7 @@
       <button
         type="button"
         data-kind={row.kind}
-        class:selected={selected === row.rel}
+        class:selected={selected === row.rel || selectedFolder === row.rel}
         class:greyed={row.greyed}
         class:folder={row.kind === 'Folder'}
         style:padding-inline-start={`${0.4 + row.depth * 0.85}rem`}

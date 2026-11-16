@@ -160,6 +160,15 @@ selected it stays at the root.
   files it cannot edit; alternative is refusing non-text names in *new note* and pointing at the file manager.
   My recommendation: keep it and say what was made — refusing is a smaller world for the person who wants `todo.txt`.
 
+## What shipped, and where it differs from the plan above
+
+| item | commit | difference |
+| --- | --- | --- |
+| A first-run buttons | `4eee5d6` | Also found: `Ok(())` crosses the wire as `null`, which is this window's failure marker — so every *successful* `create_folder` skipped its re-list and every successful `move_entry` left its dialog open. Half of "nothing happens" was that, not presentation. The stubs were fictions: `list_vault` invented an empty listing where core refuses, `create_note` was never stubbed at all, and a folder reached by *opening* it never asked for the embeddings offer. |
+| B a folder looks like a folder | `4eee5d6` (cause) + this item's commit (appearance) | The twisty now exists at every age (`▸` / `▾` / `·`) and an empty folder says `(empty)`. |
+| C the name a note gets | `14af15d` | Last dot decides, so `hello.tar.gz` stays itself rather than becoming `hello.tar.md`; `.keep` is a name someone means. Added: the formats line under the tree, and [note-processor#12](https://github.com/Ex-Bot-01/note-processor/issues/12) upstream for the rule itself. |
+| D pick a folder to create inside | this item's commit | One click selects *and* toggles, as a Windows file tree has always meant; opening a note drops the destination so the tooltip cannot disagree with the button. `Ctrl+N` / `Ctrl+Shift+N` go through the same path. |
+
 ## Order of work
 
 A → B → C → D, one commit each, tests first. A and B are what made the first five minutes of using Jott feel broken;
