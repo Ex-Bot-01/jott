@@ -1,4 +1,31 @@
-# Jott 0.0.23 — the consent receipt is gone; the download is the answer
+# Jott 0.0.24 — "Allow the download" now downloads
+
+Straight from the release after the last one: *"okay the loading bar is now gone?? why?"*
+
+Because I removed the card and left nothing behind it. Two holes, both mine, neither of them hypothetical — each got
+a failing test before it got a fix:
+
+1. **A yes started nothing.** Pressing *Allow the download* asked np to record `embeddings.provider` and
+   `embeddings.model`, Jott wrote `models.auto_fetch = true`, and then… nothing moved. No transfer begins until a note
+   is saved or *Index now* is pressed. Until 0.0.23 the receipt card papered over that with a sentence about what the
+   download would cost; remove the sentence and an accepting person was left staring at a window that looked exactly
+   as untouched as before they clicked. So a granted answer now runs the pass itself — `ingest_all`, the whole folder,
+   the same rule *Index now* follows — which is what makes np begin fetching, which is what puts bytes on a bar. A
+   decline still starts nothing: there is nothing to fetch.
+2. **The strip waited for luck.** It reads np's fetch markers, and those are only as fresh as the last poll. The poll
+   ran once per opened folder, so a download that began afterwards could run for a while with no bar. Now a
+   `fetching` progress line from np — one every second or so during a real transfer — triggers a read of the marker
+   immediately, and the strip draws on the first reading.
+
+The offer under the tree (*Set up embeddings*) used to start its own pass right after answering consent; that call is
+gone, because both doors now share one path and two passes in a row would be Jott racing itself.
+
+Tests: **404 front-end**, including the two new pins — a yes from the Settings panel reaches `ingest_all`, and a
+`fetching` line puts the strip on screen with np's model id on it. Rust unchanged at 326.
+
+---
+
+## Jott 0.0.23 — the consent receipt is gone; the download is the answer
 
 A small change, asked for directly: *"can we remove this message: 'note-processor had already recorded those
 settings… The download this allows is about 295.5 MiB. Jott wrote…' — we don't need it anymore, because now the user

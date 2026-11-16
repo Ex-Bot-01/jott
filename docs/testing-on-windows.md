@@ -676,6 +676,13 @@ Send the log (**Ctrl+Shift+D** → **Copy all**), and say roughly what time you 
 | `"event":"events-lagged"` | the window fell behind; 0.0.21 would have gone deaf here, 0.0.22 carries on |
 | `"method":"models.list"` rows | whether np was asked about the marker at all |
 
+### And since 0.0.24: *Allow the download* starts the download
+
+One sentence because it matters: in 0.0.23 clicking Allow recorded the settings and then waited for a save or an
+**Index now** before anything fetched — so with the receipt card gone the click looked like it had done nothing. It now
+starts the pass straight away, and the strip should appear within about a second of the first bytes moving. If you
+click Allow and see no strip within five seconds, that is the bug worth sending me a log for.
+
 ### And since 0.0.23: the receipt card after "Allow the download" is gone
 
 You should now see **only the download strip** after clicking Allow — no paragraph about which settings np recorded,
