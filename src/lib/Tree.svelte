@@ -113,9 +113,11 @@
     display: flex;
     align-items: center;
     gap: 0.3rem;
-    width: 100%;
-    padding: 0.12rem 0.4rem;
+    width: calc(100% - 0.5rem);
+    margin-inline: 0.25rem;
+    padding: 0.16rem 0.45rem;
     border: 0;
+    border-radius: 6px;
     background: none;
     color: inherit;
     font: inherit;
@@ -123,10 +125,13 @@
     cursor: default;
   }
   .tree button:hover:not(:disabled):not(.greyed) {
-    background: color-mix(in srgb, currentColor 8%, transparent);
+    background: var(--hover);
   }
+  /* Which row is open has to survive a grey-on-grey display and a screenshot, so the tint is not the only signal:
+     an ink bar on the reading edge says it again in a shape no colour setting can flatten. */
   .tree button.selected {
-    background: color-mix(in srgb, currentColor 14%, transparent);
+    background: var(--selected);
+    box-shadow: inset 2px 0 0 var(--ink);
   }
   /* np's own catalog files: visible so the folder is not mysterious, quiet so nobody edits them.
    *
@@ -134,7 +139,7 @@
    * catalogue for reading dropped the first job, and the styling went with it silently: the class was still emitted,
    * no rule matched it, and three sentences in the docs kept promising a greyed row. A class needs its own rule. */
   .tree button.greyed {
-    color: color-mix(in srgb, currentColor 45%, transparent);
+    color: var(--faint);
     font-style: italic;
   }
 
@@ -165,13 +170,20 @@
     color: color-mix(in srgb, currentColor 55%, transparent);
     font-style: italic;
   }
+  /* `min-width:0` so a name that genuinely does not fit gets its ellipsis inside the row instead of pushing the row
+     open; the trailing padding because an italic name lost its last letter to the box — `INDEX.md` came out as
+     `INDEX.ma`, since an oblique glyph's ink reaches past its advance and `overflow:hidden` cut it there. A file name
+     is the one string in this window nobody may have to guess. */
   .name {
+    flex: 0 1 auto;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    padding-inline-end: 0.3rem;
   }
   .empty {
-    padding: 0.4rem 0.6rem;
-    color: color-mix(in srgb, currentColor 55%, transparent);
+    padding: 0.5rem 0.7rem;
+    color: var(--muted);
   }
 </style>

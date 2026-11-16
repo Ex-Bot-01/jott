@@ -1406,6 +1406,7 @@
       highlight={hitQuery}
       highlightPrefix={prefixOn}
       readonly={note?.readonly ?? false}
+      openFolder={() => void pickFolder()}
       rel={selected}
       {note}
       {external}
@@ -1481,7 +1482,11 @@
 <style>
   .window {
     display: grid;
-    grid-template-columns: minmax(14rem, 22rem) 1fr;
+    /* The sidebar used to start at 14 rem. At that width `Index now` and `+ note` wrapped onto two lines, the
+       explanation paragraph ran five words to a line, and `INDEX.md` came out as `INDEX.ma` — a window whose own
+       labels are cut off cannot be trusted about somebody else's notes. 19 rem is where the longest label in here
+       stops breaking; 26 rem is where the tree starts stealing reading room from the note. */
+    grid-template-columns: minmax(19rem, 26rem) 1fr;
     grid-template-rows: 1fr auto;
     height: 100vh;
     font: 14px/1.5 ui-sans-serif, system-ui, 'Segoe UI', sans-serif;
@@ -1491,7 +1496,10 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
-    border-right: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+    border-right: 1px solid var(--line);
+    /* Text stopped flush against the divider at the old width; a hair of breathing room keeps a wrapped line from
+       looking like it is being clipped, which is what it looked like even when nothing was clipped. */
+    padding-inline-end: 0.35rem;
   }
   .middle {
     grid-column: 2;
@@ -1507,18 +1515,22 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 0.4rem;
-    padding: 0.4rem 0.5rem;
+    gap: 0.45rem;
+    padding: 0.5rem 0.55rem 0.4rem;
   }
   /* The one thing in the header that is not about the vault, so it reads as a different kind of control. */
   .about {
     border: none;
     background: none;
-    color: color-mix(in srgb, currentColor 62%, transparent);
+    color: var(--muted);
     font: inherit;
     font-size: 0.8125rem;
-    padding: 0.1rem 0.3rem;
+    padding: 0.15rem 0.35rem;
     cursor: default;
+  }
+  .about:hover {
+    color: inherit;
+    background: none;
   }
   .recents {
     max-width: 8rem;
@@ -1554,32 +1566,18 @@
     gap: 0.3rem;
     padding: 0 0.5rem 0.4rem;
   }
+  /* Size and stretch only; the look of a field is `app.css`'s business now, so the search box and the rename bar's
+     input cannot drift into two different heights again. */
   .tools input {
     width: 100%;
-    font: inherit;
-    padding: 0.2rem 0.35rem;
-    border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
-    background: none;
-    color: inherit;
   }
 
+  /* Buttons sit in a wrapping row with a real gap: at the old 0.3rem, five controls plus their borders read as one
+     grey slab, and `disabled` ones were indistinguishable from enabled ones at a glance. */
   .tool-buttons {
     display: flex;
-    gap: 0.3rem;
-  }
-  button {
-    border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
-    background: none;
-    color: inherit;
-    font: inherit;
-    padding: 0.08rem 0.45rem;
-    cursor: default;
-  }
-  button:hover:not(:disabled) {
-    background: color-mix(in srgb, currentColor 10%, transparent);
-  }
-  button:disabled {
-    opacity: 0.45;
+    flex-wrap: wrap;
+    gap: 0.35rem;
   }
   .results {
     list-style: none;
@@ -1645,12 +1643,8 @@
     border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent);
   }
   .first-pass button {
-    border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
-    background: none;
-    color: inherit;
-    font: inherit;
-    padding: 0.05rem 0.45rem;
-    cursor: default;
+    font-size: 0.75rem;
+    padding: 0.12rem 0.45rem;
   }
   /* The consent card is taller than the one-line notices around it: sentences, then the settings as text. */
   .consent-card {
@@ -1672,25 +1666,40 @@
     /* Selectable by hand even when the clipboard refuses a write. */
     user-select: text;
   }
+  /* The one paragraph in the sidebar that explains rather than warns. It had no rule at all — a bare `<p>` against the
+     window edge, in full-strength ink, at the same size as the file names above it, so the sentence that decides
+     whether a folder of `.pdf`s is mysterious read as part of the list. */
+  .formats {
+    margin: 0.15rem 0 0.3rem;
+    padding-inline: 0.7rem;
+    font-size: 0.78rem;
+    line-height: 1.45;
+    color: var(--muted);
+  }
   .warnings {
     margin-top: auto;
-    padding: 0.35rem 0.5rem;
+    padding: 0.45rem 0.55rem 0.5rem;
     font-size: 0.75rem;
+    line-height: 1.45;
+    color: var(--muted);
+    border-top: 1px solid var(--line);
   }
   .warnings p {
     margin: 0.2rem 0;
   }
   .warnings .hint {
     display: block;
-    color: color-mix(in srgb, currentColor 60%, transparent);
+    color: var(--faint);
   }
   .warn,
   .np {
     color: #b8863b;
   }
-  :global(.dark) .warn,
-  :global(.dark) .np {
-    color: #d9a441;
+  @media (prefers-color-scheme: dark) {
+    .warn,
+    .np {
+      color: #d9a441;
+    }
   }
   .ask {
     display: flex;
@@ -1701,14 +1710,16 @@
     background: color-mix(in srgb, currentColor 8%, transparent);
     font-size: 0.8125rem;
   }
+  /* The rename bar used to stretch its field the whole width of the note pane — a 900 px box for a file name, which
+     looks less like a question about one file and more like a second address bar. */
   .ask input {
-    flex: 1;
+    flex: 1 1 12rem;
     min-width: 10rem;
-    font: inherit;
-    padding: 0.15rem 0.35rem;
-    border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
-    background: none;
-    color: inherit;
+    max-width: 30rem;
+  }
+  .ask label,
+  .ask span {
+    color: var(--muted);
   }
   .row-menu {
     position: fixed;
