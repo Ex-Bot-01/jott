@@ -1,128 +1,106 @@
-# Jott 0.0.18 — five asks from inside the editor
+# Jott 0.0.19 — the window stops moving (and one gap left honestly open)
 
-The reports this time did not come from the first five minutes. They came from someone who had notes open, a folder
-indexed, and opinions — which is a different kind of feedback: *move that checkbox in there*, *why is there no cursor*,
-*show me how close each match was*, *put a dot on the bar when the model is up*, *there is still no button to close this
-file*. The backend inside is still **note-processor 0.5.1** on protocol 1; every change here is in the window, and one of
-them needed nothing but reading a dependency.
+A fresh install on Windows reported two things in one sentence: *it opens as a white window, then it seems like the
+window jumped to the right about 5 cm, then it opens correctly.*
 
-## What you'll notice
+One of those is fixed with its mechanism measured. The other is **not** fixed, and this release says so rather than
+claiming otherwise: I had a story for the white that read convincingly, and a reviewer took it apart by reading one
+crate further than I did. The difference between the two halves is the interesting part, so it is written down below.
 
-- **The word-beginnings choice moved into Settings.** It was a checkbox welded to the search box, and it does not belong
-  there: it changes what every query *means*, and it sat next to the place where you are composing one question. The
-  settings panel already had it — the toolbar copy was a second door to one room. What stays beside the box is the
-  one-off offer under an empty result, *try matching word beginnings*, because that one arrives exactly when widening is
-  the thing that could change the answer, and it still does not touch your remembered choice.
-- **The note pane can close itself.** "There is still no button to close a file from the editor" was true from where you
-  were sitting: since 0.0.16 the button existed, in the *sidebar* toolbar between delete and the tree's other actions —
-  nowhere near the page of text you were reading. The pane now names the note it is showing, marks np's own catalogue as
-  `read-only`, and offers **close** at its right edge. Escape still works; with nothing open there is no button, rather
-  than a greyed one to wonder about.
-- **Every result carries the number that ranked it.** Measured against 0.5.1, a hit arrives as
-  `{"score": 0.01639344262295082, "bm25": -0.51, "cosine": null, "keyword_rank": 1, "semantic_rank": null}`. `score` is a
-  reciprocal-rank fusion of the keyword and meaning rankings — not a similarity, not a percentage. The row prints it as
-  three significant figures (`0.0164`) and its tooltip says so: *"…Higher means nearer the top of its list; it is not a
-  percentage."* Turning it into "87% similar" was the obvious move and would have been my arithmetic rather than np's
-  measurement. `cosine` *is* a real similarity, and it is `null` whenever vectors did not run, so `meaning 0.82` appears
-  only on rows where np actually compared meanings — never `meaning 0` on a keyword hit, which would describe a
-  measurement nobody took. Nothing new crossed the wire: core has carried these three fields since 0.0.13 and spent none
-  of them.
-- **A status light that knows six things apart.** "Green when the model is active/downloaded/online" is three states in
-  one sentence, measured in three places: np's `embeddings.provider` for *configured*, np's `models.list` for *the bytes
-  are on this disk*, and Jott's own per-file markers for *this folder has vectors*. So there are six — plus the one that
-  keeps happening in the field, **nobody could say**: drawn as a hollow bead, never as grey, because telling somebody with
-  296 MiB of weights on their disk that their embeddings are switched off is how they go and download them again. Four
-  things produce it and the dot names which: np did not answer; its settings file will not parse (which is *not*
-  "embeddings off" — advice nobody could follow); np is running but could not list its models directory, in which case the
-  dot quotes np's own sentence; or np named no model for this folder. A provider Jott does not
-  recognise (`openai`, somebody's own server) gets its own state: "on this disk" is a story about `local-model`, and np
-  lists no rows for an endpoint, which would otherwise read as a download that never arrives. Each state carries a word —
-  `meanings on`, `model ready`, `model not downloaded`, `embeddings off`, `model state unknown`, `another provider` —
-  because a bead alone
-  says nothing to a screen reader, a colour-blind tester, or a screenshot in a bug report. Clicking it opens Settings,
-  the one place the state can be changed. It is asked once per opened folder over np's *reader* connection, so it cannot
-  queue behind an embed in progress: when a download finishes, that is the call which learns about it.
-- **The caret was being hidden by Jott, not by CodeMirror — and the release that "fixed" it is what hid it.** Third
-  attempt at "the cursor looks like no cursor"; this one read the dependency instead of the comments. Two things came
-  back:
+The backend inside is unchanged: **note-processor 0.5.1**, protocol 1. Nothing about your notes, your index or your
+search changes in this release.
 
-  ```js
-  function drawSelection(config = {}) {      // @codemirror/view
-      return [selectionConfig.of(config), cursorLayer, selectionLayer, hideNativeSelection, …];
-  }
-  ```
+## The jump — fixed
 
-  `cursorLayer` is the only thing that creates `.cm-cursor` elements, and **Jott never installs `drawSelection()`** — so
-  every caret rule this project has written in two releases (the ink `border-left`, the `--cm-cursor` variable, the blink
-  keyframes, and the fallback added earlier in this very branch) selected elements that do not exist. The caret this
-  window has always had is the browser's own, and `Editor.svelte` was hiding it with
-  `'.cm-content': { caretColor: 'transparent' }`, added by 0.0.16 under a comment asserting CodeMirror hides the native
-  caret itself. It does not — that hiding ships inside `drawSelection()` too. **The bug reported twice was introduced by
-  the release that claimed to fix it.**
+Any window named in the config is created — and shown, because visible-by-default — before anything can move it
+(`tauri-2.12.5/src/app.rs:2691` builds every config window, then runs our setup code). The saved position from your last
+exit is applied inside that same creation by the window-state plugin, with an ordinary "move this window" call on a
+window already on screen (`tauri-plugin-window-state-2.5.0/src/lib.rs:213`). So Jott appeared where Windows put it and
+then moved to where it belonged.
 
-  Now the theme names the caret in ink (the only place that can decide it: CodeMirror injects its style modules after the
-  bundled stylesheet, so a global rule cannot outvote it), nothing anywhere makes a caret transparent, and Windows
-  high-contrast mode gets `CanvasText`. The dead rules are deleted rather than kept "in case", and a test now enforces the
-  invariant that would have caught this in 0.0.16: *if you style `.cm-cursor`, you must have installed
-  `drawSelection()`* — both halves checked, so neither can arrive alone. What is **not** claimed: nobody has seen your
-  screen. The bundle greps clean and the rules are pinned, but jsdom cannot resolve either stylesheet (it reports
-  `rgb(0, 0, 0)` for `.cm-content` no matter what is injected), so the last word is yours — §2b-viii item 6 has one line
-  to paste into devtools if a caret is still missing.
+One condition, stated because my first version of these notes got it wrong: **the move needs a saved state to restore.**
+With no `.window-state.json` the plugin never calls `set_position` at all. That does not make your report mistaken — an
+*upgrade* install keeps that file (`%APPDATA%\dev.jott.desktop\.window-state.json`) while still counting as freshly
+installed, which is the likely case here. But a jump on a genuinely first run would be a different bug, and DPI
+renegotiation on a multi-monitor setup — which moves windows after they appear — is the remaining candidate. The new log
+line says which one you hit.
 
-## The one backend-shaped thing
+Jott now builds its own window, hidden; the plugin restores size and position while nobody can watch; and only then does
+the window appear — once, in the right place. The plugin was also told to stop deciding whether Jott is visible: with
+that flag on, it shows the window only if a file says the last run left it visible, and an upgrade that kills Jott
+mid-run can leave that file lying. An app you cannot see is not something you can close, inspect, or send a log from.
 
-The dot needed one new question answered in core rather than guessed in the webview: `embeddings_status`, which reads
-np's settings file for the provider and asks `models.list` whether the model's rows are there — measured on 0.5.1 as
-`pinned: [{ id, bytes_total: 309855456 }]` with `models: []` before a fetch, and a row under `models` after one. Its
-Its answer also carries `configUnreadable` and `modelsDirError`, because "no provider" and "nobody could read the file
-that would name one" need opposite advice.
+## The white — still open, and now labelled as open
 
-**What it costs, said plainly:** asking once per opened folder means np's *second* child process starts when you open a
-folder whose settings name a provider — roughly the 8 MB that connection has been kept lazy to avoid since 0.0.12. That is
-a deliberate departure, argued in the plan record and pinned by tests: a status light must be able to say "on" as well as
-"not bought yet", and it goes over the reader so it cannot queue behind an embed (measured in `np/pool.rs`: 102 s of
-queueing on one connection against 0.00 s from a second process). What has *not* changed is that nothing else about loading
-a folder talks to np — no ask per keystroke, none per re-list, and exactly one extra after a pass finishes, because a
-finished pass is what puts weights into np's models directory.
+I wrote a paragraph here explaining that our paper colour `[250, 250, 249, 255]` reached the *window* but never the
+*webview*, so WebView2 painted its own default white until the page caught up. It was a clean story. **It was wrong.**
+`tauri-runtime-2.12.2/src/webview.rs:498` takes that same config field and fills the exact webview attribute I claimed no
+config path ever touches, and `git show v0.0.18:apps/shell/tauri.conf.json` confirms the colour has been spelled
+correctly since 0.0.3. It reached both layers all along — so this release changes nothing about the colour of the first
+frame, and the white you saw is still unexplained.
 
-`present` is `null` when np did not answer **or** when np's models directory would not list: `artifact_present` answers
-"no" in that case because a consent gate must fail closed, and a status light has no business inheriting that caution as
-a fact about somebody's disk. An answer is still exactly one writer's business — the dot reads, never writes.
+What has been ruled out since: a GDI white erase behind our back. tao paints its own background in `WM_ERASEBKGND`
+(`tao-0.37.2/.../event_loop.rs:1042`) with no class brush, and wry's container window is the same
+(`wry-0.57.2/src/webview2/mod.rs:222`). What is left, in order of likelihood: WebView2 runtimes lacking the newer
+controller-options interface, where the colour lands later than the first frame (`wry webview2/mod.rs:409-431`), and
+WebView2's own surface before its first painted frame — neither of which Jott can set from where it stands.
 
-## Also fixed
+So this release ships two instruments instead of a claim: the launch geometry now goes to the log, and the installed app
+finally has a console (below). If the white is still there in 0.0.19, §2b-ix says what to look at — and next time the
+answer starts from something you can paste rather than something you have to describe.
 
-- `mebibytes` left `statusLine.ts` and became an export, so the dot and the download banner cannot quote two different
-  sizes for one file.
-- `notesEmbedded` joined the tree module's counts with its own test: an *indexed* note must not count towards vectors,
-  or a green bead appears over a folder that cannot be searched by meaning at all.
-- Two front-end waits were written `expect(el).not.toBeNull()` on `document.querySelector(...)?.closest('button')`.
-  Optional chaining yields `undefined`, `undefined` is not `null`, so `vi.waitFor` succeeded on the first tick and waited
-  for nothing. A wait that cannot fail is not a wait; both now assert truthiness.
+The lesson, being the second one this week: I grep'd `tauri`, found nothing, and stopped. Twice now the reader has been
+two crates down. "Nothing reads this field" needs a search of every crate in the graph, or it stays a question.
 
-## What the review found
+## The installed app never had a console. It does now
 
-A fresh whole-branch reviewer read the dependency rather than my notes and blocked the release on the caret (above). It
-also found the unreadable-settings flattening, a late `models.list` answer overwriting the folder on screen, a price being
-quoted for a model other than the one named, and — most usefully — three tests that passed with the bug put back. Two of
-them were my race test, which was harmless twice over: both answers were delayed equally, and the stub read its switch
-*inside* the timer, so the "late" reply carried the new folder's facts and there was no stale answer to drop. Both are
-fixed, and each guard is now shown red without its test. The third was a stub that answered `embeddings_status` where core
-refuses: with it, deleting App's no-folder guard left a first-run window displaying "embeddings off" and the suite green.
+While checking whether this fix could be *seen*, one more config setting turned out to be fiction — and this one was
+checked both ways before being written down, unlike the colour above. `tauri.conf.json` also said `"devtools": true`, and
+the released Jott ignored it. wry turns devtools off in any build that is not a debug
+build (`wry-0.57.2/src/lib.rs:873-875`), and Tauri passes its own setting along only when the `devtools` feature is
+compiled in (`tauri-runtime-wry/src/lib.rs:5146`) — a feature Jott never asked for. So **Ctrl+Shift+I has done nothing in
+every installed build since 0.0.4**, including in the instructions this guide has been giving since then: "press it and
+paste this", "that is a new bug and I want the console output". If you ever tried one and no window appeared, nothing
+was wrong with your machine.
 
-## Numbers
+Jott now builds with tauri's `devtools` feature, so an installed copy has a real console: **Ctrl+Shift+I**, or right-click
+→ Inspect. The reason is not tidiness — for two weeks the only instrument between a report and a fix has been your
+description of what you saw, and half of them have pointed at the wrong thing.
 
-- **309** Rust tests pass (`cargo test -p jott-core`, note-processor off `PATH`); CI prints the count and fails under its
-  floor (**300**).
-- **373** front-end tests pass (was 341 at 0.0.17), judged by Vitest's exit code rather than a grep of "passed". One test
-  was deleted along with its subject — the focus-tracking class the caret finding made pointless — and a lower count is
-  reported rather than hidden.
-- `svelte-check`: 0 errors, 0 warnings. Windows build target type-checks as `jott-shell v0.0.18`. Built stylesheet was
-  grepped for both caret rules, since no browser on this box can compute them.
+## One thing we can read from your log
 
-## If you test it
+Nobody who builds Jott has ever seen it run: this crate needs WebView2 or webkit even to compile, and no machine in the
+loop has one with a display attached. So each launch now writes a line to the log — size, top-left position, and whether
+a saved state file was there:
 
-`docs/testing-on-windows.md` §2b-viii has the checks. Three worth doing first: search something and read the number
-beside a row (and its tooltip — it should refuse to look like a percentage); find the dot in the bottom bar and check its
-word matches what your folder really is; then type into a note and look for a caret. If the caret is *still* missing, the
-tester guide has one line to paste into devtools (Ctrl+Shift+I) that will say which of the two bugs it is — this box has
-no screen, and I would rather aim than ship a fourth guess.
+```json
+{"event":"window","detail":"1200x760 with its top-left at +312+180; state file present","at_ms":1731...}
+```
+
+Numbers and one word about a file: no paths, no note text. If the window still misbehaves after this release, that line
+says what happened without anybody having to describe a movement in centimetres.
+
+## What this release cannot claim
+
+The jump's mechanism is measured in dependency source, the geometry is journalled, and six tests pin the structure so it
+cannot quietly revert. **Nobody has seen the result**, and the white frame has no explanation on offer at all — which is
+better than the false one that was here an hour ago. The usual trick for a white first frame — keep the window hidden
+until JavaScript reports it painted — was deliberately not used: it turns a broken bundle into an app with no window at
+all, and I am not shipping a timing dependency I cannot observe. If 0.0.19 still opens pale, that is the next step, taken
+with a watchdog so Jott can never start invisible.
+
+§2b-ix of `docs/testing-on-windows.md` is what to look for, and what to send back if it is still wrong.
+
+## Checks
+
+315 Rust tests (was 309), 373 front-end tests, clippy clean at `-D warnings`, and a Windows-target type-check of the
+shell — which failed its first run and caught a plugin method that does not exist (`with_flags`; it is
+`with_state_flags`).
+
+The six new tests were each shown failing before the change, and then shown failing again **after** it, with the
+regression put back by hand: visibility returned to the plugin → red; the show wrapped in an `if` → red; a second
+`.visible(true)` added to the chain → red; the devtools feature dropped from the manifest → red. A reviewer had said two
+of my five pins could stay green with the bug restored, and was right about both.
+
+That review also blocked this release once, on the false colour claim above, and its verdict on what remains is carried
+in the plan: `docs/superpowers/plans/2026-11-17-a-white-window-that-moved.md`.

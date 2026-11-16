@@ -441,7 +441,8 @@ These came from someone with notes open and opinions, so they are about the wind
    you answered when asked. Then press `[embed]` and watch whether it changes without restarting.
 4. Click the dot. Settings should open.
 5. Open `INDEX.md`: the pane header should say `read-only` and **close** should still work.
-6. If the caret is *still* missing — **Ctrl+Shift+I**, paste this into the console, then click back into your note and
+6. If the caret is *still* missing — **Ctrl+Shift+I** (which opens a console in an installed Jott only from 0.0.19 on:
+   earlier builds had none, whatever their config said — see §2b-ix), paste this into the console, then click back into your note and
    type. It waits three seconds before reporting on purpose: clicking the console takes focus away from the editor, and a
    snapshot taken at that moment describes an unfocused window rather than the thing you were looking at. Send me the one
    line it prints — this box has no screen, and I would rather fix the right bug than ship a fourth guess.
@@ -465,6 +466,62 @@ These came from someone with notes open and opinions, so they are about the wind
    ask CodeMirror to draw one), and what colour the browser's own caret was told to be. `nativeCaret: "transparent"` means
    something is still hiding it; an ink colour with nothing visible points at something else — the paper colour behind it,
    say — which is a different fix again.
+
+## 2b-ix. Since 0.0.19: the window arrives once, in the right place
+
+Reported by you, from a fresh install: *it opens as a white window, then jumps about 5 cm to the right, then opens
+correctly.* The jump is fixed and its mechanism is measured line by line. **The white is not fixed**: my first explanation
+of it was wrong — checked one crate too shallow, see `docs/release-notes.md` — so this section asks you to say *which*
+pale you see rather than promising one of them has gone away.
+
+**What should happen now**
+
+1. **No slide, when there is a saved position to restore.** Drag the window somewhere, close Jott, reopen: it should come
+   back exactly there, and nothing should move after it appears. That is the plugin doing its job while the window is
+   still hidden — which is the whole change.
+2. **The very first run never moved, and never will,** because with no saved state there is nothing to restore. An
+   install *over* an older Jott keeps that file: `%APPDATA%\dev.jott.desktop\.window-state.json`. To test from a genuinely
+   fresh state, quit Jott and delete that one file — note it lives under `dev.jott.desktop`, not in the `%APPDATA%\jott`
+   folder the rest of this guide describes.
+3. **Say which pale you see.** In the moment before the page paints: flat white, like a browser with nothing in it, or
+   warm near-white paper (`#fafaf9`)? Either is still possible and the difference decides what to investigate next, so
+   look at it deliberately — start Jott while Alt-Tabbing back in, or record the screen if you can. On a dark-mode
+   desktop, light paper for those frames is expected and is not a new bug: nothing in Jott knows your colour scheme until
+   the page exists to be asked.
+4. **One case where moving after appearing is normal.** A monitor change or a scaling change — plugging in a projector,
+   moving between screens with different scales, dragging the DPI slider — makes Windows reposition and resize a window
+   *after* it is shown. If your setup has two displays at different scales, say so: that is a different bug from the one
+   fixed here, and this release does not claim to have it.
+
+**If it still misbehaves, send one line instead of a description**
+
+Every launch now records what the window came up as:
+
+```powershell
+Get-Content $env:APPDATA\jott\logs\jott.jsonl | Select-String '"event":"window"' | Select-Object -Last 3
+```
+
+It looks like this:
+
+```json
+{"event":"window","detail":"1200x760 with its top-left at +312+180; state file present","at_ms":1731000000000}
+```
+
+`no state file yet` on a second launch means the position was never saved, which is a different bug from a jump. Two
+launches' worth of that line — before and after you moved the window — tells us more than any description of the move.
+A screenshot of the first frame, if you can catch one, is worth having too: nobody building Jott has a display, so your
+screen is the only evidence there is.
+
+**A console, at last.** **Ctrl+Shift+I** (or right-click → Inspect) opens one in the installed app from this release.
+It never worked before: Jott's config asked for devtools, and a release build ignored that unless tauri's `devtools`
+feature was compiled in — which it was not. So instructions in §2b-viii and elsewhere that said "press Ctrl+Shift+I and
+paste this" could not be followed on 0.0.4 through 0.0.18, and nobody should have felt clumsy for failing to find one.
+Anything in this guide that asks for console output now means it.
+
+**What was deliberately not done.** The standard trick for a white first frame is to keep the window hidden until the
+page says it has painted. That turns a broken bundle into an app with no window at all — which is how 0.0.8 shipped a
+blank screen nobody could diagnose — so Jott shows its window immediately, unconditionally, and if paper still does not
+land the next step is a reveal-with-timeout rather than a hope.
 
 ## 2c. Since 0.0.11: press **Ctrl+Shift+D** when something is odd
 
@@ -560,7 +617,7 @@ Three things worth knowing before you file it:
 
 - **A window the colour of paper, with no text at all**, on a Windows set to dark mode was 0.0.3's bug — white
   ink on near-white background. Fixed in 0.0.4; if you are on 0.0.4 and see it, that is a new bug and I want
-  the console output.
+  the console output (an installed Jott has had a console only since 0.0.19 — see §2b-ix).
 - **A black console window titled `np.exe`.** Windows gives a console to any console program a GUI starts, and
   np is one. Fixed in 0.0.7 (`CREATE_NO_WINDOW`). On 0.0.6 that window was the helper doing its job quietly — nothing
   had gone wrong, but it looked like something had.
