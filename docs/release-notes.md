@@ -1,115 +1,96 @@
-# Jott 0.0.17 — the first five minutes
+# Jott 0.0.18 — five asks from inside the editor
 
-Four reports, all from the part of Jott you meet once: before you open a folder, and just after. A button that answered
-nothing, a folder that seemed never to have been made, a note created as a file no one can search, and a sidebar where a
-folder was indistinguishable from a note and impossible to choose. The backend inside is still **note-processor 0.5.1**
-on protocol 1; every change here is in the window.
+The reports this time did not come from the first five minutes. They came from someone who had notes open, a folder
+indexed, and opinions — which is a different kind of feedback: *move that checkbox in there*, *why is there no cursor*,
+*show me how close each match was*, *put a dot on the bar when the model is up*, *there is still no button to close this
+file*. The backend inside is still **note-processor 0.5.1** on protocol 1; every change here is in the window, and one of
+them needed nothing but reading a dependency.
 
 ## What you'll notice
 
-- **A button that cannot do its job says so, where you were already looking.** With no folder open, **+ note** /
-  **+ folder** used to take a name, accept Enter, and produce silence. The sentence existed — *no vault is open* — and
-  was drawn in small grey text at the bottom of the sidebar, while the dialog you had just pressed Enter in closed
-  itself whether or not the command worked. True information in the wrong place, arriving after the thing you were
-  looking at disappeared, is experienced as no answer. The dialog now carries the reason itself: *"No folder is open yet, so
-  there is nowhere to make this. Choose one, and it will be made inside it."* beside a **Choose a folder** button. What
-  you typed is kept, so picking a folder finishes the note you asked for rather than starting it over, and nothing is
-  sent while there is nowhere to put it. Every other refusal now appears in one place above the search box, folder open
-  or not.
-- **A new folder appears at once, and looks like a folder.** Two faults were stacked here. A successful `create_folder`
-  was being read as a failure — its whole answer is *nothing*, which crosses the Tauri wire as `null`, which is exactly
-  what this window uses to mean *failed* — so the tree was never asked again; and a folder row's only distinguishing
-  feature was bold text, with no twisty until it had children. Now a folder gets `▸`/`▾` when it holds things and `·`
-  when it does not, an empty one says `(empty)` beside its name, and the tree re-lists after the create without waiting
-  for some other command to do it.
-- **Clicking a folder means it.** One click selects the folder *and* opens or closes it, as one click has always meant
-  in a Windows file tree. The toolbar follows: its tooltip reads **New note in notes (Ctrl+N)**, the dialog label says
-  `New note in notes/:`, and the file lands there. Open a note and the destination returns to the vault root — a tooltip
-  that promises one folder while the button writes to another is worse than no tooltip. `Ctrl+N` and `Ctrl+Shift+N` take
-  the same path as the buttons.
-- **A note gets a name that is a note.** `trip plan` becomes `trip plan.md`, because that is what a note *is* to
-  note-processor, and an extension-less file is not one: no index marker, nothing to embed. An extension you typed on
-  purpose survives exactly as typed — `todo.txt` stays `todo.txt` — and the window then says what happens next instead of
-  letting you find out by searching: *"Created todo.txt. note-processor reads only .md files as notes, so this one will
-  not be searchable."* Spellings note-processor cannot read are folded to `.md` **and announced** (`hello.markdown` →
-  `hello.md`). Names that cannot become files — `notes.`, `.`, `..` — are refused in words with the dialog open and your
-  name kept; nothing is quietly renamed, and a trailing full stop is not trimmed because Windows would not keep it
-  either. The rule is deliberately boring: the **last** dot decides, so `hello.tar.gz` stays itself rather than becoming
-  something nobody typed.
-- **A folder of other formats explains itself.** If anything in the folder is not a note, you get one line under the
-  tree: *"Of 12 files here, 3 files are notes note-processor can search; 9 are kept as attachments — tracked for links,
-  never searched. note-processor reads .md files as notes."* Counted from the rows Jott's own walk already classifies,
-  shown only when there is something to explain, and worded so a folder of `.txt` and `.pdf` is not described as broken.
+- **The word-beginnings choice moved into Settings.** It was a checkbox welded to the search box, and it does not belong
+  there: it changes what every query *means*, and it sat next to the place where you are composing one question. The
+  settings panel already had it — the toolbar copy was a second door to one room. What stays beside the box is the
+  one-off offer under an empty result, *try matching word beginnings*, because that one arrives exactly when widening is
+  the thing that could change the answer, and it still does not touch your remembered choice.
+- **The note pane can close itself.** "There is still no button to close a file from the editor" was true from where you
+  were sitting: since 0.0.16 the button existed, in the *sidebar* toolbar between delete and the tree's other actions —
+  nowhere near the page of text you were reading. The pane now names the note it is showing, marks np's own catalogue as
+  `read-only`, and offers **close** at its right edge. Escape still works; with nothing open there is no button, rather
+  than a greyed one to wonder about.
+- **Every result carries the number that ranked it.** Measured against 0.5.1, a hit arrives as
+  `{"score": 0.01639344262295082, "bm25": -0.51, "cosine": null, "keyword_rank": 1, "semantic_rank": null}`. `score` is a
+  reciprocal-rank fusion of the keyword and meaning rankings — not a similarity, not a percentage. The row prints it as
+  three significant figures (`0.0164`) and its tooltip says so: *"…Higher means nearer the top of its list; it is not a
+  percentage."* Turning it into "87% similar" was the obvious move and would have been my arithmetic rather than np's
+  measurement. `cosine` *is* a real similarity, and it is `null` whenever vectors did not run, so `meaning 0.82` appears
+  only on rows where np actually compared meanings — never `meaning 0` on a keyword hit, which would describe a
+  measurement nobody took. Nothing new crossed the wire: core has carried these three fields since 0.0.13 and spent none
+  of them.
+- **A status light that knows five things apart.** "Green when the model is active/downloaded/online" is three states in
+  one sentence, measured in three places: np's `embeddings.provider` for *configured*, np's `models.list` for *the bytes
+  are on this disk*, and Jott's own per-file markers for *this folder has vectors*. So there are five — plus the one that
+  keeps happening in the field, **nobody answered**: np unreachable or its models directory unlistable is drawn as a
+  hollow bead reading "note-processor did not answer", never as grey, because telling somebody with 296 MiB of weights on
+  their disk that their embeddings are switched off is how they go and download them again. A provider Jott does not
+  recognise (`openai`, somebody's own server) gets its own state: "on this disk" is a story about `local-model`, and np
+  lists no rows for an endpoint, which would otherwise read as a download that never arrives. Each state carries a word —
+  `meanings on`, `model ready`, `model not downloaded`, `embeddings off`, `model state unknown` — because a bead alone
+  says nothing to a screen reader, a colour-blind tester, or a screenshot in a bug report. Clicking it opens Settings,
+  the one place the state can be changed. It is asked once per opened folder over np's *reader* connection, so it cannot
+  queue behind an embed in progress: when a download finishes, that is the call which learns about it.
+- **The caret had to be drawn before it could be the right colour.** Third attempt, and the first that read
+  CodeMirror's own stylesheet instead of guessing at it:
+
+  ```css
+  ".cm-cursor": { display: "none" }
+  "&.cm-focused > .cm-scroller > .cm-cursorLayer .cm-cursor": { display: "block" }
+  ".cm-content": { caretColor: "transparent !important" }
+  ```
+
+  Two independent ways to have no caret while typing, and neither is colour or width. If CodeMirror's own idea of focus
+  disagrees with where the DOM focus is, its caret layer is `display: none` — and no `border-left` rescues an element
+  that was never rendered; meanwhile the browser's real caret, which would have shown, is hidden behind an `!important`
+  that our 0.0.17 `caret-color: var(--ink)` could not answer. So the window now tracks focus itself and draws the caret
+  on that, and only when CodeMirror says it is *not* focused does the native caret take over in ink — one caret on
+  screen either way, not two blinking at each other. A `min-height: 1em` catches a line measured zero pixels tall, which
+  is an invisible caret with no explanation. **And the correction matters more than the fix:** 0.0.16 set
+  `--cm-cursor: var(--ink)` and commented that CodeMirror takes its caret colour from that variable. It does not — the
+  base theme hardcodes `borderLeft: "1.2px solid black"`. A test now reads the dependency and fails if it ever mentions
+  `--cm-cursor`, so the claim cannot come back. Two releases of caret work coloured a variable nobody reads; a comment
+  that names an internal API without checking it sent me straight past the rule hiding the caret.
 
 ## The one backend-shaped thing
 
-Only `.md` is parsed as a note. That is note-processor's rule, stated in its own walker — a file is a note when the
-lowercased relative path ends in `MARKDOWN_SUFFIX` (`.md`) — and everything else it finds is an attachment: "hashed,
-tracked and linkable but never parsed" (np spec §10). Measured against 0.5.1 over JSON-RPC on a folder of `note.md`,
-`plain.txt`, `file.org`, `file.rst`, `sub/other.txt`, all containing the searched word:
-
-```json
-{"method":"scan","result":{"added":5,"notes":1,"skipped":[],"unindexable":null}}
-```
-
-…followed by a search that finds one file. Nothing was lost, so `unindexable` is correctly empty — which also means
-there is no field a front end can quote as the reason. Jott could have stayed silent and let the count speak; instead it
-says the sentence above from its own walk, **and** the missing capability is filed upstream rather than worked around
-here: [note-processor#12](https://github.com/Ex-Bot-01/note-processor/issues/12) asks for either `[index]
-note_suffixes` or an attachment count in the scan report, so the numbers in that sentence can come from the process that
-decided them. Jott converts nothing and rewrites nobody's files.
+The dot needed one new question answered in core rather than guessed in the webview: `embeddings_status`, which reads
+np's settings file for the provider and asks `models.list` whether the model's rows are there — measured on 0.5.1 as
+`pinned: [{ id, bytes_total: 309855456 }]` with `models: []` before a fetch, and a row under `models` after one. Its
+`present` is `null` when np did not answer **or** when np's models directory would not list: `artifact_present` answers
+"no" in that case because a consent gate must fail closed, and a status light has no business inheriting that caution as
+a fact about somebody's disk. An answer is still exactly one writer's business — the dot reads, never writes.
 
 ## Also fixed
 
-- **Four more, found by a fresh review of the whole branch before shipping.** A refusal from one dialog used to follow
-  the next one around — fix `notes.` into a good name, then press **+ folder**, and the fresh dialog opened saying
-  *"A file name cannot end in a full stop."* about an empty field. A chosen destination survived trashing or renaming
-  the folder it named, so the tooltip promised to re-create a directory you had just thrown away (core makes parent
-  folders, so nothing else stopped it) — the destination is now checked against what the walk still shows. `+ note`
-  opened whatever it had made, which meant an empty `photo.png` arrived in an editable buffer inviting you to type a
-  paragraph into an image; text-shaped results open, images and other binaries do not, and the sentence about what was
-  made says so. And a refused rename closed its dialog and discarded the name you typed, contradicting the rule this
-  release states twice.
-- **A move that worked left its dialog open.** Same wire confusion as above: `Ok(())` looked like failure, so the window
-  refused to believe its own success. Commands whose whole answer is "it happened" now resolve to a value that cannot be
-  mistaken for the failure marker — which also covers `mirror_buffer`, `discard_mirror` and `ingest_all`.
-- **Opening a folder did not ask about embeddings.** The offer that tells you your notes are indexed but unsearchable by
-  meaning was only asked after a *re-list*, so a folder reached at startup or through the picker never asked at all.
-  Every path that installs a listing asks now.
-- **A first run no longer begins with an error it cannot show.** With nothing in the recents list, Jott used to ask
-  note-processor to list a folder that had never been opened; the honest refusal went into state with nowhere to be
-  drawn. It asks for nothing until you choose.
-
-## What is behind this
-
-Three of the four reports were invisible to the test suite because the test doubles were more generous than the real
-program: `list_vault` answered an empty listing where core answers a refusal, `create_folder` resolved an object where
-core sends `null`, and **`create_note` was not stubbed at all** — so note creation had never been exercised end to end.
-All three fictions are gone, the scene's tree now comes from one function shared by opening and re-listing, and the "no
-folder is open" tests finally describe a window with no folder open.
-
-The review then found five more doubles still lying: it accepted `delete_entry` and `rename_entry` only by rejecting
-them ("a command nobody stubbed"), answered the mirror pair with `undefined` where core sends `null`, kept answering
-with a folder the test had just deleted, and — worst — one test that claimed an intention finished after picking a
-folder while its own stub was still refusing every command with *no vault is open*. The stub now keeps a session like
-core does, remembers what it created and what it trashed, and answers for the folder that is actually open. Two of the
-new tests were then checked by putting the bug back: one passed for the wrong reason at first (asserting before Svelte
-had repainted made "nothing was opened" look true), and it was rewritten to wait for the sentence that proves the flow
-settled.
+- `mebibytes` left `statusLine.ts` and became an export, so the dot and the download banner cannot quote two different
+  sizes for one file.
+- `notesEmbedded` joined the tree module's counts with its own test: an *indexed* note must not count towards vectors,
+  or a green bead appears over a folder that cannot be searched by meaning at all.
+- Two front-end waits were written `expect(el).not.toBeNull()` on `document.querySelector(...)?.closest('button')`.
+  Optional chaining yields `undefined`, `undefined` is not `null`, so `vi.waitFor` succeeded on the first tick and waited
+  for nothing. A wait that cannot fail is not a wait; both now assert truthiness.
 
 ## Numbers
 
-- **302** Rust tests pass (`cargo test -p jott-core`, note-processor off `PATH`); CI prints the count and fails under
-  its floor (**295**).
-- **341** front-end tests pass (was 299 at 0.0.16), judged by Vitest's exit code rather than by a grep of "passed".
-- `svelte-check`: 0 errors, 0 warnings. Windows build target type-checks as `jott-shell v0.0.17`.
+- **306** Rust tests pass (`cargo test -p jott-core`, note-processor off `PATH`); CI prints the count and fails under its
+  floor (**300**).
+- **367** front-end tests pass (was 341 at 0.0.17), judged by Vitest's exit code rather than a grep of "passed".
+- `svelte-check`: 0 errors, 0 warnings. Windows build target type-checks as `jott-shell v0.0.18`. Built stylesheet was
+  grepped for both caret rules, since no browser on this box can compute them.
 
 ## If you test it
 
-Two of the new tests were checked by putting the bug back — deleting the image guard and un-deriving the destination
-each turn four tests red and restoring them turns all 71 green again — because a test that has never failed is an
-opinion about code nobody has tried to break.
-
-`docs/testing-on-windows.md` §2b-vii has six checks. The three worth doing first: press **+ folder** on a true first run
-and check the sentence, the kept name and that nothing landed on disk; make a folder and look at it *immediately*; open
-a folder of mixed formats and read the line under the tree — it should not sound like blame.
+`docs/testing-on-windows.md` §2b-viii has the checks. Three worth doing first: search something and read the number
+beside a row (and its tooltip — it should refuse to look like a percentage); find the dot in the bottom bar and check its
+word matches what your folder really is; then type into a note and look for a caret. If the caret is *still* missing, the
+tester guide has one line to paste into devtools (Ctrl+Shift+I) that will say which of the two bugs it is — this box has
+no screen, and I would rather aim than ship a fourth guess.
