@@ -1027,14 +1027,31 @@ describe('the window mounts', () => {
       return el as HTMLElement
     }, { timeout: 2000 })
 
-    expect(card.textContent).toContain('models.auto_fetch = true')
-    expect(card.textContent).toContain('provider = "local-model"')
-    expect(card.textContent).toContain('Copy these settings')
+    // What the card is for now: one sentence in ordinary words and the button that acts. A tester counted what used
+    // to be here — key names, a TOML block to paste, Copy, Try again, an issue link and its bare URL — and asked
+    // which of it was for an average user. None of it was.
+    expect(card.textContent).toContain('You allowed downloads')
+    const allow = card.querySelector('[data-testid="consent-allow"]') as HTMLButtonElement | null
+    expect(allow, 'the way to fix it is on the card, not two dialogs away').not.toBeNull()
+    expect(card.querySelector('.settings'), 'no block of TOML to retype by hand').toBeNull()
+    expect(card.textContent).not.toContain('github.com')
 
-    // "Try again" runs the pass again — the settings may have been edited in another window by then.
     commands.length = 0
-    ;(card.querySelector('[data-testid="consent-retry"]') as HTMLButtonElement).click()
-    await vi.waitFor(() => expect(commands).toContain('ingest_all'), { timeout: 2000 })
+    allow!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await vi.waitFor(() => expect(commands).toContain('set_consent'), { timeout: 2000 })
+    await vi.waitFor(() => expect(commands, 'allowing means start fetching, not wait for the next save').toContain('ingest_all'), {
+      timeout: 2000,
+    })
+
+    // And the technical reading is one click away rather than gone: Settings still names the key and the line.
+    ;(document.querySelector('button[aria-label="Settings"]') as HTMLButtonElement).click()
+    const panel = await vi.waitFor(() => {
+      const el = document.querySelector('[data-testid="settings-embeddings"]')
+      expect(el).not.toBeNull()
+      return el!
+    }, { timeout: 2000 })
+    expect(panel.textContent).toContain('models.auto_fetch = true')
+    expect(document.querySelector('[data-testid="copy-embeddings"]'), 'the copy affordance moved here').not.toBeNull()
   })
 
   it('shows the card for a refusal alone', async () => {
@@ -1055,7 +1072,10 @@ describe('the window mounts', () => {
       return el as HTMLElement
     }, { timeout: 2000 })
     expect(card.textContent).toContain(sentence)
-    expect(card.textContent).toContain('model = "embeddinggemma-2"')
+    // np's own sentence leads, and the card offers the one action. The lines it would have pasted are not on the
+    // face of the window: since 0.5.x a press writes them through the pipe (note-processor#7).
+    expect(card.querySelector('[data-testid="consent-allow"]')).not.toBeNull()
+    expect(card.textContent).not.toContain('model = "embeddinggemma-2"')
   })
 
   it('quotes note-processor’s own refusal on the card, unchanged', async () => {
