@@ -1,103 +1,109 @@
-# Jott 0.0.26 — a sidebar you can size, and a diagnostics drawer that finally uses the window
+# Jott 0.0.27 — formatting you press, in a file that stays markdown
 
-Two layout decisions that were made once, in a stylesheet, for every window on every monitor — and one bug found by
-clicking the exact button this release was about.
+The note pane has drawn markdown as formatting since 0.0.9 — headings take size, `**this**` goes bold with its
+asterisks faded to 42 %, inline code gets a tint. What it never had was a way to *ask* for formatting without typing
+the characters. Now there is a bar for that, and the file on disk is still the same plain file you would have written
+by hand.
 
-## The tree column was 364 px wide because I said so
+## The bar
 
-`src/App.svelte` had `grid-template-columns: minmax(19rem, 26rem) 1fr`. Both numbers were measured rather than
-guessed — below 266 px `Index now` and `+ note` wrap onto two lines and `INDEX.md` arrives as `INDEX.ma`, and past
-about 364 px the tree starts taking reading room from the note — and they have been right ever since. What was wrong
-is that they were *limits nobody could move*. In an 820 px window the sidebar still took 44 % of the screen; on a wide
-display it stayed at 364 px while the path you were trying to read sat in the other column.
+Above the buffer, under the note's name: **B** *I* `</>` **link** **•** **☑** **H**. Press one and it puts the
+markdown in; press it again and it takes it out.
 
-There is now a handle between the two columns: drag it, nudge it with the arrow keys (**Shift** for a bigger step),
-**double-click** or **Home** for the default. It is focusable and tinted on hover and focus, because a handle that
-only exists under a pointer is a handle the keyboard never finds; in forced-colours mode it gets a real border instead
-of a tint. The limits stayed, as limits:
+- With words selected, it wraps those words.
+- With nothing selected but a word under the caret, it takes that word — double-click is not required.
+- With an empty caret in whitespace, it inserts the pair and leaves the caret *between* them, so you keep typing bold
+  until you press Right or End. That is the "bold stays on" behaviour, and it needs no hidden state deciding when to
+  close the markers: the markers are there, faded, and the caret is inside them.
+- Each control lights when it already applies. Put the caret in a bolded phrase and **B** goes shaded — that comes
+  from CodeMirror's parser rather than from a guess, so it cannot disagree with what you can see. An empty pair counts
+  too, because a button that returns to "off" on the press that lit it reads as a press that failed.
 
-| | |
-| --- | --- |
-| floor | **266 px** — where the sidebar's own labels stop breaking |
-| ceiling | **45 % of the window, never past 560 px** |
-| remembered | yes, in `localStorage` (`jott.layout.sidePx`), re-clamped on load *and* on window resize |
+`Ctrl+B`, `Ctrl+I`, `Ctrl+E` (code) and `Ctrl+K` (link) do the same as the buttons. Lists, tasks and headings are
+buttons only for now: `H` steps the caret's line `none → ## → ### → off`, and deliberately never produces `#`, because
+a title is typed by hand and a button that quietly demoted one would be rewriting the line you meant to leave alone.
 
-That last row is the part worth testing on a laptop: a width dragged on a 27" monitor narrows to fit when the window
-is small, and **the stored preference is not rewritten**, so the big monitor gets its width back tomorrow. The arrow
-keys belong to the handle and to nothing else — arrows typed in the note or the search box move the caret and leave
-the columns where they are.
+Two things this release *documents* rather than adds, because they already worked and nothing had ever said so:
+`markdown()` installs the language pack's own keys, so **Enter continues a list** — `- [ ] ` at the start of the next
+line instead of a bare newline — and Backspace at the end of `**word|**` takes the whole pair off rather than one
+asterisk at a time. Both have worked since the markdown language went in. I spent part of this pass installing a second
+copy of that keymap, which sat underneath the one that answers and could never run; a test now pins the call that
+actually does it, so the next person does not have to rediscover which of the two is load-bearing.
 
-## The diagnostics drawer was 364 px wide because of a grid rule nobody wrote
+## Why the markers stay on screen
 
-It was designed as a strip across the whole window — the sketch in the 2026-11-13 design spans it — but `.drawer` never
-said which grid column it wanted, so auto-placement parked it in **row 3, column 1**: under the sidebar, about 364 px
-wide, with dead space to its right and the status line pushed up *above* it. Then its height was capped twice (`45vh`
-on the drawer, `22vh` on the activity list inside it), so the rows you were looking for were below the bottom of the
-screen and dragging the window taller bought nothing.
+A rendered preview, or Typora-style hiding of syntax except on the line you are editing, was the other design. It is
+not what this app does, and `markdownStyle.ts` says why in its own words: the file is what git, note-processor and
+every editor that is not Jott will show you, so hiding the syntax in one window is how somebody gets surprised. It
+would also mean decorations that replace visible characters, which fight selection maths, undo and input methods in a
+way that produces cursor bugs a person feels immediately. The markers stay, faded. You get the formatting without the
+file changing shape.
 
-Now it spans every column, sits above the status line so that strip is the last row again, and takes a height **you**
-set — drag its top edge, or use the keys, **Home** for the default:
+A full rich-text model — parse markdown on open, serialise it back on save — was the third option, and it is the one
+that could have damaged notes: re-writing bytes you never touched collides with the way Jott decides whether a file
+changed outside the window, which compares hashes of what it wrote against the bytes on disk.
 
-| | |
-| --- | --- |
-| default | **320 px** |
-| floor | **180 px** |
-| ceiling | **70 % of the window, or whatever leaves the note pane 200 px** — and never below the 180 px floor, which wins in a very short window (a 480×320 CSS-px window at 150 % scaling is one) |
-| remembered | yes (`jott.layout.drawerPx`) |
+## The note's name, in one place
 
-The height you choose goes into the activity list rather than into an empty box: both caps are gone and the list is
-what flexes. And because a full-width drawer with one long column wastes the width it just won, above ~900 px the
-runtime facts sit on the left and the activity rows on the right — which is what makes paths like
-`C:\Users\chris\AppData\Roaming\jott\logs\jott.jsonl` fit on one line instead of three. That is also why `word-break:
-break-all` became `overflow-wrap: anywhere`: a path should break at a separator when it must and not at all when it
-need not.
+`stormcock.md`, with its folder muted in front of it when it is not at the top of the vault. This row has existed
+since 0.0.16 beside the **close** button; my first cut of this feature added a second name line inside the editor
+pane, and opened a note to find the filename printed twice. A screenshot caught it. No test would have: nothing was
+counting.
 
-## Pressing *Diagnostics* in About closed About. And opened nothing you could read.
+## Caught before it shipped
 
-Found by clicking that exact path with the window in front of me. Two separate faults, one screen:
+- Pressing Bold twice wrote `********` instead of undoing the first press. The unit tests had only ever pressed once;
+  the end-to-end test that clicks the button twice found it in the browser-independent way, and the fix is a rule: a
+  second press on a pair you are still inside takes that pair off, whether or not you typed anything between them.
+- A caret sitting in `**|` counts as bold even though CommonMark has nothing to report for an empty span — see above.
 
-* About's dismiss handler sat on the scrim, and the panel is inside the scrim — so **every** click inside it bubbled
-  up and closed the panel. *Copy details*, a link, and *Diagnostics* each dismissed the panel they were standing in.
-  It now closes only when the click actually landed on the scrim. (Svelte 5 has no `|self`, hence the explicit target
-  comparison.)
-* Opening the drawer left About floating over it behind a dimming scrim — over the very rows you had pressed the
-  button to read. **Diagnostics** now closes About: one thing on screen at a time.
+Then a reviewer read the whole branch with fresh eyes and found nine more, all fixed here. They are worth listing,
+because none of them made a test go red on their own:
 
-Two more things showed up in the same pictures, and both are fixed here rather than filed. A 2 px ink line ran the
-full width of the window when the drawer opened — that was `app.css`'s focus ring on an element with `tabindex="-1"`,
-which no keyboard can reach and which only ever gets focused by our own code; a ring there communicates nothing and
-looked like a rendering fault. And the drawer's grab strip began a few pixels *below* the border it belongs to, so
-aiming at the line you could see dragged a text selection out of the note pane instead. The strip is flush with the
-edge now.
+- **A wrap that ended on a newline wrote broken markdown.** Selecting to the end of a line with Shift+Down and pressing
+  Bold gave `**ab
+**cd` — the pair at the head of the next line can only *open*, so nothing rendered bold and two stray
+  marker runs went into the note, which autosave would have put on disk two seconds later. A wrap now stops at a line
+  break, and at a blank line: emphasis cannot cross a paragraph, so `**a
 
-## Caught by the review, before it shipped
-
-The whole-branch review found four things the harness pass had not: the drawer's drag measured its height as
-"everything below the pointer", which forgot that the status strip sits under it — so pressing the edge jumped the
-drawer about 40 px taller and slid the strip out from under the cursor, making the promised double-click reset nearly
-impossible to land. It is a delta from where the grab started now (`drawerHeightFromDrag`), which cannot drift whatever
-else is underneath. A right-button press on either handle resized things, so both take the primary button only, and a
-move that reports no button held ends the drag instead of latching into "resizes on hover". Neither handle set
-`touch-action`, so on a touchscreen WebView2 answered a finger drag with a pan and a `pointercancel` — one property each.
-And the drawer never re-clamped when the window changed shape, which is how undocking with the drawer open collapsed
-the note pane and pushed the status strip off the bottom edge; it now follows the same rule as the sidebar — clamp for
-this window, leave the memory alone. The clipboard-refused "copy it yourself" box also moved inside the part that
-scrolls: it used to sit after the footer in a clipped column, unreachable at exactly the short heights where you need it.
+b**` shows every character of itself.
+- **Two presses close together were one undo step.** CodeMirror composes adjacent edits into one history event when the
+  dispatch carries no `userEvent` and they land inside 500 ms. Press Bold, press Italic, press Ctrl+Z: the note went
+  back to before *both*, which is what "Ctrl+Z does nothing" feels like. Each press now names its own event.
+- **• and ☑ said nothing at all on an empty line** — the single most natural way to start a list from a bar that exists
+  so you don't type `- `. Heading worked there; these two answered with silence, and on a whitespace-only line they went
+  further and recorded an undo step that changed nothing. A press now either changes something or says nothing.
+- **Pressing Bold at offset 0 of `## Storm` un-headed it.** The bar's own smoke test did exactly this and passed, because
+  the assertion only looked for `****`. An ATX heading has to start its line, so the note's title had become a
+  paragraph; the pair now goes in after the `## `.
+- **A list marker inside a code fence lit the buttons.** A caret on `- item` inside a ```bash``` fence is reading shell
+  text. The parser knows that and reports nothing there; my line-prefix rule contradicted it, which is the one thing
+  this bar promised not to do.
+- **`Ctrl+K` with the caret inside an existing URL** wrote `[label]([]()https://…)`. It now declines, because the link
+  already is a link.
+- **Three assertions asserted less than they looked to.** The read-only check sent its keystroke to `document.body`, and
+  CodeMirror listens on `.cm-content` — events bubble up, never down, so that test stayed green with the read-only guard
+  deleted (I deleted it, to be sure). One assertion in `markdownState.test.ts` was inside a `//` comment, because I put
+  a literal `
+` in a line instead of a newline. And the keymap pin proved only that a string was present. All three now
+  fail when the thing they describe stops being true — which I checked by breaking each one.
+- **The muted folder in the name row was not muted.** `.quiet` inside that row had no rule at all, so folder and filename
+  both came out in full-weight ink while these notes promised otherwise. Found by looking at the screen.
 
 ## Numbers for this release
 
-* Front end: **445 Vitest tests passing** (was 410), `npm run build` exit 0, `svelte-check` **0 errors, 0 warnings**.
-* Rust: no code touched. `apps/shell/Cargo.lock` is bumped with the manifest, as every release commit since 0.0.23 has
-  done — leaving it at 0.0.25 while `Cargo.toml` said 0.0.26 makes any `cargo build --locked` fail outright (checked:
-  exit 101 against the stale lock, 0 against the fixed one), and CI's plain `npx tauri build` would have rewritten a
-  tracked file mid-release.
-* New module `src/lib/layoutSize.ts`: every limit and both memories, tested as arithmetic. `jsdom` has no layout
-  engine, so the pixels were checked another way — the browser harness (`npm run ui`) at 1920/1200/820 px window
-  widths, in light and dark, dragging both handles with a real pointer: sidebar wide to its 540 px ceiling with every
-  label on one line, floor at 266 px, drawer grown and shrunk from its top edge, hover tint measured against paper in
-  both schemes (250→190 light, 27→85 dark).
+* Front end: **479 Vitest tests passing** (was 445), `npm run build` exit 0, `svelte-check` **0 errors, 0 warnings**.
+* Thirty-four of them are new, and eight of those exist only to hold a fix from the review pass. Three of the fixes were
+  checked by *breaking* the thing they guard — deleting the read-only guard, moving the keymap back, unmuting the
+  folder — and watching the suite go red.
+* New modules: `src/lib/markdownEdit.ts` (what a press does to a range of text — pure, no editor in sight) and
+  `src/lib/markdownState.ts` (which marks hold the caret). The arithmetic lives there because offset arithmetic fails
+  quietly: a wrap one character off does not crash, it writes `**bold` into your note and waits until you reopen it.
+* No new dependency. Everything used here was already in `package.json`.
+* Rust and note-processor: untouched.
 
 ## What to look for
 
-`docs/testing-on-windows.md` §2b-zb has the walk-through: drag the sidebar and reopen Jott, `Ctrl+Shift+D` and read a
-path whole, drag the drawer taller and count the rows, and press **About → Diagnostics** expecting one panel.
+`docs/testing-on-windows.md` §2b-zc has the walk-through: bold a word mid-sentence and watch the asterisks arrive,
+keep typing inside them, take the formatting off again with the same button, `Ctrl+B` without selecting anything,
+Enter inside a `- [ ]` list, and open `INDEX.md` to confirm there is no bar at all on a file Jott will not write.

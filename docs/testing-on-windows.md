@@ -751,6 +751,42 @@ it dismissed it, including that button). Click the dark area outside the panel a
 If the drawer opens with a black line across the top of it, or grabbing its edge starts highlighting text in your note
 instead of resizing, that is a regression — tell me and say which window size you were at.
 
+## 2b-zc. Since 0.0.27: formatting without asterisks
+
+There is a bar above the note now, under its name: **B** *I* `</>` **link** **•** **☑** **H**. It writes markdown into
+the file — it does not hide any, and there is no preview mode. What I want from you is whether it does what pressing
+it suggests.
+
+1. **Bold a word you are already looking at.** Click into a sentence, put the caret in the middle of a word — do not
+   select anything — and press **B**. The word should come out `**like this**`, still bold on screen, with its asterisks
+   faded. Then press **B** again: they should go away and leave the word exactly as it was, spaces included.
+2. **Keep typing inside them.** Put the caret at the end of a line, in the whitespace, and press **B**. You should see
+   `****` with the caret between the two pairs, and everything you then type should land inside them. Press Right (or
+   End) to get out. If instead it starts writing outside them, that is a bug — say what you typed.
+3. **Watch the button agree with the screen.** Click into a bolded phrase: **B** should look pressed. Click into
+   ordinary text two words away: it should not. Same for *I*, and for `H` on a line starting `##`. A control that is
+   lit when nothing there is bold is worse than no control, so tell me about any mismatch even if the formatting itself
+   is right.
+4. **Use the keyboard.** `Ctrl+B`, `Ctrl+I`, `Ctrl+E` (inline code) and `Ctrl+K` (link) should do what the buttons do.
+   `Ctrl+K` on a selection gives you `[the words]()` with the caret between the parentheses, so you can type or paste
+   the URL there — no dialog box appears, deliberately.
+5. **Press Enter in a list.** Type `- [ ] buy flares` and press Enter: the next line should start `- [ ] ` on its own.
+   Backspace at the very end of a bolded word should take both asterisks off at once, not one. Neither of those is new
+   in 0.0.27 — they have worked since the markdown language went in, and I only wrote them down now — so if either has
+   *stopped* working, that is this release breaking something, not this release failing to add it.
+6. **Undo.** After pressing any control, `Ctrl+Z` once should put the text back exactly as it was — markers and caret
+   together. If the words come back but the caret jumps somewhere odd, tell me which control you pressed.
+7. **Open note-processor's own index** (`INDEX.md`, greyed in the tree). There should be **no bar at all**, and
+   `Ctrl+B` should do nothing to it; the name row stays, because reading it is allowed. Then open an ordinary note
+   again and confirm the bar comes back.
+8. **The note's name.** The row above the editor shows the file name, with its folder muted in front of it when the
+   note is not at the top of the vault — `field-log/scratch.txt` should show both halves. It should say it **once**: if
+   you see the filename twice, that is the regression I fixed on the way to this release and it has come back.
+
+What is a preference rather than a bug: the `☑` glyph is small and a little faint in dark mode, and `H` steps only
+between `##` and `###` — `#` stays something you type yourself, so that a heading button cannot demote a note's title.
+If either bothers you in practice, say so; it is a design argument, not a fault.
+
 ## 4. The question only Windows can answer: write-lock contention
 
 np takes a lock on the workspace while it indexes, and on Windows that lock is a file others cannot open.
