@@ -715,6 +715,42 @@ tooltip says keyword ranking. Hover any of them: the tooltip names which measure
 percentage. If you see the same number twice on one row again, tell me which mode was set — that means note-processor
 started returning something new.
 
+## 2b-zb. Since 0.0.26: the window takes the shape you give it
+
+**The sidebar.** Between the file list and the note there is now a thin strip that changes your cursor to a resize
+arrow. Drag it right: the list gets wider and every label stays on one line — `Index now`, `+ note`, the legend. Drag
+it as far left as it will go (266 px) and check what breaks: nothing should read as cut off, though a long folder name
+will end in an ellipsis, and hovering it still shows the whole thing. **Close Jott and open it again: the width you
+left comes back.** Double-click the strip, or click it and press `Home`, for the default.
+
+**Keyboard, if you want it:** click the strip once, then `Left`/`Right` nudge 16 px (`Shift` + arrow = 48 px), `Home`
+resets. Then put the caret in a note or in the search box and use the arrows to read along a line — the columns must
+not move. That separation is deliberate.
+
+**The diagnostics drawer.** `Ctrl+Shift+D`. It should now span the **whole width** of the window, with the runtime
+facts on the left and the activity rows on the right (on a narrow window they stack), and the grey status strip should
+still be the last thing at the bottom edge — not above the drawer. Read the **log** row: a path like
+`C:\Users\chris\AppData\Roaming\jott\logs\jott.jsonl` should now fit on **one line**, because the drawer is wide
+enough for it. If your window is narrow enough that it has to break, it may break anywhere in the path — that is what
+CSS does with a word longer than the column, and 0.0.26 only changed *where* it prefers not to break (mid-word when
+there is room, which there now is). What I want to hear about is a path that is broken even in a wide window.
+
+**Its height is yours.** Put the cursor on the drawer's top edge until it turns into a resize arrow and drag up: you
+should get **more activity rows**, not more empty space — and the edge should stay under your finger from the moment
+you press it, with no jump. Drag it down to the floor (180 px) and let go. Going up, it stops at 70 % of the window or
+at whatever leaves the note pane 200 px; in a very short window the 180 px floor wins instead, so on a small screen —
+or a window you have dragged down near 300 px — the drawer can take more than half of it. That is the floor doing its
+job, not the ceiling failing: tell me if the *note pane* vanishes or the bottom status strip leaves the screen at any
+window size, because that one is a bug. `Home` while the edge has focus returns the default 320 px; double-clicking it
+does too; reopen the drawer and your height is still there.
+
+**About → Diagnostics.** Press **About**, then **Diagnostics**. Expect exactly one thing on screen: the drawer, with
+About gone. While you are in About, press **Copy details** — the panel must stay open (before 0.0.26 any click inside
+it dismissed it, including that button). Click the dark area outside the panel and it closes, as it should.
+
+If the drawer opens with a black line across the top of it, or grabbing its edge starts highlighting text in your note
+instead of resizing, that is a regression — tell me and say which window size you were at.
+
 ## 4. The question only Windows can answer: write-lock contention
 
 np takes a lock on the workspace while it indexes, and on Windows that lock is a file others cannot open.
