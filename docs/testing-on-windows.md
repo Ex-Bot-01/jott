@@ -771,7 +771,9 @@ it suggests.
    `Ctrl+K` on a selection gives you `[the words]()` with the caret between the parentheses, so you can type or paste
    the URL there — no dialog box appears, deliberately.
 5. **Press Enter in a list.** Type `- [ ] buy flares` and press Enter: the next line should start `- [ ] ` on its own.
-   Backspace at the very end of a bolded word should take both asterisks off at once, not one.
+   Backspace at the very end of a bolded word should take both asterisks off at once, not one. Neither of those is new
+   in 0.0.27 — they have worked since the markdown language went in, and I only wrote them down now — so if either has
+   *stopped* working, that is this release breaking something, not this release failing to add it.
 6. **Undo.** After pressing any control, `Ctrl+Z` once should put the text back exactly as it was — markers and caret
    together. If the words come back but the caret jumps somewhere odd, tell me which control you pressed.
 7. **Open note-processor's own index** (`INDEX.md`, greyed in the tree). There should be **no bar at all**, and

@@ -57,8 +57,9 @@ export function applyMark(text: string, sel: Sel, kind: MarkKind): Edit | null {
 
 /** Wrap a range in `open`/`close`, take them off again if they are already there, or open a pair around the caret. */
 function pairEdit(text: string, sel: Sel, open: string, close: string): Edit {
-  let from = Math.min(sel.from, sel.to)
-  let to = Math.max(sel.from, sel.to)
+  // The range is clamped before anything else reads it; see `clampToParagraph` for why a wrap may not reach over a
+  // blank line or leave a marker at the head of one.
+  let { from, to } = clampToParagraph(text, sel)
 
   if (from === to) {
     // A word character on *both* sides means the caret is inside a word, and "bold" plainly means that word. One
@@ -75,7 +76,8 @@ function pairEdit(text: string, sel: Sel, open: string, close: string): Edit {
       // the whitespace inside a marked phrase, which is where clicking rather than typing puts it.
       const enclosed = enclosingPair(text, from, open, close)
       if (enclosed !== null) return removePair(text, enclosed.start, enclosed.end, from, open, close)
-      return { from, to, insert: open + close, anchor: from + open.length, head: from + open.length }
+      const at = pastHeadingMarker(text, from)
+      return { from: at, to: at, insert: open + close, anchor: at + open.length, head: at + open.length }
     }
   }
 
@@ -109,9 +111,8 @@ function pairEdit(text: string, sel: Sel, open: string, close: string): Edit {
 }
 
 /** `[text](url)` — the one control whose two halves are not a matched pair, so it gets its own branch. */
-function linkEdit(text: string, sel: Sel): Edit {
-  let from = Math.min(sel.from, sel.to)
-  let to = Math.max(sel.from, sel.to)
+function linkEdit(text: string, sel: Sel): Edit | null {
+  let { from, to } = clampToParagraph(text, sel)
 
   if (from === to) {
     const before = WORD_CHAR.test(text.charAt(from - 1))
@@ -126,10 +127,16 @@ function linkEdit(text: string, sel: Sel): Edit {
         const label = text.slice(labelStart + 1, from - 2)
         return { from: labelStart, to: to + 1, insert: label, anchor: labelStart, head: labelStart + label.length }
       }
+    } else if (insideFilledAddress(text, from)) {
+      // The caret is already inside the address of a real link. This branch only ever knew how to undo an *empty*
+      // pair, so it used to write `[]()` in among the characters of the URL: `[label]([]()https://…)`. Pressing
+      // link there means "this should be a link", and it already is — declining is the smaller lie.
+      return null
     } else {
       // `[]()` with the caret between the parentheses: the next thing typed is the URL, which is the half a person
       // has to fill in anyway.
-      return { from, to, insert: '[]()', anchor: from + 3, head: from + 3 }
+      const at = pastHeadingMarker(text, from)
+      return { from: at, to: at, insert: '[]()', anchor: at + 3, head: at + 3 }
     }
   }
 
@@ -170,26 +177,71 @@ function blockEdit(text: string, sel: Sel, kind: 'bullet' | 'task'): Edit | null
   while (start > 0 && text.charAt(start - 1) !== '\n') start -= 1
   let end = to
   while (end < text.length && text.charAt(end) !== '\n') end += 1
-  if (end === start) return null
 
-  const lines = text.slice(start, end).split('\n')
-  const blank = (line: string) => line.trim() === ''
+  // `end === start` is the caret sitting on an empty line, which used to read as "no block here" and answer the press
+  // with silence. Pressing • on a blank line under a heading is the most natural way to start a list there is.
+  const lines = end === start ? [''] : text.slice(start, end).split('\n')
   let changed: string[]
 
   if (kind === 'bullet') {
-    // Every line already bulleted means the press takes the bullet off. One plain line among them means it puts
-    // bullets on all of them — a control that only ever removed things would make the list harder to start than to
-    // end, and nobody reads "nothing happened" as a partial success.
-    const allMarked = lines.every((l) => blank(l) || LIST_PREFIX.test(l))
-    changed = lines.map((l) => (blank(l) ? l : allMarked ? stripList(l) : addBullet(l)))
+    // Every marked line and nothing unmarked means the press takes the bullets off. One plain line among them means
+    // it puts bullets on all of them — a control that only ever removed things would make a list harder to start than
+    // to end, and nobody reads "nothing happened" as a partial success. Blank lines count as marked, so a list with a
+    // blank line in it still un-bullets; a press on blanks alone is a press that wants bullets.
+    const allMarked =
+      lines.some((l) => LIST_PREFIX.test(l)) && lines.every((l) => l.trim() === '' || LIST_PREFIX.test(l))
+    changed = lines.map((l) => (allMarked ? stripList(l) : addBullet(l)))
   } else {
-    const allTasks = lines.every((l) => blank(l) || TASK_PREFIX.test(l))
-    changed = lines.map((l) => (blank(l) ? l : allTasks ? stripCheckbox(l) : addTask(l)))
+    const allTasks =
+      lines.some((l) => TASK_PREFIX.test(l)) && lines.every((l) => l.trim() === '' || TASK_PREFIX.test(l))
+    changed = lines.map((l) => (allTasks ? stripCheckbox(l) : addTask(l)))
   }
 
   const block = text.slice(start, end)
   const insert = changed.join('\n')
+  // A press that would write back exactly what it read must not dispatch: the change lands in the undo history
+  // anyway, and Ctrl+Z then looks like a key that does nothing.
+  if (insert === block) return null
+  // The caret on an empty line goes *after* the prefix that just appeared. `shift` leaves an offset at a line's start
+  // where it is, which is right for a selection spanning real text — but here it would park the caret in front of the
+  // `- `, so the next character typed would come out `x- `.
+  if (end === start) return { from: start, to: end, insert, anchor: start + insert.length, head: start + insert.length }
   return { from: start, to: end, insert, anchor: shift(from, start, lines, changed), head: shift(to, start, lines, changed) }
+}
+
+/** The range a wrap is allowed to cover: the selection with any line breaks off both ends, and cut short at the first
+ *  blank line inside it.
+ *
+ *  Both halves are the same rule as the closing asterisk. A break at an end leaves the marker at the head of a line,
+ *  where it can only open; a blank line in the middle ends the paragraph, and emphasis cannot span paragraphs, so
+ *  `**a\n\nb**` renders nothing bold and shows every character of itself. A single soft break between the two is left
+ *  alone, because that renders as intended. */
+function clampToParagraph(text: string, sel: Sel): { from: number; to: number } {
+  let from = Math.min(sel.from, sel.to)
+  let to = Math.max(sel.from, sel.to)
+  while (to > from && text.charAt(to - 1) === '\n') to -= 1
+  while (from < to && text.charAt(from) === '\n') from += 1
+  const breakInside = text.slice(from, to).indexOf('\n\n')
+  if (breakInside !== -1) to = from + breakInside
+  return { from, to }
+}
+
+/** A pair inserted at the front of a heading line belongs after the `## `, not before it: an ATX heading has to start
+ *  its line, so `****## Storm` is a paragraph and the note's title has stopped being one. Past the marker, the same
+ *  press means "start writing bold in the title", which is what it looks like it is doing. */
+function pastHeadingMarker(text: string, offset: number): number {
+  const lineStart = text.lastIndexOf('\n', Math.max(0, offset - 1)) + 1
+  if (lineStart > offset) return offset
+  const marker = /^#{1,6}\s/.exec(text.slice(lineStart, lineStart + 8))
+  return marker && offset <= lineStart + marker[0].length ? lineStart + marker[0].length : offset
+}
+
+/** True when `offset` sits between the parentheses of a link address that already has something in it. The `]` in
+ *  front of the `(` is what makes it link syntax rather than a parenthetical aside in a sentence. */
+function insideFilledAddress(text: string, offset: number): boolean {
+  const open = text.lastIndexOf('(', offset)
+  const close = text.indexOf(')', offset)
+  return open > 0 && close > open + 1 && text.charAt(open - 1) === ']' && close > offset
 }
 
 /** Where an offset in the old block lands after the prefixes changed. Offsets before the block do not move; one

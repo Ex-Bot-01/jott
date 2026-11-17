@@ -1856,6 +1856,14 @@
     white-space: nowrap;
     font-weight: 600;
   }
+
+  /* The folder in front of the name, and the `read-only` chip beside it, are both `.quiet` and both inside this row,
+     which sets weight 600 and full ink for the filename. Without a rule of their own they came out looking exactly
+     like the name — the half that is supposed to recede was the half you could not tell from the file. */
+  .note-bar .quiet {
+    color: var(--muted);
+    font-weight: 400;
+  }
   .note-bar button {
     margin-inline-start: auto;
   }

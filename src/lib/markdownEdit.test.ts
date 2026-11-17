@@ -126,3 +126,54 @@ describe('block marks', () => {
     expect(applied('', { from: 0, to: 0 }, 'task')).toBeNull()
   })
 })
+
+describe('presses that reach the awkward edges', () => {
+  it('wraps words, not the line break between them', () => {
+    // One Shift+Down from the start of a note selects `ab\n`. Wrapping that verbatim gives `**ab\n**cd`, and the
+    // pair at the head of line two can only *open* — nothing renders bold, and the note carries two stray marker
+    // runs that autosave will write to disk two seconds later. The wrap belongs to the words.
+    expect(applied('ab\ncd', { from: 0, to: 3 }, 'bold')).toEqual({ text: '**ab**\ncd', anchor: 2, head: 4 })
+    expect(applied('a\n\nb', { from: 0, to: 5 }, 'bold')).toEqual({ text: '**a**\n\nb', anchor: 2, head: 3 })
+    // A newline inside a selection is fine: emphasis and link labels both render across a soft break, so only the
+    // ends get pulled back. A label ending in one would not be a link at all.
+    expect(applied('see a\nnext', { from: 4, to: 6 }, 'link')).toEqual({ text: 'see [a]()\nnext', anchor: 8, head: 8 })
+  })
+
+  it('leaves a heading a heading when bold starts at the front of the line', () => {
+    // The bar's own first press in the smoke test lands here. `****# Inbox` is not a heading — an ATX heading has to
+    // start the line — so pressing Bold at offset 0 would quietly turn a note's title into a paragraph.
+    expect(applied('## Storm', { from: 0, to: 0 }, 'bold')).toEqual({ text: '## ****Storm', anchor: 5, head: 5 })
+  })
+
+  it('starts a list on an empty line instead of doing nothing', () => {
+    // Pressing • on the blank line under a heading is the most natural way to begin a list from a bar that exists
+    // so you don't type `- `. Heading already worked there; bullet and task answered with silence.
+    expect(applied('a\n\nb', { from: 2, to: 2 }, 'bullet')).toEqual({ text: 'a\n- \nb', anchor: 4, head: 4 })
+    expect(applied('a\n\nb', { from: 2, to: 2 }, 'task')).toEqual({ text: 'a\n- [ ] \nb', anchor: 8, head: 8 })
+  })
+
+  it('refuses rather than nesting inside a link that already has an address', () => {
+    // Click into the URL of `[label](https://exe.dev)` and press Ctrl+K: the second-press rule only knows an empty
+    // pair, so before this it wrote `[label]([]()https://…)`. Declining is the smaller lie.
+    expect(applyMark('[label](https://exe.dev)', { from: 14, to: 14 }, 'link')).toBeNull()
+  })
+
+  it('never dispatches a range it did not change', () => {
+    // A press that replaces text with identical text still lands in the undo history, and Ctrl+Z then reads as a key
+    // that does nothing. Whatever a press decides, it decides to change something or to say nothing.
+    const docs = ['', 'a\n\nb', '- x\n\n- y', '# H', '   ', '**w**', '- [ ] north', '[l](u)']
+    const kinds: MarkKind[] = ['bold', 'italic', 'code', 'link', 'bullet', 'task', 'heading']
+    for (const doc of docs) {
+      for (const kind of kinds) {
+        for (const sel of [{ from: 0, to: 0 }, { from: doc.length, to: doc.length }, { from: 0, to: doc.length }]) {
+          const e = applyMark(doc, sel, kind)
+          if (e) {
+            expect(e.insert, `${kind} at ${sel.from} of ${JSON.stringify(doc)}`).not.toBe(
+              doc.slice(e.from, e.to),
+            )
+          }
+        }
+      }
+    }
+  })
+})

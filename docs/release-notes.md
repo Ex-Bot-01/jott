@@ -23,9 +23,12 @@ markdown in; press it again and it takes it out.
 buttons only for now: `H` steps the caret's line `none → ## → ### → off`, and deliberately never produces `#`, because
 a title is typed by hand and a button that quietly demoted one would be rewriting the line you meant to leave alone.
 
-Two things came free from the markdown language pack, which this window had installed but never wired up: **Enter now
-continues a list** — `- [ ] ` at the start of the next line instead of a bare newline — and Backspace at the end of
-`**word|**` takes the whole pair off rather than one asterisk at a time.
+Two things this release *documents* rather than adds, because they already worked and nothing had ever said so:
+`markdown()` installs the language pack's own keys, so **Enter continues a list** — `- [ ] ` at the start of the next
+line instead of a bare newline — and Backspace at the end of `**word|**` takes the whole pair off rather than one
+asterisk at a time. Both have worked since the markdown language went in. I spent part of this pass installing a second
+copy of that keymap, which sat underneath the one that answers and could never run; a test now pins the call that
+actually does it, so the next person does not have to rediscover which of the two is load-bearing.
 
 ## Why the markers stay on screen
 
@@ -54,9 +57,45 @@ counting.
   second press on a pair you are still inside takes that pair off, whether or not you typed anything between them.
 - A caret sitting in `**|` counts as bold even though CommonMark has nothing to report for an empty span — see above.
 
+Then a reviewer read the whole branch with fresh eyes and found nine more, all fixed here. They are worth listing,
+because none of them made a test go red on their own:
+
+- **A wrap that ended on a newline wrote broken markdown.** Selecting to the end of a line with Shift+Down and pressing
+  Bold gave `**ab
+**cd` — the pair at the head of the next line can only *open*, so nothing rendered bold and two stray
+  marker runs went into the note, which autosave would have put on disk two seconds later. A wrap now stops at a line
+  break, and at a blank line: emphasis cannot cross a paragraph, so `**a
+
+b**` shows every character of itself.
+- **Two presses close together were one undo step.** CodeMirror composes adjacent edits into one history event when the
+  dispatch carries no `userEvent` and they land inside 500 ms. Press Bold, press Italic, press Ctrl+Z: the note went
+  back to before *both*, which is what "Ctrl+Z does nothing" feels like. Each press now names its own event.
+- **• and ☑ said nothing at all on an empty line** — the single most natural way to start a list from a bar that exists
+  so you don't type `- `. Heading worked there; these two answered with silence, and on a whitespace-only line they went
+  further and recorded an undo step that changed nothing. A press now either changes something or says nothing.
+- **Pressing Bold at offset 0 of `## Storm` un-headed it.** The bar's own smoke test did exactly this and passed, because
+  the assertion only looked for `****`. An ATX heading has to start its line, so the note's title had become a
+  paragraph; the pair now goes in after the `## `.
+- **A list marker inside a code fence lit the buttons.** A caret on `- item` inside a ```bash``` fence is reading shell
+  text. The parser knows that and reports nothing there; my line-prefix rule contradicted it, which is the one thing
+  this bar promised not to do.
+- **`Ctrl+K` with the caret inside an existing URL** wrote `[label]([]()https://…)`. It now declines, because the link
+  already is a link.
+- **Three assertions asserted less than they looked to.** The read-only check sent its keystroke to `document.body`, and
+  CodeMirror listens on `.cm-content` — events bubble up, never down, so that test stayed green with the read-only guard
+  deleted (I deleted it, to be sure). One assertion in `markdownState.test.ts` was inside a `//` comment, because I put
+  a literal `
+` in a line instead of a newline. And the keymap pin proved only that a string was present. All three now
+  fail when the thing they describe stops being true — which I checked by breaking each one.
+- **The muted folder in the name row was not muted.** `.quiet` inside that row had no rule at all, so folder and filename
+  both came out in full-weight ink while these notes promised otherwise. Found by looking at the screen.
+
 ## Numbers for this release
 
-* Front end: **471 Vitest tests passing** (was 445), `npm run build` exit 0, `svelte-check` **0 errors, 0 warnings**.
+* Front end: **479 Vitest tests passing** (was 445), `npm run build` exit 0, `svelte-check` **0 errors, 0 warnings**.
+* Thirty-four of them are new, and eight of those exist only to hold a fix from the review pass. Three of the fixes were
+  checked by *breaking* the thing they guard — deleting the read-only guard, moving the keymap back, unmuting the
+  folder — and watching the suite go red.
 * New modules: `src/lib/markdownEdit.ts` (what a press does to a range of text — pure, no editor in sight) and
   `src/lib/markdownState.ts` (which marks hold the caret). The arithmetic lives there because offset arithmetic fails
   quietly: a wrap one character off does not crash, it writes `**bold` into your note and waits until you reopen it.

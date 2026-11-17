@@ -6,7 +6,7 @@
   import { Decoration, EditorView, keymap, type ViewUpdate } from '@codemirror/view'
   import { Compartment, EditorState, RangeSet, StateField, type Extension } from '@codemirror/state'
   import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
-  import { markdown, markdownKeymap } from '@codemirror/lang-markdown'
+  import { markdown } from '@codemirror/lang-markdown'
   import { bracketMatching, syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language'
   import { markdownStyle } from './markdownStyle'
   import { applyMark, type MarkKind } from './markdownEdit'
@@ -193,6 +193,10 @@
       changes: { from: edit.from, to: edit.to, insert: edit.insert },
       selection: { anchor: edit.anchor, head: edit.head },
       scrollIntoView: true,
+      // A name of its own, because CodeMirror composes two adjacent edits into one undo event when `userEvent` is
+      // unset or looks like typing (`joinableUserEvent`) and they land inside `newGroupDelay` — 500 ms. Two quick
+      // presses would otherwise be one step, and the first Ctrl+Z would appear to do nothing at all.
+      userEvent: 'format',
     })
     viewNow.focus()
     return true
@@ -262,10 +266,9 @@
         ...defaultKeymap,
         ...historyKeymap,
         indentWithTab,
-        // The markdown language pack's own keys, which this window had never installed: Enter continues a `- [ ]`
-        // item instead of dropping the marker, and Backspace at the end of `**word|**` takes the whole pair off
-        // rather than one asterisk at a time. Two lines for the two most felt things a markdown editor does.
-        ...markdownKeymap,
+        // No `markdownKeymap` here. `markdown()` above installs the language pack's own keys itself — `addKeymap`
+        // defaults to true — and does it at `Prec.high`, so a copy of that list down here would sit below the one
+        // that answers and read, to the next person, like the reason Enter continues a list.
       ]),
       EditorView.domEventHandlers({ blur: () => (void saveNow(), true) }),
       // Read untracked on purpose: this runs inside the effect that opens a note, and a keystroke in the

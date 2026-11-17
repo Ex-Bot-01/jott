@@ -38,7 +38,7 @@ describe('active marks', () => {
     expect(at('****', 2)).toContain('bold')
     expect(at('__', 1)).toContain('italic')
     expect(at('``', 1)).toContain('code')
-    // caret between the parentheses of a fresh link: \n    expect(at('[label]()', 8)).toContain('link')
+    expect(at('[label]()', 8)).toContain('link')
     expect(at('****', 4)).toEqual([])
     expect(at('****', 0)).toEqual([])
   })
@@ -51,3 +51,13 @@ describe('active marks', () => {
     expect(at('', 0)).toEqual([])
   })
 })
+
+  it('keeps quiet inside a fenced code block', () => {
+    // A caret on `- item` inside a ```bash``` fence is looking at shell text, not at a list, and the parser agrees:
+    // a `FencedCode` node has no line-level children, so the tree half of `activeMarks` reports nothing while the
+    // line-prefix half lit • and H anyway. Two halves of one indicator must not disagree.
+    const doc = '```bash\n- item\n# head\n```\nplain'
+    expect(at(doc, 10)).toEqual([])
+    expect(at(doc, 17)).toEqual([])
+    expect(at('```bash\nx\n```\n- real', 16)).toContain('bullet')
+  })

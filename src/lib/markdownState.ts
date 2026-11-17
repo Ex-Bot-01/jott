@@ -36,11 +36,16 @@ export function activeMarks(state: EditorState): MarkKind[] {
   // Bold there would tell the next reader that something is bold which is not. The node type comes from Lezer via
   // inference — `@codemirror/language` re-exports no name for it, so annotating would mean importing a transitive
   // dependency this project does not declare.
+  // Text inside a code block is somebody else's language. A `- item` in a ```bash``` fence is not a list and
+  // `# head` is not a heading — the parser knows this and reports no line-level nodes in there, so without this flag
+  // the tree half of this function would say "nothing" while the prefix half right below it said "bullet".
+  let inCode = false
   let node = syntaxTree(state).resolve(pos, -1)
   while (node) {
     if (node.from < pos && node.to > pos) {
       const kind = NODE_KIND[node.name]
       if (kind) found.add(kind)
+      if (node.name === 'FencedCode' || node.name === 'IndentedCodeBlock') inCode = true
     }
     // Stepping to the parent only when there is one keeps the variable non-null, which is the difference between
     // this compiling and a type annotation on a Lezer class that `@codemirror/language` does not re-export.
@@ -51,6 +56,7 @@ export function activeMarks(state: EditorState): MarkKind[] {
 
   const lineBlock = state.doc.lineAt(pos)
   const line = lineBlock.text
+  if (inCode) return ORDER.filter((kind) => found.has(kind))
   if (state.selection.main.empty) emptyPairAt(line, pos - lineBlock.from, found)
   if (BULLET_LINE.test(line)) found.add('bullet')
   if (TASK_LINE.test(line)) found.add('task')
