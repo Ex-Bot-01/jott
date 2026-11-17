@@ -3,7 +3,7 @@
   // Everything factual here came from a command or an event; the decisions live in the tested modules
   // (`tree.ts`, `saveState.ts`, `statusLine.ts`) and in `jott-core`.
 
-  import { onMount } from 'svelte'
+  import { onDestroy, onMount } from 'svelte'
   import About from './lib/About.svelte'
   import Settings from './lib/Settings.svelte'
   import Diagnostics from './lib/Diagnostics.svelte'
@@ -50,6 +50,15 @@
   import type { SavePhase } from './lib/saveState'
   import * as ipc from './lib/ipc'
   import { loadSettings, saveMode, savePrefix, type SearchMode } from './lib/searchSettings'
+  import {
+    SIDE_DEFAULT,
+    SIDE_MIN,
+    clampSide,
+    loadLayout,
+    saveSide,
+    sideFromPointer,
+    sideMax,
+  } from './lib/layoutSize'
   import type { DiagnosticsSnapshot, TraceEvent } from './lib/diagnostics'
   import type { AboutInfo, ConsentHelp, FetchedRecord, IngestEvent, NoteContent, RegistryInfo, SearchResults, VaultListing } from './lib/ipc'
 
@@ -168,6 +177,83 @@
    * default to note-processor's own defaults rather than to an opinion of ours. */
   const storedSettings = loadSettings(typeof localStorage === 'undefined' ? null : localStorage)
   let prefixOn = $state(storedSettings.prefix)
+
+  /** How wide the tree column is — the person's decision now, not the stylesheet's. The floors and the ceiling live in
+   *  `layoutSize.ts` with the measurements behind them; what lives here is the drag, the keyboard, and the memory.
+   *
+   *  The handle answers the arrow keys and nothing else does. A window-level arrow listener would move the columns
+   *  every time somebody read through a sentence with the caret, which is a worse bug than an unfound handle — and
+   *  the handle is made findable instead: it is focusable, tinted on hover and focus, and outlined in forced colours. */
+  const layoutStore = typeof localStorage === 'undefined' ? null : localStorage
+  let sidePx = $state(loadLayout(layoutStore, innerWidth, innerHeight).sidePx)
+  /** True between `pointerdown` and `pointerup`, so the cursor and text selection behave while the pointer wanders.
+   *  It is also what makes a released drag stop: a move that arrives without it changes nothing. */
+  let draggingSide = $state(false)
+
+  function nudgeSide(event: KeyboardEvent) {
+    const step = event.shiftKey ? 48 : 16
+    let next: number
+    switch (event.key) {
+      case 'ArrowLeft':
+        next = sidePx - step
+        break
+      case 'ArrowRight':
+        next = sidePx + step
+        break
+      case 'Home':
+        // "Back to what it was before I moved it" has to be one key, because the first thing a person does after
+        // discovering a handle is discover what they broke.
+        next = SIDE_DEFAULT
+        break
+      default:
+        return
+    }
+    // Arrows would otherwise scroll the tree, and Home would send it to the top of the list.
+    event.preventDefault()
+    sidePx = clampSide(next, innerWidth)
+    // Saved at every stop: a person who nudges twice and closes the window should not lose it.
+    saveSide(layoutStore, sidePx)
+  }
+
+  function startSideDrag(event: PointerEvent) {
+    // Capture so the pointer keeps reporting to the handle while it travels over the note pane. jsdom has no capture
+    // at all and some webviews refuse it for a synthetic pointer, hence both guards: a drag that cannot capture still
+    // drags, it just stops tracking when the pointer leaves the strip.
+    try {
+      ;(event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId)
+    } catch {
+      // Nothing to do.
+    }
+    draggingSide = true
+    sidePx = sideFromPointer(event.clientX, innerWidth)
+  }
+
+  function moveSideDrag(event: PointerEvent) {
+    if (!draggingSide) return
+    sidePx = sideFromPointer(event.clientX, innerWidth)
+  }
+
+  /** Release, and the cancelled release too — a drag interrupted by a context menu or a lost window must not leave the
+   *  cursor stuck in resize mode. Nothing is written mid-drag: a drag in progress is not yet a decision. */
+  function endSideDrag() {
+    if (!draggingSide) return
+    draggingSide = false
+    saveSide(layoutStore, sidePx)
+  }
+
+  function resetSide() {
+    sidePx = SIDE_DEFAULT
+    saveSide(layoutStore, sidePx)
+  }
+
+  /** A narrower window narrows the column *for now* and leaves the memory alone: the remembered width belongs to the
+   *  desk this app is used on, the clamp belongs to the window it happens to be in. Rewriting the preference here is
+   *  how a laptop would quietly forget the width chosen on the monitor it was docked to. */
+  const onWindowResize = () => (sidePx = clampSide(sidePx, innerWidth))
+  if (typeof addEventListener === 'function') addEventListener('resize', onWindowResize)
+  onDestroy(() => {
+    if (typeof removeEventListener === 'function') removeEventListener('resize', onWindowResize)
+  })
   let searchMode = $state<SearchMode>(storedSettings.mode)
   /** The settings panel: the tester's "a settings menu to show this, so it isn't hidden". */
   let showSettings = $state(false)
@@ -1058,7 +1144,7 @@
   onclick={() => (menu = null)}
 />
 
-<main class="window">
+<main class="window" class:dragging={draggingSide} style="--side: {sidePx}px">
   <aside class="side">
     <header class="vault">
       {#if vaultName}
@@ -1340,6 +1426,35 @@
     </div>
   </aside>
 
+  <!-- The width of the list is yours: drag this strip, nudge it with the arrow keys (Shift for a bigger step), or
+       double-click / Home for the default. It is its own focusable element rather than a hover trick because a handle
+       that only exists under a pointer is a handle the keyboard never finds. -->
+  <!-- The two a11y warnings are silenced deliberately, not to make noise go away. `role="separator"` plus
+       `tabindex="0"` plus `aria-valuenow/min/max` *is* the ARIA pattern for a split bar — a separator that is focusable
+       and carries a value — and Svelte's interactive-role list does not know `separator`, so it flags both the tabindex
+       and the listeners. The alternative roles it would accept (`slider`) describe a control over a number, not the
+       border between two panes, and would be read out wrongly by exactly the software this markup is written for. -->
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+  <div
+    class="splitter"
+    role="separator"
+    aria-orientation="vertical"
+    tabindex="0"
+    aria-label="Sidebar width"
+    aria-valuemin={SIDE_MIN}
+    aria-valuemax={sideMax(innerWidth)}
+    aria-valuenow={sidePx}
+    title="Drag to resize the list · double-click or Home for the default width"
+    data-testid="sidebar-splitter"
+    onpointerdown={startSideDrag}
+    onpointermove={moveSideDrag}
+    onpointerup={endSideDrag}
+    onpointercancel={endSideDrag}
+    ondblclick={resetSide}
+    onkeydown={nudgeSide}
+  ></div>
+
   {#if menu !== null}
     <!-- A real menu, on the row that was clicked, offering only what `actionsFor` says can be done to it. -->
     <div class="row-menu" style:left="{menu.x}px" style:top="{menu.y}px" role="menu" tabindex="-1">
@@ -1590,11 +1705,15 @@
   }
   .window {
     display: grid;
-    /* The sidebar used to start at 14 rem. At that width `Index now` and `+ note` wrapped onto two lines, the
-       explanation paragraph ran five words to a line, and `INDEX.md` came out as `INDEX.ma` — a window whose own
-       labels are cut off cannot be trusted about somebody else's notes. 19 rem is where the longest label in here
-       stops breaking; 26 rem is where the tree starts stealing reading room from the note. */
-    grid-template-columns: minmax(19rem, 26rem) 1fr;
+    /* Three tracks now, because the handle between the columns is a real element and an unplaced third child would
+       fall to a new row. The first one used to be `minmax(19rem, 26rem)` — 266 px to 364 px at this window's 14 px
+       root — and those two numbers are still right, as the *limits* in `layoutSize.ts`: below 266 px `Index now` and
+       `+ note` wrap and `INDEX.md` arrives as `INDEX.ma`; past about 45 % of the window the tree is what you look at
+       and the note is the strip. Between them, it is the drag that decides.
+
+       The fallback in `var()` is the width every version up to 0.0.25 rendered at, so a window that has never been
+       dragged looks exactly as it did before this existed. */
+    grid-template-columns: var(--side, 364px) 5px 1fr;
     grid-template-rows: 1fr auto;
     height: 100vh;
     font: 14px/1.5 ui-sans-serif, system-ui, 'Segoe UI', sans-serif;
@@ -1609,8 +1728,44 @@
        looking like it is being clipped, which is what it looked like even when nothing was clipped. */
     padding-inline-end: 0.35rem;
   }
-  .middle {
+  /* The handle. It sits over the divider rather than being one — `.side` keeps its `border-right` — so dragging
+     * moves a column and not the furniture, and the strip is wider than the line so a pointer has something to hit. */
+  .splitter {
     grid-column: 2;
+    grid-row: 1;
+    margin-inline-start: -3px;
+    z-index: 6;
+    border: 0;
+    background: transparent;
+    cursor: ew-resize;
+  }
+
+  /* The tint is how the strip says "I am grabbable" to a pointer. It is not the only way: the same strip takes the
+     focus ring, and forced colours gets a real border below. */
+  .splitter:hover,
+  .splitter:focus-visible {
+    background: color-mix(in srgb, var(--ink) 28%, transparent);
+  }
+
+  /* While dragging, the cursor must not change as the pointer crosses the note pane, and a drag across the tree must
+     not start selecting file names. */
+  .window.dragging {
+    user-select: none;
+    cursor: ew-resize;
+  }
+
+  @media (forced-colors: active) {
+    /* A tint is a colour and forced-colours mode throws colours away, which would leave the handle invisible and the
+       feature unfound. `CanvasText` is the system's own ink, so the strip keeps an edge nobody can switch off. */
+    .splitter {
+      border: 1px solid;
+      border-color: CanvasText;
+      background: Canvas;
+    }
+  }
+
+  .middle {
+    grid-column: 3;
     grid-row: 1;
     display: flex;
     flex-direction: column;

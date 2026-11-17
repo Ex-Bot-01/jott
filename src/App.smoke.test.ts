@@ -21,10 +21,13 @@ Range.prototype.getBoundingClientRect = () => emptyRect
  * colour is legible — it tells me whether the app got as far as having a DOM at all, which is what a white
  * window means when it isn't a missing file.
  */
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { EditorView } from '@codemirror/view'
 import { unmount, type Component } from 'svelte'
 import { MODE_KEY, PREFIX_KEY } from './lib/searchSettings'
+import { SIDE_KEY } from './lib/layoutSize'
 import type { IngestEvent } from './lib/ipc'
 
 /** Which backend this window believes it is talking to. */
@@ -844,6 +847,103 @@ describe('the window mounts', () => {
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     await vi.waitFor(() => expect(document.body.textContent ?? '').not.toContain('What Jott is doing'))
     expect(errors).toEqual([])
+  })
+
+  it('lets you set the sidebar width from the keyboard', async () => {
+    // The column used to be `minmax(19rem, 26rem)`: right as a limit, wrong as a decision made once for every window.
+    // The handle is tested by key rather than by drag because jsdom has no layout engine — the arithmetic it drives
+    // is pinned in `layoutSize.test.ts`, and this is the part that says the window answers the key at all.
+    const { errors } = await start()
+
+    const handle = document.querySelector('[data-testid="sidebar-splitter"]') as HTMLElement | null
+    expect(handle, 'the window has no way to resize the sidebar').not.toBeNull()
+    expect(handle!.getAttribute('role')).toBe('separator')
+    expect(handle!.getAttribute('aria-orientation')).toBe('vertical')
+    expect(handle!.getAttribute('tabindex')).toBe('0')
+    expect(handle!.getAttribute('aria-valuenow')).toBe('364')
+
+    handle!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+    await vi.waitFor(() => expect(handle!.getAttribute('aria-valuenow')).toBe('380'))
+    expect(document.querySelector('main.window')!.getAttribute('style') ?? '').toContain('--side: 380px')
+    expect(localStorage.getItem(SIDE_KEY)).toBe('380')
+
+    // Shift is the coarse step: 16 px at a time is precise and slow, and nobody drags back for a whole row.
+    handle!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', shiftKey: true, bubbles: true }))
+    await vi.waitFor(() => expect(handle!.getAttribute('aria-valuenow')).toBe('332'))
+
+    handle!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }))
+    await vi.waitFor(() => expect(handle!.getAttribute('aria-valuenow')).toBe('364'))
+    expect(localStorage.getItem(SIDE_KEY)).toBe('364')
+    expect(errors).toEqual([])
+  })
+
+  it('clamps a remembered sidebar width to the window it landed in', async () => {
+    // A width dragged on a 27" monitor arriving on a laptop must leave the note pane readable — and must survive the
+    // clamp, so the desktop still gets its 900 px back tomorrow.
+    localStorage.setItem(SIDE_KEY, '900')
+    const { errors } = await start()
+
+    const handle = document.querySelector('[data-testid="sidebar-splitter"]') as HTMLElement
+    // jsdom's window is 1024 px wide, and 45 % of that is 460.
+    await vi.waitFor(() => expect(handle.getAttribute('aria-valuenow')).toBe('460'))
+    expect(document.querySelector('main.window')!.getAttribute('style') ?? '').toContain('--side: 460px')
+    expect(localStorage.getItem(SIDE_KEY)).toBe('900')
+    expect(errors).toEqual([])
+  })
+
+  it('moves the column while the pointer is down and stops when it is released', async () => {
+    // jsdom has no `PointerEvent`, so these are `MouseEvent`s under the pointer names — which is all a listener sees.
+    const { errors } = await start()
+    const handle = document.querySelector('[data-testid="sidebar-splitter"]') as HTMLElement
+
+    // jsdom's window is 1024 px wide, so the ceiling here is 460 px: every figure below stays inside it deliberately,
+    // because a test that measured a clamp would be testing `layoutSize.ts` for the second time.
+    handle.dispatchEvent(new MouseEvent('pointerdown', { clientX: 300, bubbles: true }))
+    handle.dispatchEvent(new MouseEvent('pointermove', { clientX: 400, bubbles: true }))
+    await vi.waitFor(() => expect(handle.getAttribute('aria-valuenow')).toBe('400'))
+    // Nothing is written mid-drag. A drag in progress is not yet a decision, and a webview's storage should not take
+    // one write per pixel of the way there.
+    expect(localStorage.getItem(SIDE_KEY)).toBeNull()
+
+    handle.dispatchEvent(new MouseEvent('pointerup', { clientX: 400, bubbles: true }))
+    await vi.waitFor(() => expect(localStorage.getItem(SIDE_KEY)).toBe('400'))
+    // A pointer that keeps travelling after the button came up — released outside the window, or over the note pane —
+    // must not keep dragging somebody's layout with it.
+    handle.dispatchEvent(new MouseEvent('pointermove', { clientX: 440, bubbles: true }))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(localStorage.getItem(SIDE_KEY)).toBe('400')
+    expect(handle.getAttribute('aria-valuenow')).toBe('400')
+    expect(errors).toEqual([])
+  })
+
+  it('leaves the arrow keys to whatever is being typed in', async () => {
+    // The handle answers arrows; the window does not. A global arrow listener would move the columns every time
+    // somebody read through a sentence with the caret.
+    const { errors } = await start()
+    const box = document.querySelector('input[type="search"]') as HTMLInputElement
+    box.focus()
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    const handle = document.querySelector('[data-testid="sidebar-splitter"]') as HTMLElement
+    expect(handle.getAttribute('aria-valuenow')).toBe('364')
+    expect(localStorage.getItem(SIDE_KEY)).toBeNull()
+    expect(errors).toEqual([])
+  })
+
+  it('keeps the handle visible where hover does not exist', async () => {
+    // A claim about what the stylesheet says, not about what a screen shows: jsdom computes no layout and no forced
+    // colours, so this can only hold the rule to account. It is here because an invisible handle is a feature nobody
+    // finds, and the tint that makes it findable on hover is a colour — which forced-colours mode throws away.
+    // Read from the working tree rather than from `import.meta.url`: under a jsdom test file that URL is served over
+    // http, and `fileURLToPath` refuses it — which is why this one line spells the path out.
+    const app = readFileSync(join(process.cwd(), 'src', 'App.svelte'), 'utf8')
+    const at = app.indexOf('@media (forced-colors: active)')
+    expect(at, 'the window has no forced-colours rules').not.toBe(-1)
+    const block = app.slice(at)
+    expect(block).toContain('.splitter')
+    expect(block).toContain('border-color: CanvasText')
   })
 
   it('shows what the backend has been doing, without a second window', async () => {
