@@ -1623,6 +1623,19 @@
     />
   </section>
 
+  <!-- The drawer is deliberately *before* the status line: both are auto-placed rows of `.window`, so this order is
+       what puts the strip at the bottom edge of the window with the drawer above it. Written the other way round, the
+       drawer landed under the status line — and since it also spans every column now, that read as the window growing
+       a second floor nobody asked for. -->
+  {#if showDiagnostics}
+    <Diagnostics
+      snapshot={snapshot}
+      live={traceRows}
+      jottVersion={about?.jottVersion ?? 'unknown'}
+      onClose={() => (showDiagnostics = false)}
+    />
+  {/if}
+
   <StatusLine
     {status}
     consent={consent}
@@ -1632,15 +1645,6 @@
     onembed={() => void ipc.ingestAll()}
     onconsent={(granted) => void answerConsent(granted)}
   />
-
-  {#if showDiagnostics}
-    <Diagnostics
-      snapshot={snapshot}
-      live={traceRows}
-      jottVersion={about?.jottVersion ?? 'unknown'}
-      onClose={() => (showDiagnostics = false)}
-    />
-  {/if}
 
   {#if showSettings}
     <Settings
@@ -1714,7 +1718,10 @@
        The fallback in `var()` is the width every version up to 0.0.25 rendered at, so a window that has never been
        dragged looks exactly as it did before this existed. */
     grid-template-columns: var(--side, 364px) 5px 1fr;
-    grid-template-rows: 1fr auto;
+    /* Row 1 is everything that reads and writes; rows 2 and 3 are the diagnostics drawer and the status strip, both
+       spanning every column. Two `auto` rows because the drawer is optional *and* resizable: with one `auto` the two
+       of them competed for the same slot, which is how the drawer ended up sharing a row with nothing. */
+    grid-template-rows: 1fr auto auto;
     height: 100vh;
     font: 14px/1.5 ui-sans-serif, system-ui, 'Segoe UI', sans-serif;
   }

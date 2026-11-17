@@ -611,6 +611,14 @@ async function prefixToggleInSettings(): Promise<HTMLInputElement> {
   }, { timeout: 2000 })) as HTMLInputElement
 }
 
+/** One CSS rule's own text, from a component source file. Source pins read rules, not files: prose next to a rule is
+    allowed to *mention* the property it removed, and a pin that trips over that sentence tests nothing but spelling. */
+function rule(source: string, selector: string): string {
+  const at = source.indexOf(`${selector} {`)
+  expect(at, `the stylesheet has no ${selector} rule`).not.toBe(-1)
+  return source.slice(at, source.indexOf('}', at))
+}
+
 async function start(): Promise<{ errors: unknown[]; app: Component }> {
   document.body.innerHTML = '<div id="app"></div><div id="boot"><p>Jott is starting…</p></div>'
   const errors: unknown[] = []
@@ -984,6 +992,33 @@ describe('the window mounts', () => {
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'd', ctrlKey: true, shiftKey: true, bubbles: true }))
     await vi.waitFor(() => expect(document.body.textContent ?? '').not.toContain('What Jott is doing'))
 
+    expect(errors).toEqual([])
+  })
+
+  it('gives the diagnostics drawer the window width, and the status line its floor back', async () => {
+    // The drawer was designed as a strip across the whole window. `.drawer` carried no `grid-column`, so grid
+    // auto-placement parked it in row 3, column 1: about 364 px wide under the sidebar, dead space to its right, and
+    // the status line pushed up above it. jsdom computes no layout, so this pins the two facts that produce the shape:
+    // which grid areas the elements are told to take, and the order they arrive in.
+    scenario.current = 'vault'
+    const { errors } = await start()
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'd', ctrlKey: true, shiftKey: true, bubbles: true }))
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="diagnostics-drawer"]')).not.toBeNull())
+
+    const drawer = document.querySelector('[data-testid="diagnostics-drawer"]') as HTMLElement
+    const status = document.querySelector('.status') as HTMLElement
+    expect(status, 'the window has no status line').not.toBeNull()
+    // The status strip comes after the drawer, so it is the last row of the window again.
+    expect(status.compareDocumentPosition(drawer) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy()
+
+    // A claim about what the stylesheet says, not about what a screen shows: the drawer spans every column, and
+    // neither it nor its activity list caps its own height any more — Task 4 gives it a height on purpose. Read as
+    // rules rather than as whole-file text, because a comment explaining what used to be there is not a cap.
+    const sheet = readFileSync(join(process.cwd(), 'src', 'lib', 'Diagnostics.svelte'), 'utf8')
+    expect(rule(sheet, '.drawer')).toContain('grid-column: 1 / -1')
+    expect(rule(sheet, '.drawer')).not.toContain('max-height')
+    expect(rule(sheet, '.activity')).not.toContain('max-height')
     expect(errors).toEqual([])
   })
 

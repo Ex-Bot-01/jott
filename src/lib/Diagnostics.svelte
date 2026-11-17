@@ -100,7 +100,7 @@
 <!-- Escape is routed once, by App (`escapeAction`). This drawer used to listen on `window` itself, which meant one
      press closed the drawer *and* whatever `escapeAction` decided was next. -->
 
-<section class="drawer" aria-label="Jott diagnostics" tabindex="-1" bind:this={drawer}>
+<section class="drawer" data-testid="diagnostics-drawer" aria-label="Jott diagnostics" tabindex="-1" bind:this={drawer}>
   <header>
     <h2>What Jott is doing</h2>
     <p class="promise">This is what the backend asked and answered. Nothing you have typed appears here.</p>
@@ -205,11 +205,15 @@
 
 <style>
   .drawer {
+    /* Every column, and it has to be said out loud: this element is a child of the window's grid, so without this it
+       is auto-placed into the *sidebar's* column — which is what made the whole screen about 364 px wide, paths and
+       all, with empty space beside it. Its height used to be capped at 45 vh here; it is now a number the person
+       drags (Task 4), so nothing in this rule limits what somebody asked for. */
+    grid-column: 1 / -1;
     border-top: 1px solid color-mix(in srgb, var(--ink) 22%, transparent);
     background: color-mix(in srgb, var(--paper) 92%, var(--ink));
     color: var(--ink);
     padding: 0.6rem 0.9rem 0.8rem;
-    max-height: 45vh;
     overflow: auto;
     font-size: 0.82rem;
   }
@@ -258,10 +262,11 @@
   }
 
   .activity {
+    /* This list used to carry its own cap, which meant a taller drawer bought a taller empty box instead of more
+       rows — the exact thing the drag exists to fix. Nothing limits it now but the drawer it sits in. */
     list-style: none;
     margin: 0 0 0.6rem;
     padding: 0;
-    max-height: 22vh;
     overflow: auto;
     border-top: 1px solid color-mix(in srgb, var(--ink) 14%, transparent);
   }
