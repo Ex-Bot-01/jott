@@ -35,9 +35,9 @@
     wideningSentence,
   } from './lib/searchState'
   import { markTerms } from './lib/highlight'
-  import { SCORE_TITLE, figuresNote, formatScore, meaningLabel, rowLabel } from './lib/scoreLabel'
+  import { figuresNote, rowFigures, rowLabel, scoreTitleFor } from './lib/scoreLabel'
   import { consentSentence, modelReadySentence, statusFor, type Status } from './lib/statusLine'
-  import { cardClipboard, cardSentences, NP_ISSUE } from './lib/consentHelp'
+  import { cardSentences } from './lib/consentHelp'
   import { createBlocked } from './lib/createHere'
   import { formatsSentence, opensAsText, planNoteName } from './lib/noteName'
   import type { ConsentOutcome } from './lib/ipc'
@@ -151,7 +151,6 @@
   /** A model that this run's embed pass downloaded. The announcement outlives the status line and goes when the
       next pass supersedes it or the person moves on to another note. */
   let modelReady = $state<FetchedRecord | null>(null)
-  let cardClipFailed = $state(false)
   /** Somebody answered "don't notify". Held for the run: a refusal is not a question to repeat. */
   let notifyRefused = $state(false)
   let showAbout = $state(false)
@@ -260,7 +259,6 @@
       consentHelp = null
       lastRefusal = null
       consentOutcome = null
-      cardClipFailed = false
       prefixOnce = false
       // The offer named one folder's model and one folder's waiting count. Carried across, the banner beside a second
       // folder quotes a `models.list` that was asked about the first.
@@ -400,9 +398,15 @@
 
   /** The card's sentences. Empty means np is ready to embed, and the card stays out of the way — emptiness is
       decided in `consentHelp.ts`, where it is tested, rather than in markup. */
+  /** Whether the card may offer *Allow the download*. Two gaps say no: a file np cannot parse (nothing can be written
+      until somebody edits it by hand) and an engine Jott does not recognise — pressing Allow there would overwrite a
+      choice this window has no business touching. */
+  const cardCanAllow = $derived(
+    consentHelp !== null && consentHelp.gap !== 'providerOther' && consentHelp.gap !== 'configUnreadable',
+  )
+
   const cardFacts = $derived(consentHelp ? { help: consentHelp, refusal: lastRefusal, outcome: consentOutcome } : null)
   const cardLines = $derived(cardFacts ? cardSentences(cardFacts) : [])
-  const cardText = $derived(cardFacts ? cardClipboard(cardFacts) : '')
 
   async function readConsentHelp() {
     // The panel distinguishes "still reading" from "read, and there is nothing to say": the two looked identical, and
@@ -415,16 +419,6 @@
     }
   }
 
-  async function copyCardSettings() {
-    try {
-      await navigator.clipboard.writeText(cardText)
-      cardClipFailed = false
-    } catch {
-      // The webview can refuse a clipboard write. The text is worth having either way, so it goes on screen
-      // selected rather than being lost.
-      cardClipFailed = true
-    }
-  }
 
   /** The banner is up; this is only for the window nobody is looking at.
    *
@@ -1195,7 +1189,7 @@
           </li>
         {/if}
         {#each results.hits as hit (hit.path)}
-        {@const meaning = meaningLabel(hit.cosine)}
+        {@const figures = rowFigures(hit)}
           <li>
             <button
               type="button"
@@ -1212,13 +1206,20 @@
                 <!-- note-processor's own figure, unconverted. The tooltip is where it says what the number is, because
                      every search UI is tempted to turn a ranking into "87% similar" and this one was asked for as a
                      "similarity score". -->
-                <span class="hit-score" data-testid="hit-score" title={`${SCORE_TITLE}${figuresNote(hit)}`}>
-                  {formatScore(hit.score)}
-                </span>
-                {#if meaning !== null}
+                {#if figures.rank !== null}
+                  <!-- The tooltip names *which* measurement this is, because np's `score` field holds three different
+                       ones depending on which half of search ran — a fused rank, the cosine, or negated bm25. -->
+                  <span class="hit-score" data-testid="hit-score" title={`${scoreTitleFor(hit)}${figuresNote(hit)}`}>
+                    {figures.rank}
+                  </span>
+                {/if}
+                {#if figures.meaning !== null}
                   <!-- Only rows where vectors actually ran get a meaning figure; np answers `cosine: null` otherwise,
-                       and "meaning 0" would describe a measurement nobody took. -->
-                  <span class="hit-meaning">{meaning}</span>
+                       and "meaning 0" would describe a measurement nobody took. In meanings-only search this *is* the
+                       row's score, so it stands alone rather than appearing twice (`scoreLabel.ts`). -->
+                  <span class="hit-meaning" data-testid="hit-meaning" title={`${scoreTitleFor(hit)}${figuresNote(hit)}`}>
+                    {figures.meaning}
+                  </span>
                 {/if}
               </span>
               {#if hitSuffix(hit.matchedExactly)}
@@ -1277,30 +1278,28 @@
             <p>{line}</p>
           {/each}
         </div>
-        {#if consentHelp && consentHelp.linesToAdd.length > 0 && !consentOutcome}
-          <!-- The lines np needs, as copyable text rather than as a sentence to retype (§4). Shown only while nobody
-               has answered: since np 0.5.x a press writes those keys itself, and paste-instructions beside a file that
-               was just written for you are two contradictory instructions on one screen. -->
-          <pre class="settings">{consentHelp.linesToAdd.join('\n')}</pre>
-        {/if}
+        <!-- One button, because one decision is on the table. What used to sit here — a block of TOML to paste, Copy,
+             Try again, a link into note-processor's issue tracker and the bare URL beneath it — was instructions for a
+             manual job that one press has done through the pipe since 0.5.x (note-processor#7). A tester counted it in
+             a screenshot and asked what any of it was for an ordinary user; the honest answer was: nothing. The detail
+             is one click away in Settings, where somebody who wants it is already looking for it. -->
         <span class="buttons">
-          <button type="button" onclick={() => void copyCardSettings()}>
-            {consentOutcome ? 'Copy what happened' : 'Copy these settings'}
-          </button>
-          <button type="button" data-testid="consent-retry" onclick={() => void retryEmbeddings()}>Try again</button>
-          <button type="button" onclick={() => void openUrl(NP_ISSUE).catch(() => undefined)}>
-            Read the note-processor request
-          </button>
+          {#if cardCanAllow}
+            <button
+              type="button"
+              class="primary"
+              data-testid="consent-allow"
+              disabled={consentBusy}
+              onclick={() => void setEmbeddings(true)}
+            >
+              Allow the download
+            </button>
+          {:else if consentHelp?.gap === 'configUnreadable'}
+            <!-- The one state a button cannot fix: np will not rewrite a file it cannot parse. After editing it in
+                 another window, this is how the window finds out. -->
+            <button type="button" data-testid="consent-retry" onclick={() => void retryEmbeddings()}>Try again</button>
+          {/if}
         </span>
-        {#if cardClipFailed}
-          <!-- The clipboard refused. The text still has to leave this window somehow. -->
-          <textarea readonly rows="6" aria-label="Settings to copy" onfocus={(e) => e.currentTarget.select()}>{cardText}</textarea>
-        {/if}
-        {#if !consentOutcome}
-          <!-- The request to note-processor is worth naming only while somebody still has to act by hand. Once np
-               answered over the pipe, this window has no unfinished business pointing there. -->
-          <span class="hint">{NP_ISSUE}</span>
-        {/if}
       </div>
     {:else if listing && awaitingIndex > 0 && !selected}
       <div class="first-pass">
@@ -1764,17 +1763,6 @@
   .card-lines p {
     margin: 0 0 0.25rem;
   }
-  .settings {
-    margin: 0;
-    padding: 0.35rem 0.5rem;
-    font-family: var(--mono, ui-monospace, monospace);
-    font-size: 0.75rem;
-    white-space: pre-wrap;
-    background: color-mix(in srgb, currentColor 7%, transparent);
-    border: 1px solid color-mix(in srgb, currentColor 15%, transparent);
-    /* Selectable by hand even when the clipboard refuses a write. */
-    user-select: text;
-  }
   /* The one paragraph in the sidebar that explains rather than warns. It had no rule at all — a bare `<p>` against the
      window edge, in full-strength ink, at the same size as the file names above it, so the sentence that decides
      whether a folder of `.pdf`s is mysterious read as part of the list. */
@@ -1803,6 +1791,12 @@
   .warn,
   .np {
     color: #b8863b;
+  }
+  /* Every other child of the sidebar brings its own inset (`.tools` pads 0.5rem, the tree indents further), so a bare
+     paragraph between them landed against the window edge — the tester's photograph of the orange refusal line, which
+     read as part of the window frame rather than a sentence Jott was saying. Same inset as the search row above it. */
+  .side > .warn {
+    padding-inline: 0.5rem;
   }
   @media (prefers-color-scheme: dark) {
     .warn,

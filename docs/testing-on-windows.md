@@ -696,6 +696,25 @@ Two cases where the card still appears, on purpose:
 
 If you click Allow and see *neither* a strip nor a card, that is the bug to tell me about — say roughly what time.
 
+## 2b-za. Since 0.0.25: the consent card says one thing, and rows show one number per measurement
+
+**The card.** It should now be a sentence and a button: *"Meaning search is off: nothing has been allowed to download
+yet…"* with **Allow the download** beside it. No key names, no block of settings to paste, no GitHub link. Pressing
+that button should start the download straight away — the strip across the note pane within about five seconds.
+
+**Where the detail went:** Settings → embeddings. It still names `models.auto_fetch`, the file np read and what is
+missing, and it has **Copy these settings** for when you need the text out of the window.
+
+**Two things the card deliberately does not offer a button for:** a settings file note-processor cannot parse (it gets
+*Try again*, because nothing can be written until that file is fixed) and an embedding engine Jott does not recognise —
+pressing Allow there would overwrite a choice somebody made on purpose.
+
+**Search rows.** With **Meanings only**, a row now shows one figure — `meaning 0.83`. With **Both**, it shows the fused
+rank *and* the meaning figure, because those are two different measurements. With **Words only**, one figure whose
+tooltip says keyword ranking. Hover any of them: the tooltip names which measurement it is and repeats nothing as a
+percentage. If you see the same number twice on one row again, tell me which mode was set — that means note-processor
+started returning something new.
+
 ## 4. The question only Windows can answer: write-lock contention
 
 np takes a lock on the workspace while it indexes, and on Windows that lock is a file others cannot open.

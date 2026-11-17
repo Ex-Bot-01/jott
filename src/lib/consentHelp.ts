@@ -118,8 +118,26 @@ function guardrail(autoFetch: boolean | null): string {
   return 'Nobody has answered whether models may be downloaded yet, so Jott keeps models.auto_fetch = false and nothing arrives on its own.'
 }
 
+/** What the card says. Deliberately less than what the panel says — see `linesFor`. */
 export function cardSentences(facts: ConsentFacts): string[] {
-  return linesFor(facts, true)
+  return linesFor(facts, { hideQuietYes: true, detail: 'card' })
+}
+
+/** The one sentence an unanswered consent question needs on the face of the window.
+ *
+ *  A tester's screenshot decided this: the card carried `models.auto_fetch = false`, a count of missing settings
+ *  lines, a block to paste, three buttons and a link into note-processor's issue tracker — for somebody whose only
+ *  decision is whether meaning-search should work. Since 0.5.x one press does all of it through the pipe
+ *  (note-processor#7), so every line of that was instructions for a manual job the button already does. The detail
+ *  did not disappear: `panelLines` still gives the settings panel the key names, the file and np's own wording.
+ */
+function plainOffer(autoFetch: boolean | null): string {
+  if (autoFetch === true) {
+    // They did say yes, so nothing may imply they did not. What is missing is np's own choice of engine, which this
+    // window has no business making (§4) — the honest short version is that the decision lives elsewhere.
+    return 'You allowed downloads, but note-processor has no embedding engine chosen to fetch with yet. That choice is in its own settings, and Jott will not guess it.'
+  }
+  return 'Meaning search is off: nothing has been allowed to download yet. Allow the download and this folder can be searched by meaning as well as by words.'
 }
 
 /** The one place the wording is decided.
@@ -129,8 +147,12 @@ export function cardSentences(facts: ConsentFacts): string[] {
  *  settings panel has the opposite job: somebody opened it to ask "what is the state?", and an empty answer there
  *  reads as a read still in flight — which is the bug its own comment below records. So the panel hears the receipt,
  *  the window does not. */
-function linesFor(facts: ConsentFacts, hideQuietYes: boolean): string[] {
+function linesFor(
+  facts: ConsentFacts,
+  opts: { hideQuietYes: boolean; detail: 'card' | 'panel' },
+): string[] {
   const { help, refusal } = facts
+  const detailed = opts.detail === 'panel'
   // Which setting is short is core's verdict (`settings_gap` in Rust), read off np's own file. Re-deriving it here
   // would be a second opinion the two sides could disagree about.
 
@@ -140,7 +162,7 @@ function linesFor(facts: ConsentFacts, hideQuietYes: boolean): string[] {
   if (facts.outcome && help.gap !== 'configUnreadable') {
     // A clean yes says nothing at all (`outcomeNeedsCard`), and with no lines the card — buttons included — is not
     // drawn. A refusal that turns up afterwards is still said: it is a second fact, not a receipt.
-    const quiet = hideQuietYes && !outcomeNeedsCard(facts.outcome)
+    const quiet = opts.hideQuietYes && !outcomeNeedsCard(facts.outcome)
     const lines = quiet ? [] : outcomeSentences(facts.outcome)
     // A refusal that arrives *after* the press is a second fact, not a replacement for it: np wrote those settings,
     // and ten seconds later it refused something else. Clearing the receipt (which this window used to do) put the
@@ -150,6 +172,14 @@ function linesFor(facts: ConsentFacts, hideQuietYes: boolean): string[] {
   }
 
   if (help.gap === 'ready') return []
+
+  if (!detailed && (help.gap === 'providerMissing' || help.gap === 'modelMissing')) {
+    // One sentence and a button. np's refusal, when there is one, still leads: it is the specific fact, and it is
+    // never Jott's paraphrase of it (§4).
+    const sentences = refusal === null ? [] : [refusal]
+    sentences.push(plainOffer(help.autoFetch))
+    return sentences
+  }
 
   if (help.gap === 'providerOther') {
     // An engine Jott does not recognise is not a problem to explain. "openai-compatible means an HTTP endpoint"
@@ -218,8 +248,9 @@ export function cardClipboard(facts: ConsentFacts): string {
  *  note-processor has recorded…" forever, including after a successful read that had nothing to report: a stated
  *  state with no fact behind it. This is one module answering both surfaces, so they cannot disagree. */
 export function panelLines(facts: ConsentFacts): string[] {
-  // `false`: the panel is a readout, not an interruption.
-  const lines = linesFor(facts, false)
+  // The panel is a readout, not an interruption: it names keys, files and counts, because somebody opening it has
+  // already asked the technical question.
+  const lines = linesFor(facts, { hideQuietYes: false, detail: 'panel' })
   if (lines.length > 0 || facts.help.gap !== 'ready') return lines
   const model = facts.help.modelId === null ? '' : ` (${facts.help.modelId})`
   return [`note-processor’s settings are complete${model}: notes can be embedded, and a search can use meanings.`]

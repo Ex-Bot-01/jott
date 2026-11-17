@@ -20,14 +20,22 @@ function help(fields: Partial<ConsentHelp>): ConsentHelp {
 }
 
 describe('the card after a consent answer', () => {
-  it('says what Jott recorded, and in which file', () => {
-    const sentences = cardSentences({ help: help({ autoFetch: true }), refusal: null })
-    const text = sentences.join(' ')
-    expect(text).toContain('models.auto_fetch = true')
-    // The card says plainly that consent was obeyed and that no download followed it — the two halves the
-    // old one-liner left ambiguous.
-    expect(text).toContain('Nothing was downloaded')
-    expect(cardClipboard({ help: help({ autoFetch: true }), refusal: null })).toContain(FILE)
+  it('keeps the key names and the file in the panel, where somebody went looking', () => {
+    // The card used to carry all of this. A tester's screenshot settled it: `models.auto_fetch = false`, a count of
+    // missing lines, a block to paste, three buttons and an issue link — for a person whose only decision is whether
+    // meaning search should work. The detail survives one click away, in the panel that asks for it.
+    const facts = { help: help({ autoFetch: true }), refusal: null }
+    expect(panelLines(facts).join(' ')).toContain('models.auto_fetch = true')
+    expect(cardClipboard(facts)).toContain(FILE)
+
+    // The card's version of the same reading: no key names, and — because a *yes* is already on record here — no
+    // button it would be lying about either. It says what is still missing and where the choice lives.
+    const card = cardSentences(facts).join(' ')
+    expect(card).not.toContain('auto_fetch')
+    expect(card).toContain('You allowed downloads')
+
+    const notYet = cardSentences({ help: help({ autoFetch: false }), refusal: null }).join(' ')
+    expect(notYet).toContain('Allow the download')
   })
 
   it('quotes np’s refusal byte for byte, in its own sentence', () => {
@@ -56,17 +64,22 @@ describe('the card after a consent answer', () => {
     expect(sentences).toEqual([])
   })
 
-  it('says the guardrail is what stands in the way when nobody has answered yet', () => {
-    // A fresh np downloads by default; Jott writes `false` until asked. Nobody having answered is not the same
-    // sentence as somebody having allowed it.
-    const text = cardSentences({ help: help({ autoFetch: false }), refusal: null }).join(' ')
-    expect(text).toContain('models.auto_fetch = false')
-    expect(text).not.toContain('auto_fetch = true')
+  it('never implies a yes that nobody gave, and never implies a no that somebody did', () => {
+    // A fresh np downloads by default; Jott writes `false` until asked. So "nothing has been allowed yet" is true of
+    // both an unanswered question and a declined one — and false of an allowed one, which gets its own sentence.
+    const off = cardSentences({ help: help({ autoFetch: false }), refusal: null }).join(' ')
+    expect(off).toContain('nothing has been allowed to download yet')
+    const allowed = cardSentences({ help: help({ gap: 'providerMissing', autoFetch: true }), refusal: null }).join(' ')
+    expect(allowed).toContain('You allowed downloads')
+    expect(allowed).not.toContain('nothing has been allowed')
+    // The key name is still available, in the panel.
+    expect(panelLines({ help: help({ autoFetch: false }), refusal: null }).join(' ')).toContain('models.auto_fetch = false')
   })
 
   it('names no file when np had none to read', () => {
     const facts = { help: help({ autoFetch: null, configPath: null }), refusal: null }
-    expect(cardSentences(facts).join(' ')).toContain('models.auto_fetch')
+    expect(cardSentences(facts).join(' ')).not.toContain(FILE)
+    expect(panelLines(facts).join(' ')).toContain('models.auto_fetch')
     expect(cardClipboard(facts)).not.toContain(FILE)
   })
 })
@@ -87,11 +100,12 @@ describe('the card after a consent answer', () => {
     expect(text).not.toMatch(/lines? (are|is) missing/)
   })
 
-  it('does not point at a button the card does not have', () => {
-    // The guardrail sentence used to end "Say the word above to allow one." — while this branch of the window shows
-    // Copy / Try again / the issue link, and suppresses the offer that would actually allow it.
+  it('points only at a button the card really has', () => {
+    // The guardrail sentence used to end "Say the word above to allow one." while the card showed Copy / Try again /
+    // an issue link and no way to allow anything. Now the sentence names *Allow the download* and the card carries
+    // exactly that button (`App.svelte`), so a reader is never sent to a control that is not there.
     const text = cardSentences({ help: help({ autoFetch: false }), refusal: null }).join(' ')
-    expect(text).toContain('models.auto_fetch = false')
+    expect(text).toContain('Allow the download')
     expect(text).not.toContain('Say the word above')
   })
 
@@ -252,8 +266,15 @@ describe('what the settings panel says about embeddings', () => {
 
   it('is the card’s sentences, and answers more only where the card holds back', () => {
     // One module answering both surfaces, so the panel cannot drift into describing settings the card contradicts.
-    const missing = { help: help({ gap: 'providerMissing' }), refusal: null }
-    expect(panelLines(missing)).toEqual(cardSentences(missing))
+    // The panel answers the technical question and the card answers the ordinary one; neither contradicts the other,
+    // because both come from the same module reading the same np facts.
+    const missing = { help: help({ gap: 'providerMissing', autoFetch: false }), refusal: null }
+    const card = cardSentences(missing).join(' ')
+    const panel = panelLines(missing).join(' ')
+    expect(card).toContain('Allow the download')
+    expect(card).not.toContain('auto_fetch')
+    expect(panel).toContain('models.auto_fetch')
+    expect(panel).toContain('note-processor has no embedding engine turned on yet')
 
     // The one deliberate difference (`linesFor`'s `hideQuietYes`): a yes that went through has nothing to say in the
     // middle of the window and something to say in a panel somebody opened to ask. The panel is never *less* than

@@ -1,4 +1,61 @@
-# Jott 0.0.24 — "Allow the download" now downloads
+# Jott 0.0.25 — a card that says one thing, one number per measurement, and the score that was printed twice
+
+Three things from the tester's screenshots, in the order they hurt.
+
+## "Which of this text is relevant for the average user?"
+
+That was the question, and the honest answer was: **one sentence and one button**. The consent card had grown into
+`models.auto_fetch = false`, a count of missing settings lines, a block of TOML to paste by hand, three buttons
+(*Copy these settings*, *Try again*, *Read the note-processor request*) and a bare URL under them. Every line of that
+was instructions for a manual job — and since note-processor 0.5.x one press does it through the pipe
+(note-processor#7). Worse, there was no button to actually start the download without opening Settings, which is what
+the tester asked for in the same message.
+
+So the card now says, at most:
+
+> Meaning search is off: nothing has been allowed to download yet. Allow the download and this folder can be searched
+> by meaning as well as by words.
+
+with **Allow the download** beside it — which answers note-processor *and* starts fetching, because that is what 0.0.24
+made a yes mean. Two gaps refuse the button on purpose: a settings file np cannot parse (nothing can be written until
+somebody edits it, so it gets *Try again* instead), and an embedding engine Jott does not recognise — pressing Allow
+there would overwrite a choice this window has no business touching.
+
+Nothing was deleted, only moved to where the question is asked: **Settings → embeddings** still names
+`models.auto_fetch`, still says which file np read, still counts what is missing, and now carries *Copy these
+settings* (with the same fallback textarea for when the clipboard refuses). One module answers both surfaces, so the
+plain sentence and the technical one cannot drift into contradicting each other.
+
+## The orange line was printed against the window frame
+
+*"there is an orange text, but the text starts at the very left side of the gui and is not correctly handled."*
+Correct, and visible in the screenshot: every other child of the sidebar brings its own inset — `.tools` pads 0.5rem,
+the tree indents further — so a bare `<p class="warn">` between them sat flush against the window edge and read as
+part of the chrome rather than as something Jott was saying. It now takes the same inset as the search row above it.
+
+## Two scores, one measurement
+
+*"when I have meaning only … I still see two scores, two identical scores."* Not two measurements — one, printed twice
+and mislabelled. Note-processor assigns its `score` field three different ways (`search.rs:1226-1231`):
+
+| Which half ran | What `score` holds | What the row shows |
+|---|---|---|
+| both (hybrid) | a fused rank of the two lists | the rank figure, plus `meaning 0.83` |
+| vectors only (meanings only) | **the cosine itself** | one figure: `meaning 0.83` |
+| words only | SQLite's bm25, negated | one figure, tooltip says keyword ranking |
+
+The row used to print `score` and then `meaning <cosine>` unconditionally, so in meanings-only search the same number
+appeared twice under a tooltip that called it a fused rank — a description of a measurement nobody took. The label now
+comes from what np actually sent (`scoreLabel.ts`: `similarity` / `keyword` / `fused`), and the figures are compared as
+np's numbers rather than as their printed forms: `0.8274` and `0.8273` both *read* "0.83" and must stay two figures,
+because they really are two measurements.
+
+Tests: **410 front-end** (six new pins on the score rule, plus the card's one-button contract, the copy affordance in
+Settings, and that no GitHub URL appears on the card). Rust unchanged at 326.
+
+---
+
+## Jott 0.0.24 — "Allow the download" now downloads
 
 Straight from the release after the last one: *"okay the loading bar is now gone?? why?"*
 

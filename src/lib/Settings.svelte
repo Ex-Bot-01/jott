@@ -6,7 +6,7 @@
   // The rules themselves live in `searchSettings` and `consentHelp`, both tested; this file only asks.
 
   import { modeSentence, type SearchMode } from './searchSettings'
-  import { panelLines, type ConsentFacts } from './consentHelp'
+  import { cardClipboard, panelLines, type ConsentFacts } from './consentHelp'
   import { meaningsNotice } from './searchState'
 
   let {
@@ -40,6 +40,24 @@
   } = $props()
 
   const MODES: SearchMode[] = ['keyword', 'hybrid', 'semantic']
+  // The copy affordance moved here from the card. That card used to carry key names, a block of TOML to paste and a
+  // link into note-processor's tracker for somebody whose only decision was whether meaning search should work; this
+  // panel is the surface that *does* carry the detail, so it keeps the way to get the text off the screen.
+  let copied = $state(false)
+  let copyFailed = $state(false)
+
+  async function copyEmbeddings() {
+    if (cardFacts === null) return
+    copied = false
+    try {
+      await navigator.clipboard.writeText(cardClipboard(cardFacts))
+      copied = true
+      copyFailed = false
+    } catch {
+      // The clipboard refused. The text still has to leave this window somehow, so it goes below the button.
+      copyFailed = true
+    }
+  }
   const notice = $derived(meaningsNotice(vectors))
   const embeddingsLines = $derived(cardFacts ? panelLines(cardFacts) : [])
 
@@ -109,13 +127,24 @@
         Jott has not been able to read note-processor’s settings this session; nothing here has changed them.
       </p>
     {/if}
+    {#if copyFailed}
+      <textarea
+        readonly
+        rows="6"
+        aria-label="Embeddings settings to copy"
+        data-testid="copy-fallback"
+        onfocus={(e) => e.currentTarget.select()}>{cardFacts ? cardClipboard(cardFacts) : ''}</textarea>
+    {/if}
     <div class="buttons">
+      <button type="button" data-testid="copy-embeddings" onclick={() => void copyEmbeddings()}>
+        {copied ? 'Copied' : 'Copy these settings'}
+      </button>
       <button
         type="button"
         data-testid="embeddings-allow"
         disabled={consentBusy}
         onclick={() => onconsent(true)}
-        title="Asks note-processor to record the model and switch fetching on. It downloads about 296 MiB on a first run."
+        title="Asks note-processor to record its engine and model, then starts fetching straight away. The size is note-processor’s to quote; Jott does not guess it."
       >
         Allow the download
       </button>
