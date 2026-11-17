@@ -27,7 +27,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { EditorView } from '@codemirror/view'
 import { unmount, type Component } from 'svelte'
 import { MODE_KEY, PREFIX_KEY } from './lib/searchSettings'
-import { SIDE_KEY } from './lib/layoutSize'
+import { DRAWER_KEY, SIDE_KEY } from './lib/layoutSize'
 import type { IngestEvent } from './lib/ipc'
 
 /** Which backend this window believes it is talking to. */
@@ -1020,6 +1020,73 @@ describe('the window mounts', () => {
     expect(rule(sheet, '.drawer')).not.toContain('max-height')
     expect(rule(sheet, '.activity')).not.toContain('max-height')
     expect(errors).toEqual([])
+  })
+
+  /** Open the diagnostics drawer and hand back its root, waiting for the snapshot to arrive. */
+  async function openDrawer(): Promise<HTMLElement> {
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'd', ctrlKey: true, shiftKey: true, bubbles: true }))
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="diagnostics-drawer"]')).not.toBeNull())
+    return document.querySelector('[data-testid="diagnostics-drawer"]') as HTMLElement
+  }
+
+  it('lets you set the drawer height from the keyboard', async () => {
+    // The drawer used to cap itself twice: `45vh` on itself and `22vh` on its activity list. Whatever a person wanted,
+    // the rows they needed were below the fold. Now the height is theirs, and this is the half of it that does not
+    // need a pointer.
+    scenario.current = 'vault'
+    const { errors } = await start()
+    const drawer = await openDrawer()
+
+    const handle = document.querySelector('[data-testid="drawer-splitter"]') as HTMLElement
+    expect(handle, 'the drawer has no way to resize it').not.toBeNull()
+    expect(handle.getAttribute('role')).toBe('separator')
+    expect(handle.getAttribute('aria-orientation')).toBe('horizontal')
+    expect(handle.getAttribute('aria-valuenow')).toBe('320')
+
+    handle.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }))
+    await vi.waitFor(() => expect(handle.getAttribute('aria-valuenow')).toBe('336'))
+    expect(drawer.getAttribute('style') ?? '').toContain('height: 336px')
+    expect(localStorage.getItem(DRAWER_KEY)).toBe('336')
+
+    handle.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', shiftKey: true, bubbles: true }))
+    await vi.waitFor(() => expect(handle.getAttribute('aria-valuenow')).toBe('288'))
+
+    handle.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }))
+    await vi.waitFor(() => expect(handle.getAttribute('aria-valuenow')).toBe('320'))
+    expect(localStorage.getItem(DRAWER_KEY)).toBe('320')
+    expect(errors).toEqual([])
+  })
+
+  it('clamps a remembered drawer height to the window it landed in', async () => {
+    // jsdom's window is 768 px tall, so the ceiling is 537 — and, as with the sidebar, the memory itself stays.
+    localStorage.setItem(DRAWER_KEY, '900')
+    scenario.current = 'vault'
+    const { errors } = await start()
+    const drawer = await openDrawer()
+
+    await vi.waitFor(() => expect(drawer.getAttribute('style') ?? '').toContain('height: 537px'))
+    expect(localStorage.getItem(DRAWER_KEY)).toBe('900')
+    expect(errors).toEqual([])
+  })
+
+  it('leaves the note pane something to live in when the window is short', async () => {
+    // A drawer that takes the whole window debugs nothing: the activity worth reading is happening in the note behind
+    // it. In a 400 px window that means 200 px of drawer, not the remembered 900 and not the 320 default.
+    const realHeight = window.innerHeight
+    Object.defineProperty(window, 'innerHeight', { value: 400, configurable: true })
+    try {
+      localStorage.setItem(DRAWER_KEY, '900')
+      scenario.current = 'vault'
+      const { errors } = await start()
+      const drawer = await openDrawer()
+
+      expect(drawer.getAttribute('style') ?? '').toContain('height: 200px')
+      expect(localStorage.getItem(DRAWER_KEY)).toBe('900')
+      expect(errors).toEqual([])
+    } finally {
+      // Restored whatever the assertions did: every later test in this file mounts a 768 px window.
+      Object.defineProperty(window, 'innerHeight', { value: realHeight, configurable: true })
+    }
   })
 
   it('offers only what can be done to the row that was right-clicked', async () => {
