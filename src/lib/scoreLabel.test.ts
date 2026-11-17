@@ -1,11 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import {
-  SCORE_TITLE,
-  figuresNote,
-  formatScore,
-  meaningLabel,
-  rowLabel,
-} from './scoreLabel'
+import { SCORE_TITLE, figuresNote, formatScore, meaningLabel, rowLabel, rowFigures, scoreTitleFor } from './scoreLabel'
 
 describe('the note-processor score on a result row', () => {
   it('prints the number note-processor actually sent, at three significant digits', () => {
@@ -85,5 +79,56 @@ describe('the figures that stay in the tooltip', () => {
     expect(note).toContain('bm25 -1.5')
     expect(note).toContain('cosine 0.8273')
     expect(note).not.toContain('%')
+  })
+})
+
+describe('one measurement, printed once', () => {
+  // Read off note-processor's source rather than guessed (`search.rs:1226-1231`): the number that orders the list is
+  // the cosine when only vectors ran, and SQLite's negated bm25 when only words ran — a fused rank only in hybrid
+  // mode. The tester caught this by eye: *"when I have meaning only … I still see two scores, two identical scores."*
+  // Two numbers on a row said "two measurements"; there was one.
+  const similarity = { score: 0.8274, cosine: 0.8274 }
+
+  it('prints one figure when note-processor’s rank score *is* the cosine', () => {
+    const figures = rowFigures(similarity)
+    expect(figures.meaning).toBe('meaning 0.83')
+    expect(figures.rank, 'the same number twice is not a second measurement').toBeNull()
+  })
+
+  it('calls that figure what it is, not a fused rank', () => {
+    const title = scoreTitleFor(similarity)
+    expect(title.toLowerCase()).toContain('similar')
+    expect(title.toLowerCase()).not.toContain('fused')
+  })
+
+  it('prints both figures when they are two different measurements', () => {
+    // A hybrid row: fused rank ordering plus the similarity that went into it. Both are np's, both mean something.
+    const figures = rowFigures({ score: 0.0164, cosine: 0.83 })
+    expect(figures.rank).toBe('0.0164')
+    expect(figures.meaning).toBe('meaning 0.83')
+    expect(scoreTitleFor({ score: 0.0164, cosine: 0.83 }).toLowerCase()).toContain('fused')
+  })
+
+  it('names the keyword figure on a row where no vectors ran', () => {
+    // `cosine: null` is "vectors did not run", and in that mode np's score is `-bm25`. Calling it a fused rank would
+    // be Jott describing a fusion that did not happen.
+    const title = scoreTitleFor({ score: 1.7, cosine: null })
+    expect(title.toLowerCase()).toMatch(/word|bm25/)
+    expect(title.toLowerCase()).not.toContain('fused')
+    const figures = rowFigures({ score: 1.7, cosine: null })
+    expect(figures.rank).toBe('1.7')
+    expect(figures.meaning).toBeNull()
+  })
+
+  it('does not read the same number twice to a screen reader', () => {
+    const label = rowLabel({ path: 'a.md', snippet: null, ...similarity })
+    const occurrences = label.split('0.83').length - 1
+    expect(occurrences).toBe(1)
+  })
+
+  it('treats a figure that merely rounds to the same text as two measurements', () => {
+    // The rule compares np's numbers, not their printed forms: `0.8274` and `0.8273` both read "0.83" but came from
+    // different places, and hiding one would be hiding a measurement.
+    expect(rowFigures({ score: 0.8274, cosine: 0.8273 }).rank).toBe('0.827')
   })
 })

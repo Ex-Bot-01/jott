@@ -13,9 +13,59 @@
  * label appears only when np sent a number.
  */
 
-/** Shown as the row's tooltip. The last clause is the point: every search UI is tempted to turn this into "87% similar". */
+/** Shown as the row's tooltip when both halves ran. The last clause is the point: every search UI is tempted to turn
+ *  this into "87% similar". */
 export const SCORE_TITLE =
   'note-processor’s fused rank score — keyword ranking and meaning ranking combined. Higher means nearer the top of its list; it is not a percentage.'
+
+/** The tooltip when only vectors ran, which is also the case where np's `score` *is* the cosine. */
+const SIMILARITY_TITLE =
+  'how similar this note is to your query — in meanings-only search this is the number note-processor ordered the list by, so it appears once and not twice.'
+
+/** The tooltip when only words ran: np's score there is SQLite's own keyword figure with its sign flipped. */
+const KEYWORD_TITLE =
+  'how strongly this note matched your words — note-processor’s keyword ranking (SQLite’s bm25, flipped so a larger number sits nearer the top). Not a percentage.'
+
+/** Which measurement np's `score` holds for this row, read off what np itself sent.
+ *
+ *  Note-processor assigns the field three different ways (`search.rs:1226-1231`): a fused rank in hybrid search, the
+ *  cosine when only vectors ran, and `-bm25` when only words ran. A single label for all three would be a claim about
+ *  a measurement nobody took — and in the second case it put the same number on screen twice, which is how a tester
+ *  came to report *"two scores, two identical scores."*
+ */
+export type ScoreMeaning = 'fused' | 'similarity' | 'keyword'
+
+export function scoreMeaning(hit: { score: number; cosine: number | null }): ScoreMeaning {
+  if (hit.cosine === null) return 'keyword'
+  // np assigns the same float, so this is an exact comparison in practice. Tolerance only guards against a backend
+  // that rounds on the way through JSON — and it is deliberately tiny, because two measurements that merely *print*
+  // alike (0.8274 and 0.8273) must stay two figures on the row.
+  if (Math.abs(hit.score - hit.cosine) <= Math.abs(hit.score) * 1e-9) return 'similarity'
+  return 'fused'
+}
+
+/** The tooltip's first sentence for this row: what the number beside it actually measured. */
+export function scoreTitleFor(hit: { score: number; cosine: number | null }): string {
+  switch (scoreMeaning(hit)) {
+    case 'similarity':
+      return SIMILARITY_TITLE
+    case 'keyword':
+      return KEYWORD_TITLE
+    case 'fused':
+      return SCORE_TITLE
+  }
+}
+
+/** The figures to draw beside a row, with one measurement never drawn twice.
+ *
+ *  `rank` is null exactly when it would repeat the similarity figure. The visible face keeps one number either way;
+ *  which number it is stays in the tooltip and the accessible name rather than being guessed at by the reader.
+ */
+export function rowFigures(hit: { score: number; cosine: number | null }): { rank: string | null; meaning: string | null } {
+  const meaning = meaningLabel(hit.cosine)
+  if (scoreMeaning(hit) === 'similarity') return { rank: null, meaning }
+  return { rank: formatScore(hit.score), meaning }
+}
 
 /** Three significant digits, because two would print every keyword hit as `0.02` and say nothing. */
 export function formatScore(score: number): string {
@@ -45,9 +95,17 @@ export function rowLabel(row: { path: string; snippet: string | null; score: num
   const parts = [row.path]
   const snippet = row.snippet === null ? '' : stripMarks(row.snippet).trim()
   if (snippet !== '') parts.push(snippet)
-  const meaning = meaningLabel(row.cosine)
-  parts.push(`${formatScore(row.score)}${meaning === null ? '' : `, ${meaning}`}`)
-  parts.push('rank score, not a percentage')
+  // Same rule as the visible row: one number per measurement, and a phrase that says which kind of figure it was.
+  const figures = rowFigures(row)
+  const shown = [figures.rank, figures.meaning].filter((piece): piece is string => piece !== null).join(', ')
+  parts.push(shown === '' ? 'no figure' : shown)
+  parts.push(
+    scoreMeaning(row) === 'similarity'
+      ? 'similarity, not a percentage'
+      : scoreMeaning(row) === 'keyword'
+        ? 'keyword ranking, not a percentage'
+        : 'rank score, not a percentage',
+  )
   return parts.join(' — ')
 }
 
