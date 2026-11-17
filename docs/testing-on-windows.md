@@ -715,6 +715,36 @@ tooltip says keyword ranking. Hover any of them: the tooltip names which measure
 percentage. If you see the same number twice on one row again, tell me which mode was set — that means note-processor
 started returning something new.
 
+## 2b-zb. Since 0.0.26: the window takes the shape you give it
+
+**The sidebar.** Between the file list and the note there is now a thin strip that changes your cursor to a resize
+arrow. Drag it right: the list gets wider and every label stays on one line — `Index now`, `+ note`, the legend. Drag
+it as far left as it will go (266 px) and check what breaks: nothing should read as cut off, though a long folder name
+will end in an ellipsis, and hovering it still shows the whole thing. **Close Jott and open it again: the width you
+left comes back.** Double-click the strip, or click it and press `Home`, for the default.
+
+**Keyboard, if you want it:** click the strip once, then `Left`/`Right` nudge 16 px (`Shift` + arrow = 48 px), `Home`
+resets. Then put the caret in a note or in the search box and use the arrows to read along a line — the columns must
+not move. That separation is deliberate.
+
+**The diagnostics drawer.** `Ctrl+Shift+D`. It should now span the **whole width** of the window, with the runtime
+facts on the left and the activity rows on the right (on a narrow window they stack), and the grey status strip should
+still be the last thing at the bottom edge — not above the drawer. Read the **log** row: a path like
+`C:\Users\chris\AppData\Roaming\jott\logs\jott.jsonl` should be on one line, or break at a `\` — never in the middle of
+a word.
+
+**Its height is yours.** Put the cursor on the drawer's top edge until it turns into a resize arrow and drag up: you
+should get **more activity rows**, not more empty space. Drag it down to the floor (180 px) and let go — the note pane
+never disappears, because the drawer stops at 70 % of the window or whatever leaves the note 200 px. `Home` while the
+edge has focus returns the default 320 px; reopen the drawer and your height is still there.
+
+**About → Diagnostics.** Press **About**, then **Diagnostics**. Expect exactly one thing on screen: the drawer, with
+About gone. While you are in About, press **Copy details** — the panel must stay open (before 0.0.26 any click inside
+it dismissed it, including that button). Click the dark area outside the panel and it closes, as it should.
+
+If the drawer opens with a black line across the top of it, or grabbing its edge starts highlighting text in your note
+instead of resizing, that is a regression — tell me and say which window size you were at.
+
 ## 4. The question only Windows can answer: write-lock contention
 
 np takes a lock on the workspace while it indexes, and on Windows that lock is a file others cannot open.
