@@ -246,12 +246,15 @@
       history(),
       bracketMatching(),
       markdown(),
-      // `fallback: true` tints headings and emphasis even before the parser has caught up with typing,
-      // which is what the Windows hand-off is asked to look at (§9).
+      // The default style stays a fallback — it covers the tags our own style says nothing about.
       syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
-      // Markdown that reads like its own rendering: headings sized, emphasis real, markers faded. Listed after
-      // the default style so its rules win for the tokens markdown actually produces (§9's "readable first").
-      syntaxHighlighting(markdownStyle, { fallback: true }),
+      // Markdown that reads like its own rendering: headings sized, emphasis real, markers faded (§9's "readable
+      // first"). NOT a fallback, and that word was the bug for nineteen releases: `fallback` is not about painting
+      // before the parser catches up, it is precedence between highlight styles, and a fallback behind another
+      // fallback loses every tag they both claim. Ours covers heading, strong, emphasis, code, link and meta — so
+      // CodeMirror's default answered all of them, no `md-` class ever reached the page, and our own rules for those
+      // classes sat in the stylesheet styling nothing while every test over them stayed green.
+      syntaxHighlighting(markdownStyle),
       EditorView.lineWrapping,
       keymap.of([
         // Mod-s is CodeMirror's "jump to line" by default. Here it means save, and nothing else (§9).
@@ -532,7 +535,11 @@
     display: flex;
     align-items: center;
     gap: 0.15rem;
-    padding: 0.25rem 0.75rem 0.3rem;
+    /* The same inline padding as `.cm-content` below, which centres a 74ch measure on a wide window. With a flat
+       0.75rem here the controls sat out in the gutter — roughly 120 px of empty space between `B` and the first
+       character at 1400 px — so the bar was floating above nothing. Both rules read one measure. */
+    padding-block: 0.25rem 0.3rem;
+    padding-inline: max(1.1rem, calc((100% - 74ch) / 2));
     border-bottom: 1px solid color-mix(in srgb, currentColor 12%, transparent);
   }
   .format-bar button {
@@ -550,10 +557,20 @@
   .format-bar button:hover {
     background: color-mix(in srgb, currentColor 8%, transparent);
   }
-  /* A tint of the ink rather than a fixed grey, so "this is on" reads the same way on light and dark paper. */
+  /* A tint of the ink rather than a fixed grey, so "this is on" reads the same way on light and dark paper — with an
+     inner edge, because `app.css` gives every `:focus-visible` element a 2 px ink outline and a faint fill plus a thin
+     border is, at this size, the same drawing as that ring. Pressed has to be legible without moving the pointer. */
   .format-bar button[aria-pressed='true'] {
-    background: color-mix(in srgb, currentColor 14%, transparent);
-    border-color: color-mix(in srgb, currentColor 25%, transparent);
+    background: color-mix(in srgb, currentColor 20%, transparent);
+    border-color: color-mix(in srgb, currentColor 45%, transparent);
+    box-shadow: inset 0 1px 2px color-mix(in srgb, currentColor 35%, transparent);
+  }
+
+  /* Focus stays a ring outside the box, so "Tab will act here" and "this mark is on your text" are never the same
+     thing to look at. */
+  .format-bar button:focus-visible {
+    outline: 2px solid var(--ink);
+    outline-offset: 2px;
   }
   .format-bar button[data-mark='bold'] {
     font-weight: 700;
@@ -609,29 +626,39 @@
 
   /* ---- markdown, styled. The classes come from `markdownStyle.ts`; a class named there and not here renders
         as plain text, which a test refuses. ------------------------------------------------------------- */
-  .cm :global(.md-h1) {
+  /* `defaultHighlightStyle` — installed by this window for the tags our own rules do not reach — gives every heading
+     `text-decoration: underline`, and nothing here cancelled it. Underline is the cue links wear in this editor,
+     deliberately, so a note whose every title is underlined reads as a page of things to click. Size and weight say
+     "heading" on their own; the cancellation goes on all six levels because these rules are what a reader looks for. */
+  .cm :global(.cm-content .md-h1) {
     font-size: 1.5em;
     font-weight: 700;
     line-height: 1.25;
+    text-decoration: none;
   }
-  .cm :global(.md-h2) {
+  .cm :global(.cm-content .md-h2) {
     font-size: 1.3em;
     font-weight: 700;
     line-height: 1.3;
+    text-decoration: none;
   }
-  .cm :global(.md-h3) {
+  .cm :global(.cm-content .md-h3) {
     font-size: 1.15em;
     font-weight: 600;
+    text-decoration: none;
   }
-  .cm :global(.md-h4) {
+  .cm :global(.cm-content .md-h4) {
     font-weight: 600;
+    text-decoration: none;
   }
-  .cm :global(.md-h5) {
+  .cm :global(.cm-content .md-h5) {
     font-weight: 600;
     font-style: italic;
+    text-decoration: none;
   }
-  .cm :global(.md-h6) {
+  .cm :global(.cm-content .md-h6) {
     font-weight: 600;
+    text-decoration: none;
     /* A level-six heading in a note is usually a label, not a title. */
     color: color-mix(in srgb, currentColor 72%, transparent);
   }

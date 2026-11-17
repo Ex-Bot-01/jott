@@ -25,9 +25,11 @@ describe('the markdown style', () => {
 
   it('styles every class it names', () => {
     for (const [token, className] of Object.entries(MARKDOWN_CLASSES)) {
-      expect(editor, `nothing styles .${className}, so ${token} would render as plain text`).toContain(
-        `:global(.${className})`,
-      )
+      // Any selector that reaches the class counts. The heading rules go through `.cm-content` now, because
+      // CodeMirror's own generated rule for a heading is deeper in the cascade than a bare class — and this guard,
+      // written as an exact-string match, would otherwise fail for a rule that is present and correct.
+      const reaches = new RegExp(`:global\\([^)]*\\.${className}\\)`)
+      expect(editor, `nothing styles .${className}, so ${token} would render as plain text`).toMatch(reaches)
     }
   })
 
