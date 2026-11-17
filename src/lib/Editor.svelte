@@ -9,6 +9,8 @@
   import { markdown } from '@codemirror/lang-markdown'
   import { bracketMatching, syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language'
   import { markdownStyle } from './markdownStyle'
+  import { applyMark, type MarkKind } from './markdownEdit'
+  import { activeMarks } from './markdownState'
   import { currentScheme, watchScheme, type Scheme } from './darkMode'
   import { matchRanges } from './highlight'
   import { saveState, wantsSave, type SavePhase } from './saveState'
@@ -19,6 +21,28 @@
   const MIRROR_AFTER_MS = 500
   /** §9's autosave: two seconds after the last keystroke, plus blur and unload. */
   const AUTOSAVE_AFTER_MS = 2_000
+
+  /** The bar, in the order it draws — and the order `markdownState.ts` reports marks back in. Seven controls is a
+   * deliberate limit: anything wider stops being a toolbar and starts being a menu that needs its own reason. */
+  const KINDS = ['bold', 'italic', 'code', 'link', 'bullet', 'task', 'heading'] as const satisfies readonly MarkKind[]
+  const LABELS: Record<MarkKind, string> = {
+    bold: 'B',
+    italic: 'I',
+    code: '</>',
+    link: 'link',
+    bullet: '•',
+    task: '☑',
+    heading: 'H',
+  }
+  const TITLES: Record<MarkKind, string> = {
+    bold: 'Bold (Ctrl+B)',
+    italic: 'Italic (Ctrl+I)',
+    code: 'Inline code (Ctrl+E)',
+    link: 'Link (Ctrl+K)',
+    bullet: 'Bulleted list',
+    task: 'Task — a checkbox on the line',
+    heading: 'Heading — steps ## then ### then off',
+  }
 
   let {
     rel,
@@ -148,6 +172,36 @@
   let currentHash = $state('')
   let savedHash: string | undefined = $state()
   let saving = $state(false)
+  /** Which marks hold the caret, so a button is lit rather than guessed. Recomputed on every text *and* selection
+   *  change — a bar that only notices typing goes stale on the first arrow key, and a stale button is worse than no
+   *  button because it claims to be information. */
+  let marks = $state<MarkKind[]>([])
+
+  /** The two halves of the name row: what the file is called, and where it lives. `rel` arrives with `/` separators
+   *  as core reports them, on every platform. */
+  const noteName = $derived(rel ? (rel.split('/').pop() ?? rel) : '')
+  const noteFolder = $derived(rel && rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/')) : '')
+
+  /** Apply one mark to the current selection. Returns whether it did anything, so a key binding can tell CodeMirror
+   *  to stop looking for another handler. */
+  function runMark(kind: MarkKind): boolean {
+    const viewNow = view
+    // A read-only file has no bar on screen and must not be reachable by the keyboard either: core refuses the write,
+    // so a shortcut that edited np's catalogue would leave somebody typing in a buffer that can never be saved.
+    if (!viewNow || readonly) return false
+    const sel = viewNow.state.selection.main
+    const edit = applyMark(viewNow.state.doc.toString(), { from: sel.from, to: sel.to }, kind)
+    if (edit === null) return false
+    // One transaction carrying both the change and the selection. Two transactions would be two undo steps, and the
+    // first Ctrl+Z would put the text back while leaving the caret where the markers had been.
+    viewNow.dispatch({
+      changes: { from: edit.from, to: edit.to, insert: edit.insert },
+      selection: { anchor: edit.anchor, head: edit.head },
+      scrollIntoView: true,
+    })
+    viewNow.focus()
+    return true
+  }
 
   const phase: SavePhase = $derived(
     saveState({
@@ -241,6 +295,7 @@
       state: EditorState.create({ doc: text, extensions: [...extensions(), EditorView.updateListener.of(onUpdate)] }),
       parent: host,
     })
+    marks = activeMarks(view.state)
   }
 
   // Which note these numbers describe. Hashing is async and a fast switch (or a save that finishes after
@@ -308,6 +363,7 @@
   }
 
   function onUpdate(update: ViewUpdate) {
+    if (update.docChanged || update.selectionSet) marks = activeMarks(update.state)
     // Anything that is not a change to the text (a cursor move, a scroll) must not start a save timer.
     if (!update.docChanged || !view) return
     const text = view.state.doc.toString()
@@ -410,6 +466,27 @@
       </div>
     {/if}
 
+    {#if !readonly}
+      <!-- Two rows that were not in this window before: the file's own name — nothing else in Jott said which note
+           you were looking at — and the controls. Both are absent for a read-only file, because offering to format
+           what core refuses to write is the complaint `INDEX.md` already answered once. -->
+      <p class="note-name" data-testid="note-name">
+        <span class="file">{noteName}</span>
+        {#if noteFolder}<span class="folder">{noteFolder}/</span>{/if}
+      </p>
+
+      <div class="format-bar" data-testid="format-bar" role="group" aria-label="Formatting">
+        {#each KINDS as kind}
+          <button
+            type="button"
+            data-mark={kind}
+            aria-pressed={marks.includes(kind)}
+            title={TITLES[kind]}
+            onclick={() => runMark(kind)}>{LABELS[kind]}</button>
+        {/each}
+      </div>
+    {/if}
+
     <div class="cm" bind:this={host}></div>
     <div class="phase" data-phase={phase}>
       {#if phase === 'saving'}saving{:else if phase === 'conflict'}unsaved · file changed outside{:else if phase === 'dirty'}unsaved{:else if phase === 'saved'}saved{:else}up to date{/if}
@@ -445,6 +522,62 @@
   }
   .placeholder button {
     margin-block-start: 0.45rem;
+  }
+  .note-name {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: baseline;
+    gap: 0.4rem;
+    margin: 0;
+    padding: 0.35rem 0.9rem 0;
+    font-size: 0.8125rem;
+    min-width: 0;
+  }
+  .note-name .file {
+    font-weight: 600;
+  }
+  .note-name .folder {
+    color: color-mix(in srgb, currentColor 55%, transparent);
+    /* The folder is context, not the thing you are reading: it gives way rather than pushing the file name off the
+       row on a narrow window. */
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+  .format-bar {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 0.15rem;
+    padding: 0.25rem 0.75rem 0.3rem;
+    border-bottom: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+  }
+  .format-bar button {
+    min-width: 1.65rem;
+    height: 1.45rem;
+    padding: 0 0.3rem;
+    font-size: 0.8125rem;
+    line-height: 1;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: none;
+    color: inherit;
+    cursor: default;
+  }
+  .format-bar button:hover {
+    background: color-mix(in srgb, currentColor 8%, transparent);
+  }
+  /* A tint of the ink rather than a fixed grey, so "this is on" reads the same way on light and dark paper. */
+  .format-bar button[aria-pressed='true'] {
+    background: color-mix(in srgb, currentColor 14%, transparent);
+    border-color: color-mix(in srgb, currentColor 25%, transparent);
+  }
+  .format-bar button[data-mark='bold'] {
+    font-weight: 700;
+  }
+  .format-bar button[data-mark='italic'] {
+    font-style: italic;
   }
   .cm {
     flex: 1;

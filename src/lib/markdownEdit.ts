@@ -70,6 +70,11 @@ function pairEdit(text: string, sel: Sel, open: string, close: string): Edit {
       while (from > 0 && WORD_CHAR.test(text.charAt(from - 1))) from -= 1
       while (to < text.length && WORD_CHAR.test(text.charAt(to))) to += 1
     } else {
+      // Nothing to expand to — but there may still be a pair around the caret, and the second press has to undo the
+      // first. Adjacent is the case that press actually makes (`**|`); one step wider covers a caret that landed in
+      // the whitespace inside a marked phrase, which is where clicking rather than typing puts it.
+      const enclosed = enclosingPair(text, from, open, close)
+      if (enclosed !== null) return removePair(text, enclosed.start, enclosed.end, from, open, close)
       return { from, to, insert: open + close, anchor: from + open.length, head: from + open.length }
     }
   }
@@ -114,6 +119,13 @@ function linkEdit(text: string, sel: Sel): Edit {
     if (before && after) {
       while (from > 0 && WORD_CHAR.test(text.charAt(from - 1))) from -= 1
       while (to < text.length && WORD_CHAR.test(text.charAt(to))) to += 1
+    } else if (text.slice(from - 1, from) === '(' && text.slice(to, to + 1) === ')' && /\]\(\)$/.test(text.slice(0, to + 1))) {
+      // The second press on a fresh link: `[label](|)` goes back to plain text rather than nesting another pair.
+      const labelStart = text.lastIndexOf('[', from - 2)
+      if (labelStart >= 0) {
+        const label = text.slice(labelStart + 1, from - 2)
+        return { from: labelStart, to: to + 1, insert: label, anchor: labelStart, head: labelStart + label.length }
+      }
     } else {
       // `[]()` with the caret between the parentheses: the next thing typed is the URL, which is the half a person
       // has to fill in anyway.
@@ -250,4 +262,34 @@ function headingEdit(text: string, sel: Sel): Edit | null {
   const map = (offset: number) =>
     offset <= start + hashes ? Math.min(offset, start + newHashes) : Math.max(start, offset + delta)
   return { from: start, to: end, insert, anchor: map(sel.from), head: map(sel.to) }
+}
+
+/** The nearest pair of `open`/`close` holding `caret` on one line, or `null`. Content may not contain the closing
+ *  run or a newline, which keeps a caret between two separate bold phrases from being read as one marked span. */
+function enclosingPair(text: string, caret: number, open: string, close: string): { start: number; end: number } | null {
+  const lineStart = text.lastIndexOf('\n', Math.max(0, caret - 1)) + 1
+  const lineEndNewline = text.indexOf('\n', caret)
+  const lineEnd = lineEndNewline === -1 ? text.length : lineEndNewline
+
+  for (let start = caret - open.length; start >= lineStart; start -= 1) {
+    if (text.slice(start, start + open.length) !== open) continue
+    const inner = text.slice(start + open.length, caret)
+    if (inner.includes(close)) continue
+    for (let end = caret; end + close.length <= lineEnd; end += 1) {
+      if (text.slice(end, end + close.length) !== close) continue
+      // A closing run between the caret and here belongs to an earlier span, not to ours.
+      if (text.slice(caret, end).includes(close)) break
+      return { start, end: end + close.length }
+    }
+  }
+  return null
+}
+
+/** Drop a pair's two marker runs, keeping everything between them and the caret where it was. */
+function removePair(text: string, start: number, end: number, caret: number, open: string, close: string): Edit {
+  const inner = text.slice(start + open.length, end - close.length)
+  // The caret follows the words it was sitting among: it moves left by one marker run when a run was removed in
+  // front of it, and lands at the start when it was between the two runs already.
+  const where = caret > start + open.length ? caret - open.length : start
+  return { from: start, to: end, insert: inner, anchor: where, head: where }
 }

@@ -31,6 +31,18 @@ describe('active marks', () => {
     expect(at(doc, 20)).toEqual(['heading'])
   })
 
+  it('knows an empty pair is still the mark you are writing', () => {
+    // The caret between `**|` is not bold text yet — the parser has nothing to point at. But it *is* somebody having
+    // pressed Bold, and a button that goes dark on the press that lit it reads as the press having failed. So the
+    // empty pair counts, and stops counting the moment the caret steps outside it.
+    expect(at('****', 2)).toContain('bold')
+    expect(at('__', 1)).toContain('italic')
+    expect(at('``', 1)).toContain('code')
+    // caret between the parentheses of a fresh link: \n    expect(at('[label]()', 8)).toContain('link')
+    expect(at('****', 4)).toEqual([])
+    expect(at('****', 0)).toEqual([])
+  })
+
   it('does not mistake a minus in a sentence for a bullet', () => {
     expect(at('wind - north', 6)).toEqual([])
   })

@@ -2030,6 +2030,78 @@ describe('the window mounts', () => {
   })
 
 
+  /** Click a row in the tree and wait for CodeMirror to have the file. */
+  async function openFromTree(name: string): Promise<void> {
+    const row = [...document.querySelectorAll('.tree button')].find((b) => b.textContent?.includes(name))
+    expect(row, `${name} is a row in the tree`).not.toBeUndefined()
+    ;(row as HTMLButtonElement).dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await vi.waitFor(() => expect(document.querySelector('.cm-editor')).not.toBeNull(), { timeout: 2000 })
+  }
+
+  it('offers the format bar above an editable note', async () => {
+    scenario.current = 'vault'
+    const { errors } = await start()
+    await openFromTree('inbox.md')
+
+    const bar = document.querySelector('[data-testid="format-bar"]') as HTMLElement
+    expect(bar, 'a note you can edit has a bar to format it with').not.toBeNull()
+    const kinds = [...bar.querySelectorAll('button[data-mark]')].map((b) => b.getAttribute('data-mark'))
+    expect(kinds).toEqual(['bold', 'italic', 'code', 'link', 'bullet', 'task', 'heading'])
+    for (const b of bar.querySelectorAll('button[data-mark]')) {
+      const mark = b.getAttribute('data-mark')
+      expect(b.getAttribute('aria-pressed'), `${mark} says whether it applies`).toMatch(/^(true|false)$/)
+    }
+    // The name row answers "which note am I looking at", which nothing in the window did before — not the pane,
+    // not the title.
+    expect(document.querySelector('[data-testid="note-name"]')?.textContent).toContain('inbox.md')
+    expect(errors).toEqual([])
+  })
+
+  it('presses bold into the buffer, and takes it off again', async () => {
+    // jsdom runs CodeMirror for real here — the existing dark-mode test reads `.cm-content` — so a click is
+    // allowed to prove the wiring end to end. What it may not claim is anything about how the bar looks.
+    scenario.current = 'vault'
+    const { errors } = await start()
+    await openFromTree('inbox.md')
+
+    const bold = document.querySelector('button[data-mark="bold"]') as HTMLButtonElement
+    bold.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await vi.waitFor(() => expect(document.querySelector('.cm-content')?.textContent).toContain('****'))
+    expect(bold.getAttribute('aria-pressed'), 'the caret is inside the pair it just inserted').toBe('true')
+
+    bold.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await vi.waitFor(() => expect(document.querySelector('.cm-content')?.textContent).not.toContain('****'))
+    expect(bold.getAttribute('aria-pressed')).toBe('false')
+
+    // Review Focus 5: one press is one undo step. A wrap dispatched as two transactions puts the text back and
+    // strands the caret, which reads as Ctrl+Z having done nothing at all.
+    bold.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await vi.waitFor(() => expect(document.querySelector('.cm-content')?.textContent).toContain('****'))
+    document
+      .querySelector('.cm-content')!
+      .dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }))
+    await vi.waitFor(() => expect(document.querySelector('.cm-content')?.textContent).not.toContain('****'))
+    expect(errors).toEqual([])
+  })
+
+  it('gives note-processor’s catalogue neither rows nor shortcuts', async () => {
+    scenario.current = 'vault'
+    readNoteSays.catalogue = true
+    const { errors } = await start()
+    await openFromTree('INDEX.md')
+
+    expect(document.querySelector('[data-testid="format-bar"]'), 'np wrote this file').toBeNull()
+    expect(document.querySelector('[data-testid="note-name"]')).toBeNull()
+
+    const before = document.querySelector('.cm-content')?.textContent ?? ''
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'b', ctrlKey: true, bubbles: true }))
+    await new Promise((resolve) => setTimeout(resolve, 120))
+    expect(document.querySelector('.cm-content')?.textContent, 'a shortcut must not touch it either').toBe(before)
+
+    readNoteSays.catalogue = false
+    expect(errors).toEqual([])
+  })
+
   it('opens note-processor’s own index without offering to edit it', async () => {
     // "I can not open the Index.md file. Can we make it visible but read only?" — so looking is allowed and
     // typing is not, and the window says which of the two it is showing.

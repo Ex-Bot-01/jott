@@ -39,6 +39,18 @@ describe('inline marks', () => {
     expect(applied('wind from', { from: 9, to: 9 }, 'code')!.text).toBe('wind from``')
   })
 
+  it('takes the pair off again while the caret is still inside it', () => {
+    // The second press has to undo the first even when nothing was typed between them. Without this, "start writing
+    // bold" is a one-way door: pressing Bold twice writes `********` and leaves the caret in the middle of it.
+    // (The end-to-end test in Task 4 found this; the unit tests around it had only ever pressed once.)
+    expect(applied('****', { from: 2, to: 2 }, 'bold')).toEqual({ text: '', anchor: 0, head: 0 })
+    expect(applied('``', { from: 1, to: 1 }, 'code')).toEqual({ text: '', anchor: 0, head: 0 })
+    expect(applied('[]()', { from: 3, to: 3 }, 'link')).toEqual({ text: '', anchor: 0, head: 0 })
+    // A pair with something in it is the same request: the markers go, the words stay, and the caret keeps the place
+    // it had inside them. This is the press that happens when somebody clicks into a bolded phrase and presses Bold.
+    expect(applied('**a b**', { from: 4, to: 4 }, 'bold')).toEqual({ text: 'a b', anchor: 2, head: 2 })
+  })
+
   it('unwraps a selection that already carries the markers', () => {
     // Review Focus 3: pressing Bold on `**Tuesday**` takes bold off instead of nesting four asterisks.
     expect(applied('from **Tuesday** now', { from: 5, to: 16 }, 'bold')).toEqual({
