@@ -885,6 +885,24 @@ describe('the window mounts', () => {
     expect(errors).toEqual([])
   })
 
+  it('puts the grab strip where the line you can see is', async () => {
+    // Measured in the browser, not in jsdom: with the drawer's own top padding above it, the strip began a few pixels
+    // *below* the border it belongs to — so aiming at the line you can see landed in the note pane and dragged a text
+    // selection instead. The padding therefore moves below the handle, and the handle starts at the edge.
+    const sheet = readFileSync(join(process.cwd(), 'src', 'lib', 'Diagnostics.svelte'), 'utf8')
+    expect(rule(sheet, '.drawer')).toContain('padding: 0 0.9rem 0.8rem')
+    expect(rule(sheet, '.splitter')).not.toMatch(/margin: -/)
+  })
+
+  it('does not draw a ring around the whole drawer when it opens itself', async () => {
+    // The drawer focuses itself on open so Escape and Tab land inside it, and `app.css` gives every `:focus-visible`
+    // element a 2 px ink outline. On an element with `tabindex="-1"` — never a tab stop, only ever focused by our own
+    // code — that is a black line across the full width of the window at the moment somebody opens the one screen they
+    // are trying to read. A claim about what the stylesheet says: jsdom shows no focus ring.
+    const sheet = readFileSync(join(process.cwd(), 'src', 'lib', 'Diagnostics.svelte'), 'utf8')
+    expect(rule(sheet, '.drawer:focus-visible')).toContain('outline: none')
+  })
+
   it('lets you set the sidebar width from the keyboard', async () => {
     // The column used to be `minmax(19rem, 26rem)`: right as a limit, wrong as a decision made once for every window.
     // The handle is tested by key rather than by drag because jsdom has no layout engine — the arithmetic it drives

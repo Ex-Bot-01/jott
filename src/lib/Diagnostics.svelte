@@ -313,7 +313,9 @@
     border-top: 1px solid color-mix(in srgb, var(--ink) 22%, transparent);
     background: color-mix(in srgb, var(--paper) 92%, var(--ink));
     color: var(--ink);
-    padding: 0.6rem 0.9rem 0.8rem;
+    /* No top padding: the handle is the first thing in here and it belongs flush against the edge, because that line
+       is what a pointer aims at. The space this used to provide is the handle's own bottom margin now. */
+    padding: 0 0.9rem 0.8rem;
     /* A column whose height is the person's, so exactly one thing inside it scrolls (`.body`) and the header and the
        buttons stay put while the rows move. */
     display: flex;
@@ -323,11 +325,20 @@
     font-size: 0.82rem;
   }
 
+  /* `app.css` gives every focused element a 2 px ink outline, which is right for anything a keyboard can reach. This
+     element cannot be reached: `tabindex="-1"` means it is only ever focused by our own code, on open, so the ring
+     communicated "this is where your keys go" by drawing a black line the full width of the window over the screen
+     somebody had just opened to read. The keys land here either way — Escape is routed once, by the window. */
+  .drawer:focus-visible {
+    outline: none;
+  }
+
   /* The handle, which is the drawer's top edge rather than a bar below it — the pointer should land where the border
      you are looking at is. It reaches past the padding so there is no dead strip either side of it. */
   .splitter {
-    height: 10px;
-    margin: -0.45rem -0.9rem 0.3rem;
+    /* 12 px, flush with the border, and reaching past the side padding so there is no dead corner either end of it. */
+    height: 12px;
+    margin: 0 -0.9rem 0.45rem;
     border: 0;
     background: transparent;
     cursor: ns-resize;
