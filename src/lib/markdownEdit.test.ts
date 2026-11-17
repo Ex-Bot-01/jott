@@ -1,0 +1,76 @@
+import { describe, expect, it } from 'vitest'
+import { applyMark, type MarkKind, type Sel } from './markdownEdit'
+
+/** The text that results from applying an edit, so a test can read as a sentence about the note. */
+function applied(text: string, sel: Sel, kind: MarkKind): { text: string; anchor: number; head: number } | null {
+  const e = applyMark(text, sel, kind)
+  return e === null ? null : { text: text.slice(0, e.from) + e.insert + text.slice(e.to), anchor: e.anchor, head: e.head }
+}
+
+describe('inline marks', () => {
+  it('wraps the selection and keeps it on the words', () => {
+    // "wind from Tuesday" — the caret range covers `Tuesday` at 10..17.
+    expect(applied('wind from Tuesday', { from: 10, to: 17 }, 'bold')).toEqual({
+      text: 'wind from **Tuesday**', anchor: 12, head: 19,
+    })
+    expect(applied('wind from Tuesday', { from: 10, to: 17 }, 'italic')).toEqual({
+      text: 'wind from _Tuesday_', anchor: 11, head: 18,
+    })
+    expect(applied('wind from Tuesday', { from: 10, to: 17 }, 'code')).toEqual({
+      text: 'wind from `Tuesday`', anchor: 11, head: 18,
+    })
+  })
+
+  it('takes the word under an empty caret', () => {
+    // The selection ends up on the word, not on the markers and not past them: `Tuesday` sits at 12..19 once the
+    // pair goes in, which is where a second press has to land for "take it off" to mean anything. (The plan had
+    // 14..21 here, which points at `sday**` — see the ledger.)
+    expect(applied('wind from Tuesday', { from: 12, to: 12 }, 'bold')).toEqual({
+      text: 'wind from **Tuesday**', anchor: 12, head: 19,
+    })
+  })
+
+  it('inserts a pair around an empty caret and parks the caret inside it', () => {
+    // The end of the sentence: nothing to wrap, so this is "start writing bold" — which is why the caret lands
+    // between the markers rather than after them.
+    expect(applied('wind from', { from: 9, to: 9 }, 'bold')).toEqual({
+      text: 'wind from****', anchor: 11, head: 11,
+    })
+    expect(applied('wind from', { from: 9, to: 9 }, 'code').text).toBe('wind from``')
+  })
+
+  it('unwraps a selection that already carries the markers', () => {
+    // Review Focus 3: pressing Bold on `**Tuesday**` takes bold off instead of nesting four asterisks.
+    expect(applied('from **Tuesday** now', { from: 5, to: 16 }, 'bold')).toEqual({
+      text: 'from Tuesday now', anchor: 5, head: 12,
+    })
+    // …and the inside of the pair is the same request.
+    expect(applied('from **Tuesday** now', { from: 7, to: 14 }, 'bold')).toEqual({
+      text: 'from Tuesday now', anchor: 5, head: 12,
+    })
+  })
+
+  it('counts a character outside the basic plane as what it is', () => {
+    // Review Focus 2: `🧭` is two UTF-16 units, exactly as CodeMirror counts it. A wrap that assumed one would land
+    // inside the surrogate pair and write a note that will not decode.
+    expect(applied('🧭 Tuesday', { from: 3, to: 10 }, 'bold')).toEqual({
+      text: '🧭 **Tuesday**', anchor: 5, head: 12,
+    })
+  })
+
+  it('makes a link with the caret inside the parentheses', () => {
+    // No dialog: `[text]()` with the caret where the URL goes is one keystroke fewer than a modal.
+    expect(applied('from Tuesday now', { from: 5, to: 12 }, 'link')).toEqual({
+      text: 'from [Tuesday]() now', anchor: 15, head: 15,
+    })
+    expect(applied('from [Tuesday](u) now', { from: 5, to: 17 }, 'link')).toEqual({
+      text: 'from Tuesday now', anchor: 5, head: 12,
+    })
+  })
+
+  it('leaves a mark alone in an empty buffer except the pairs, which it can still insert', () => {
+    // Review Focus 1: offset 0 of nothing is a real place to press a button.
+    expect(applied('', { from: 0, to: 0 }, 'bold')).toEqual({ text: '****', anchor: 2, head: 2 })
+    expect(applied('', { from: 0, to: 0 }, 'heading')).toBeNull()
+  })
+})
