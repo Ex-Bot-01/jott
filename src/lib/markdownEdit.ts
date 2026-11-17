@@ -46,6 +46,8 @@ const WORD_CHAR = /[\p{L}\p{N}]/u
 /** The mark's edit for this text and selection, or `null` when there is nothing honest to do. */
 export function applyMark(text: string, sel: Sel, kind: MarkKind): Edit | null {
   if (kind === 'link') return linkEdit(text, sel)
+  if (kind === 'bullet' || kind === 'task') return blockEdit(text, sel, kind)
+  if (kind === 'heading') return headingEdit(text, sel)
   const pair = PAIRS[kind]
   if (pair) return pairEdit(text, sel, pair.open, pair.close)
   // The block marks come in Task 2. Until then a press on them does nothing at all, which is what "we have not
@@ -139,4 +141,113 @@ function linkEdit(text: string, sel: Sel): Edit {
   // Caret inside the parentheses, so the URL is typed rather than hunted for. `from + label + [ ] ( ` = +3 past the
   // opening bracket and label.
   return { from, to, insert: `[${inner}]()`, anchor: from + inner.length + 3, head: from + inner.length + 3 }
+}
+
+/** A list marker at the start of a line, and a checkbox sitting in front of it. */
+const LIST_PREFIX = /^(\s*)([-*+]|\d+[.)])\s+/
+const TASK_PREFIX = /^(\s*)([-*+]|\d+[.)])\s+\[[ xX]\]\s+/
+
+/** Prefixes are per line, so a block mark is decided over whole lines — a `- ` in the middle of a selection would
+ *  put a bullet on half a sentence. One change covers the whole touched block, which keeps one press one undo step. */
+function blockEdit(text: string, sel: Sel, kind: 'bullet' | 'task'): Edit | null {
+  if (text.length === 0) return null
+  const from = Math.min(sel.from, sel.to)
+  const to = Math.max(sel.from, sel.to)
+
+  let start = from
+  while (start > 0 && text.charAt(start - 1) !== '\n') start -= 1
+  let end = to
+  while (end < text.length && text.charAt(end) !== '\n') end += 1
+  if (end === start) return null
+
+  const lines = text.slice(start, end).split('\n')
+  const blank = (line: string) => line.trim() === ''
+  let changed: string[]
+
+  if (kind === 'bullet') {
+    // Every line already bulleted means the press takes the bullet off. One plain line among them means it puts
+    // bullets on all of them — a control that only ever removed things would make the list harder to start than to
+    // end, and nobody reads "nothing happened" as a partial success.
+    const allMarked = lines.every((l) => blank(l) || LIST_PREFIX.test(l))
+    changed = lines.map((l) => (blank(l) ? l : allMarked ? stripList(l) : addBullet(l)))
+  } else {
+    const allTasks = lines.every((l) => blank(l) || TASK_PREFIX.test(l))
+    changed = lines.map((l) => (blank(l) ? l : allTasks ? stripCheckbox(l) : addTask(l)))
+  }
+
+  const block = text.slice(start, end)
+  const insert = changed.join('\n')
+  return { from: start, to: end, insert, anchor: shift(from, start, lines, changed), head: shift(to, start, lines, changed) }
+}
+
+/** Where an offset in the old block lands after the prefixes changed. Offsets before the block do not move; one
+ *  inside a line moves by that line's prefix difference; one past the block moves by all of them. */
+function shift(offset: number, start: number, lines: string[], changed: string[]): number {
+  let pos = start
+  let acc = 0
+  for (let i = 0; i < lines.length; i++) {
+    const lineStart = pos
+    const lineEnd = pos + lines[i].length
+    const delta = changed[i].length - lines[i].length
+    if (offset <= lineStart) return offset + acc
+    if (offset <= lineEnd) return Math.max(lineStart + acc, offset + acc + delta)
+    acc += delta
+    pos = lineEnd + 1
+  }
+  return offset + acc
+}
+
+function addBullet(line: string): string {
+  if (LIST_PREFIX.test(line)) return line
+  const indent = /^\s*/.exec(line)![0]
+  return `${indent}- ${line.slice(indent.length)}`
+}
+
+function stripList(line: string): string {
+  // A checkbox is part of the prefix: taking the bullet off a task leaves prose, not `- [ ] prose`.
+  const task = TASK_PREFIX.exec(line)
+  if (task) return task[1] + line.slice(task[0].length)
+  const list = LIST_PREFIX.exec(line)
+  return list ? list[1] + line.slice(list[0].length) : line
+}
+
+function addTask(line: string): string {
+  const indent = /^\s*/.exec(line)![0]
+  const list = LIST_PREFIX.exec(line)
+  if (list) return `${indent}${list[2]} [ ] ${line.slice(list[0].length)}`
+  return `${indent}- [ ] ${line.slice(indent.length)}`
+}
+
+function stripCheckbox(line: string): string {
+  const task = TASK_PREFIX.exec(line)
+  // No checkbox means the line was never a task; leave it exactly as it is rather than guessing at a prefix.
+  return task ? `${task[1]}${task[2]} ${line.slice(task[0].length)}` : line
+}
+
+/** The caret's line, stepped through `##` and `###` and back out. */
+function headingEdit(text: string, sel: Sel): Edit | null {
+  if (text.length === 0) return null
+  const caret = Math.min(sel.from, sel.to)
+  let start = caret
+  while (start > 0 && text.charAt(start - 1) !== '\n') start -= 1
+  let end = caret
+  while (end < text.length && text.charAt(end) !== '\n') end += 1
+
+  const line = text.slice(start, end)
+  const hashes = /^(#+)/.exec(line)?.[1].length ?? 0
+  const body = line.slice(hashes).replace(/^ +/, '')
+
+  // The cycle lives between two and three hashes: `#` is a note's title, and a button that quietly turned a title
+  // into a section heading would be rewriting the one line the reader meant to leave alone.
+  let insert: string
+  if (hashes === 0) insert = `## ${line}`
+  else if (hashes < 3) insert = `${'#'.repeat(hashes + 1)} ${body}`
+  else if (hashes === 3) insert = body
+  else insert = `### ${body}`
+
+  const delta = insert.length - line.length
+  const newHashes = /^(#+)/.exec(insert)?.[1].length ?? 0
+  const map = (offset: number) =>
+    offset <= start + hashes ? Math.min(offset, start + newHashes) : Math.max(start, offset + delta)
+  return { from: start, to: end, insert, anchor: map(sel.from), head: map(sel.to) }
 }

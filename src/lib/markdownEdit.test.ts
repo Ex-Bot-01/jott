@@ -74,3 +74,43 @@ describe('inline marks', () => {
     expect(applied('', { from: 0, to: 0 }, 'heading')).toBeNull()
   })
 })
+
+describe('block marks', () => {
+  it('puts a bullet on every line the selection touches', () => {
+    expect(applied('north\nsouth\nwest', { from: 0, to: 16 }, 'bullet')).toEqual({
+      text: '- north\n- south\n- west', anchor: 0, head: 22,
+    })
+  })
+
+  it('takes the bullet off again, whichever marker it was written with', () => {
+    expect(applied('- north\n* south\n+ west', { from: 0, to: 22 }, 'bullet')).toEqual({
+      text: 'north\nsouth\nwest', anchor: 0, head: 16,
+    })
+  })
+
+  it('turns a bullet into a task and back without losing the line', () => {
+    expect(applied('- north', { from: 0, to: 7 }, 'task')).toEqual({ text: '- [ ] north', anchor: 0, head: 11 })
+    expect(applied('- [x] north', { from: 0, to: 11 }, 'task')).toEqual({ text: '- north', anchor: 0, head: 7 })
+    expect(applied('north', { from: 0, to: 5 }, 'task')).toEqual({ text: '- [ ] north', anchor: 0, head: 11 })
+  })
+
+  it('steps the caret’s line through ## and ### and out', () => {
+    // The cycle never produces `#`: a title is typed by hand, so pressing Heading on one moves it down rather
+    // than treating it as "no heading yet".
+    expect(applied('north wind', { from: 3, to: 3 }, 'heading').text).toBe('## north wind')
+    expect(applied('## north wind', { from: 3, to: 3 }, 'heading').text).toBe('### north wind')
+    expect(applied('### north wind', { from: 3, to: 3 }, 'heading').text).toBe('north wind')
+    expect(applied('# north wind', { from: 3, to: 3 }, 'heading').text).toBe('## north wind')
+    expect(applied('#### north wind', { from: 3, to: 3 }, 'heading').text).toBe('### north wind')
+  })
+
+  it('changes only the caret’s line when a heading press meets a selection', () => {
+    expect(applied('north\nsouth', { from: 0, to: 11 }, 'heading').text).toBe('## north\nsouth')
+  })
+
+  it('does nothing when a block mark is asked for in an empty note', () => {
+    // There is no line to put a bullet on, and inventing one would write a character nobody pressed for.
+    expect(applied('', { from: 0, to: 0 }, 'bullet')).toBeNull()
+    expect(applied('', { from: 0, to: 0 }, 'task')).toBeNull()
+  })
+})
