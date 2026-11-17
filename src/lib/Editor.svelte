@@ -532,7 +532,11 @@
     display: flex;
     align-items: center;
     gap: 0.15rem;
-    padding: 0.25rem 0.75rem 0.3rem;
+    /* The same inline padding as `.cm-content` below, which centres a 74ch measure on a wide window. With a flat
+       0.75rem here the controls sat out in the gutter — roughly 120 px of empty space between `B` and the first
+       character at 1400 px — so the bar was floating above nothing. Both rules read one measure. */
+    padding-block: 0.25rem 0.3rem;
+    padding-inline: max(1.1rem, calc((100% - 74ch) / 2));
     border-bottom: 1px solid color-mix(in srgb, currentColor 12%, transparent);
   }
   .format-bar button {
@@ -550,10 +554,20 @@
   .format-bar button:hover {
     background: color-mix(in srgb, currentColor 8%, transparent);
   }
-  /* A tint of the ink rather than a fixed grey, so "this is on" reads the same way on light and dark paper. */
+  /* A tint of the ink rather than a fixed grey, so "this is on" reads the same way on light and dark paper — with an
+     inner edge, because `app.css` gives every `:focus-visible` element a 2 px ink outline and a faint fill plus a thin
+     border is, at this size, the same drawing as that ring. Pressed has to be legible without moving the pointer. */
   .format-bar button[aria-pressed='true'] {
-    background: color-mix(in srgb, currentColor 14%, transparent);
-    border-color: color-mix(in srgb, currentColor 25%, transparent);
+    background: color-mix(in srgb, currentColor 20%, transparent);
+    border-color: color-mix(in srgb, currentColor 45%, transparent);
+    box-shadow: inset 0 1px 2px color-mix(in srgb, currentColor 35%, transparent);
+  }
+
+  /* Focus stays a ring outside the box, so "Tab will act here" and "this mark is on your text" are never the same
+     thing to look at. */
+  .format-bar button:focus-visible {
+    outline: 2px solid var(--ink);
+    outline-offset: 2px;
   }
   .format-bar button[data-mark='bold'] {
     font-weight: 700;
@@ -609,29 +623,39 @@
 
   /* ---- markdown, styled. The classes come from `markdownStyle.ts`; a class named there and not here renders
         as plain text, which a test refuses. ------------------------------------------------------------- */
+  /* `defaultHighlightStyle` — installed by this window for the tags our own rules do not reach — gives every heading
+     `text-decoration: underline`, and nothing here cancelled it. Underline is the cue links wear in this editor,
+     deliberately, so a note whose every title is underlined reads as a page of things to click. Size and weight say
+     "heading" on their own; the cancellation goes on all six levels because these rules are what a reader looks for. */
   .cm :global(.md-h1) {
     font-size: 1.5em;
     font-weight: 700;
     line-height: 1.25;
+    text-decoration: none;
   }
   .cm :global(.md-h2) {
     font-size: 1.3em;
     font-weight: 700;
     line-height: 1.3;
+    text-decoration: none;
   }
   .cm :global(.md-h3) {
     font-size: 1.15em;
     font-weight: 600;
+    text-decoration: none;
   }
   .cm :global(.md-h4) {
     font-weight: 600;
+    text-decoration: none;
   }
   .cm :global(.md-h5) {
     font-weight: 600;
     font-style: italic;
+    text-decoration: none;
   }
   .cm :global(.md-h6) {
     font-weight: 600;
+    text-decoration: none;
     /* A level-six heading in a note is usually a label, not a title. */
     color: color-mix(in srgb, currentColor 72%, transparent);
   }

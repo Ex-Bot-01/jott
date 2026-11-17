@@ -2157,6 +2157,39 @@ describe('the window mounts', () => {
     )
   })
 
+  it('does not underline headings, because links already own that cue', () => {
+    // A claim about what the stylesheet says — jsdom paints no text. `defaultHighlightStyle`, which this window
+    // installs itself, styles `tags.heading` with `textDecoration: "underline"` and nothing of ours cancelled it, so
+    // every title in a note wore the one cue that means "there is somewhere to click". Underline belongs to links.
+    const editor = readFileSync(join(process.cwd(), 'src', 'lib', 'Editor.svelte'), 'utf8')
+    for (const level of ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']) {
+      expect(rule(editor, `.cm :global(.md-${level})`), `heading ${level}`).toContain('text-decoration: none')
+    }
+  })
+
+  it('sits the format bar over the text it formats', () => {
+    // Another claim about the stylesheet. The buffer centres its measure with a fluid inline padding, while the bar
+    // kept a flat 0.75rem — at 1400 px the first control sat about 120 px to the left of the first character, so the
+    // controls floated in the gutter above empty space instead of over the words they change. One measure, read by
+    // both rules, is the whole fix; a test that only checked "the bar has padding" would have passed all along.
+    const editor = readFileSync(join(process.cwd(), 'src', 'lib', 'Editor.svelte'), 'utf8')
+    const inline = (block: string) => /padding-inline: ([^;]+);/.exec(block)?.[1]?.trim()
+    const content = rule(editor, '.cm :global(.cm-content)')
+    const bar = rule(editor, '.format-bar')
+    expect(inline(content), 'the buffer declares the measure the window centres on').toBeTruthy()
+    expect(inline(bar), 'the bar takes the same inline padding as the text beneath it').toBe(inline(content))
+  })
+
+  it('makes an engaged button look engaged rather than focused', () => {
+    // Third claim about the stylesheet. `app.css` gives every `:focus-visible` element a 2 px ink outline, and the
+    // pressed state was a faint fill plus a border of similar weight — at this size the two read as the same thing,
+    // which is how a bar whose entire promise is "lit means it applies here" ends up looking like the mouse is on a
+    // button. Pressed gets an inner edge; focus keeps the outer ring. They must not be the same drawing.
+    const editor = readFileSync(join(process.cwd(), 'src', 'lib', 'Editor.svelte'), 'utf8')
+    expect(rule(editor, ".format-bar button[aria-pressed='true']")).toContain('inset')
+    expect(rule(editor, '.format-bar button:focus-visible')).toContain('outline')
+  })
+
   it('gives note-processor’s own index no format bar and no shortcuts', async () => {
     scenario.current = 'vault'
     readNoteSays.catalogue = true
