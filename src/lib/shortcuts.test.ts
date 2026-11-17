@@ -14,6 +14,16 @@ const key = (
   ...over,
 })
 
+describe('the keys the editor keeps', () => {
+  it('leaves the four formatting keys to the editor', () => {
+    // `shortcutFor` is the window's claim on a keystroke. Anything it answers with would fire a panel over the note
+    // instead of formatting a word, and the two are indistinguishable from the keyboard.
+    for (const k of ['b', 'i', 'e', 'k']) {
+      expect(shortcutFor(key({ ctrlKey: true, key: k })), `Ctrl+${k.toUpperCase()}`).toBeNull()
+    }
+  })
+})
+
 describe('the modified keys', () => {
   it('binds the five the plan promised', () => {
     expect(shortcutFor(key({ ctrlKey: true, key: 'n' }))).toBe('new-note')

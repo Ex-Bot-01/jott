@@ -6,7 +6,7 @@
   import { Decoration, EditorView, keymap, type ViewUpdate } from '@codemirror/view'
   import { Compartment, EditorState, RangeSet, StateField, type Extension } from '@codemirror/state'
   import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
-  import { markdown } from '@codemirror/lang-markdown'
+  import { markdown, markdownKeymap } from '@codemirror/lang-markdown'
   import { bracketMatching, syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language'
   import { markdownStyle } from './markdownStyle'
   import { applyMark, type MarkKind } from './markdownEdit'
@@ -257,9 +257,20 @@
       keymap.of([
         // Mod-s is CodeMirror's "jump to line" by default. Here it means save, and nothing else (§9).
         { key: 'Mod-s', mac: 'Mod-s', preventDefault: true, run: () => (void saveNow(), true) },
+        // The four formatting keys, ahead of the defaults because a keymap answers in order and these are ours.
+        // `run` returning false — a read-only file, or a mark with nothing to do — lets the keystroke fall through
+        // instead of swallowing it.
+        { key: 'Mod-b', mac: 'Mod-b', run: () => runMark('bold') },
+        { key: 'Mod-i', mac: 'Mod-i', run: () => runMark('italic') },
+        { key: 'Mod-e', mac: 'Mod-e', run: () => runMark('code') },
+        { key: 'Mod-k', mac: 'Mod-k', run: () => runMark('link') },
         ...defaultKeymap,
         ...historyKeymap,
         indentWithTab,
+        // The markdown language pack's own keys, which this window had never installed: Enter continues a `- [ ]`
+        // item instead of dropping the marker, and Backspace at the end of `**word|**` takes the whole pair off
+        // rather than one asterisk at a time. Two lines for the two most felt things a markdown editor does.
+        ...markdownKeymap,
       ]),
       EditorView.domEventHandlers({ blur: () => (void saveNow(), true) }),
       // Read untracked on purpose: this runs inside the effect that opens a note, and a keystroke in the

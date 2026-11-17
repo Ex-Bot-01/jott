@@ -2084,6 +2084,24 @@ describe('the window mounts', () => {
     expect(errors).toEqual([])
   })
 
+  it('formats from the keyboard as well as the bar', async () => {
+    scenario.current = 'vault'
+    const { errors } = await start()
+    await openFromTree('inbox.md')
+
+    const content = document.querySelector('.cm-content') as HTMLElement
+    content.dispatchEvent(new KeyboardEvent('keydown', { key: 'b', ctrlKey: true, bubbles: true }))
+    await vi.waitFor(() => expect(document.querySelector('.cm-content')?.textContent).toContain('****'))
+    expect(errors).toEqual([])
+  })
+
+  it('keeps a list going when you press Enter', () => {
+    // A claim about what `Editor.svelte` installs, not about a rendered newline: jsdom gives CodeMirror no layout to
+    // measure, so the keystroke itself cannot be driven here.
+    const source = readFileSync(join(process.cwd(), 'src', 'lib', 'Editor.svelte'), 'utf8')
+    expect(source).toMatch(/\.\.\.markdownKeymap/)
+  })
+
   it('gives note-processor’s catalogue neither rows nor shortcuts', async () => {
     scenario.current = 'vault'
     readNoteSays.catalogue = true
