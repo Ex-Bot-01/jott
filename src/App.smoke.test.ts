@@ -2157,13 +2157,43 @@ describe('the window mounts', () => {
     )
   })
 
+  it('paints markdown with its own classes, not CodeMirror’s defaults', async () => {
+    // A DOM assertion, deliberately, where its neighbours are stylesheet pins. `markdownStyle` was installed as a
+    // *fallback* highlight style behind another fallback, so CodeMirror's default won every tag we also claim: the
+    // buffer carried `.ͼ7` and friends and not one of our `md-` classes, and had done since 0.0.9 — headings were
+    // never sized by us, bold was never ours, and the faded markers were the default style's grey. Every pin over
+    // these classes stayed green the whole time, because a class named in a stylesheet is easy to prove and
+    // impossible to see. This asks the rendered editor what it actually put on the page.
+    scenario.current = 'vault'
+    const { errors } = await start()
+    await openFromTree('inbox.md')
+
+    expect(document.querySelector('.cm-content .md-h1'), 'the heading line carries our own class').not.toBeNull()
+    expect(document.querySelector('.cm-content .md-meta'), 'the `#` itself carries our own class').not.toBeNull()
+
+    // Bold needs marked text, and the bar is how a person makes some: select the word, press Bold, and the class
+    // must arrive on the word rather than staying CodeMirror's.
+    const view = EditorView.findFromDOM(document.querySelector('.cm-content') as HTMLElement)!
+    view.dispatch({ selection: { anchor: 11, head: 18 } })
+    ;(document.querySelector('button[data-mark="bold"]') as HTMLButtonElement).dispatchEvent(
+      new MouseEvent('click', { bubbles: true }),
+    )
+    await vi.waitFor(() => expect(document.querySelector('.cm-content .md-strong'), 'bold text carries our own class').not.toBeNull())
+    expect(errors).toEqual([])
+  })
+
   it('does not underline headings, because links already own that cue', () => {
     // A claim about what the stylesheet says — jsdom paints no text. `defaultHighlightStyle`, which this window
     // installs itself, styles `tags.heading` with `textDecoration: "underline"` and nothing of ours cancelled it, so
     // every title in a note wore the one cue that means "there is somewhere to click". Underline belongs to links.
     const editor = readFileSync(join(process.cwd(), 'src', 'lib', 'Editor.svelte'), 'utf8')
     for (const level of ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']) {
-      expect(rule(editor, `.cm :global(.md-${level})`), `heading ${level}`).toContain('text-decoration: none')
+      // Matched through `.cm-content`, not on the class alone: CodeMirror's own generated rule for
+      // `tags.heading` is deeper in the cascade than a bare `.md-h1`, and a pin that accepted the weaker selector
+      // passed while the screen still showed an underline under every title.
+      expect(rule(editor, `.cm :global(.cm-content .md-${level})`), `heading ${level}`).toContain(
+        'text-decoration: none',
+      )
     }
   })
 
