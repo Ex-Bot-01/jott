@@ -787,6 +787,32 @@ What is a preference rather than a bug: the `☑` glyph is small and a little fa
 between `##` and `###` — `#` stays something you type yourself, so that a heading button cannot demote a note's title.
 If either bothers you in practice, say so; it is a design argument, not a fault.
 
+## 2b-zd. Since 0.0.28: the markdown styling starts working
+
+This release changes no bytes in your notes. It switches on the styling that has been written since 0.0.9 and never
+reached the screen, so what I need from you is mostly an eye test — including "it looks worse now", which is a
+legitimate answer and not a bug report.
+
+1. **Open a note with headings in it** — one with a `#` line and a `##` line under it, then a normal paragraph. The
+   heading should be visibly *bigger* than its own paragraph, and none of them should be underlined. If every heading
+   is the same size as prose, or has a line under it, this release hasn't taken effect on your machine.
+2. **Check the underline belongs to links only.** A `[some label](somewhere.md)` link should have its label
+   underlined and its brackets and address quieter than the words. Underline should mean "there is somewhere to go"
+   and nothing else in the window should use it.
+3. **Look at the markers, not just the words.** The `#` in front of a heading and the `**` around bold text should
+   still be there — they are never hidden — but dimmer than the text they wrap. If they are as loud as prose, or have
+   vanished, say which one.
+4. **Wide window: does the format bar sit above your text?** Maximise the window and open a note. The row of buttons
+   (`B` `I` `</>` link `•` `☑` `H`) should begin roughly over the first character of the buffer, not out in the empty
+   margin to its left. On a wide window both move inward together — that's the text column being centred, not a bug.
+5. **Pressed versus focused.** Click into a heading so `H` lights up. Then press Tab until the caret leaves the buffer
+   and lands on a button. The lit one and the focused one should look like different things — pressed is filled with a
+   shadowed inner edge, focused has a ring drawn outside it. If they still look the same to you, tell me which pair
+   you compared; that's the finding I care about.
+6. **Now the honest question.** Read a note you actually wrote and say whether it looks better or worse than it did in
+   0.0.27. Too-big headings, too-grey code, list bullets shouting — all worth knowing. Nothing here is written in
+   stone; it was designed in 0.0.9 and nobody had ever seen it until this week.
+
 ## 4. The question only Windows can answer: write-lock contention
 
 np takes a lock on the workspace while it indexes, and on Windows that lock is a file others cannot open.
