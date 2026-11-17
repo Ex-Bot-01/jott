@@ -2051,8 +2051,10 @@ describe('the window mounts', () => {
       const mark = b.getAttribute('data-mark')
       expect(b.getAttribute('aria-pressed'), `${mark} says whether it applies`).toMatch(/^(true|false)$/)
     }
-    // The name row answers "which note am I looking at", which nothing in the window did before — not the pane,
-    // not the title.
+    // The name row answers "which note am I looking at". One row says it, not two: 0.0.26 already put the file's
+    // name above the editor beside its close button, and my first version of this added a second name line to the
+    // editor pane — visible in the browser, invisible to every test, because nothing was counting.
+    expect(document.querySelectorAll('.note-name'), 'the name is said once, not twice').toHaveLength(1)
     expect(document.querySelector('[data-testid="note-name"]')?.textContent).toContain('inbox.md')
     expect(errors).toEqual([])
   })
@@ -2109,7 +2111,11 @@ describe('the window mounts', () => {
     await openFromTree('INDEX.md')
 
     expect(document.querySelector('[data-testid="format-bar"]'), 'np wrote this file').toBeNull()
-    expect(document.querySelector('[data-testid="note-name"]')).toBeNull()
+    // The name row stays — looking is allowed, and the window says which of the two it is showing. What goes is the
+    // offer to format a file core refuses to write.
+    const name = document.querySelector('[data-testid="note-name"]')
+    expect(name?.textContent).toContain('INDEX.md')
+    expect(document.body.textContent).toContain('read-only')
 
     const before = document.querySelector('.cm-content')?.textContent ?? ''
     document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'b', ctrlKey: true, bubbles: true }))

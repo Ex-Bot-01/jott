@@ -1599,7 +1599,12 @@
            sidebar toolbar, among the tree's rename/delete, nowhere near the page of text they were reading. A control
            belongs beside the thing it acts on. -->
       <div class="note-bar">
-        <span class="note-name" title={selected}>{selected}</span>
+        <!-- One row says which note this is, and it has said so since 0.0.16 — the format bar's pass nearly put a
+             second copy of the name in the editor pane before a screenshot caught it. The folder is here too now,
+             muted: two notes called `index.md` in different folders are otherwise indistinguishable at a glance. -->
+        <span class="note-name" data-testid="note-name" title={selected}>
+          {#if selected?.includes('/')}<span class="quiet">{selected.slice(0, selected.lastIndexOf('/') + 1)}</span>{/if}{selected?.split('/').pop() ?? selected}
+        </span>
         {#if note?.readonly}
           <span class="quiet">read-only</span>
         {/if}

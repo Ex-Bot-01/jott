@@ -177,11 +177,6 @@
    *  button because it claims to be information. */
   let marks = $state<MarkKind[]>([])
 
-  /** The two halves of the name row: what the file is called, and where it lives. `rel` arrives with `/` separators
-   *  as core reports them, on every platform. */
-  const noteName = $derived(rel ? (rel.split('/').pop() ?? rel) : '')
-  const noteFolder = $derived(rel && rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/')) : '')
-
   /** Apply one mark to the current selection. Returns whether it did anything, so a key binding can tell CodeMirror
    *  to stop looking for another handler. */
   function runMark(kind: MarkKind): boolean {
@@ -478,14 +473,9 @@
     {/if}
 
     {#if !readonly}
-      <!-- Two rows that were not in this window before: the file's own name — nothing else in Jott said which note
-           you were looking at — and the controls. Both are absent for a read-only file, because offering to format
-           what core refuses to write is the complaint `INDEX.md` already answered once. -->
-      <p class="note-name" data-testid="note-name">
-        <span class="file">{noteName}</span>
-        {#if noteFolder}<span class="folder">{noteFolder}/</span>{/if}
-      </p>
-
+      <!-- The controls live here, next to the text they change. They are absent for a read-only file: offering to
+           format what core refuses to write is the complaint `INDEX.md` already answered once. The note's own name
+           stays in the window's `note-bar`, above this pane, where it has lived since 0.0.16 beside its close button. -->
       <div class="format-bar" data-testid="format-bar" role="group" aria-label="Formatting">
         {#each KINDS as kind}
           <button
@@ -533,28 +523,6 @@
   }
   .placeholder button {
     margin-block-start: 0.45rem;
-  }
-  .note-name {
-    flex: 0 0 auto;
-    display: flex;
-    align-items: baseline;
-    gap: 0.4rem;
-    margin: 0;
-    padding: 0.35rem 0.9rem 0;
-    font-size: 0.8125rem;
-    min-width: 0;
-  }
-  .note-name .file {
-    font-weight: 600;
-  }
-  .note-name .folder {
-    color: color-mix(in srgb, currentColor 55%, transparent);
-    /* The folder is context, not the thing you are reading: it gives way rather than pushing the file name off the
-       row on a narrow window. */
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    min-width: 0;
   }
   .format-bar {
     flex: 0 0 auto;
