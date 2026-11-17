@@ -36,7 +36,7 @@ describe('inline marks', () => {
     expect(applied('wind from', { from: 9, to: 9 }, 'bold')).toEqual({
       text: 'wind from****', anchor: 11, head: 11,
     })
-    expect(applied('wind from', { from: 9, to: 9 }, 'code').text).toBe('wind from``')
+    expect(applied('wind from', { from: 9, to: 9 }, 'code')!.text).toBe('wind from``')
   })
 
   it('unwraps a selection that already carries the markers', () => {
@@ -97,15 +97,15 @@ describe('block marks', () => {
   it('steps the caret’s line through ## and ### and out', () => {
     // The cycle never produces `#`: a title is typed by hand, so pressing Heading on one moves it down rather
     // than treating it as "no heading yet".
-    expect(applied('north wind', { from: 3, to: 3 }, 'heading').text).toBe('## north wind')
-    expect(applied('## north wind', { from: 3, to: 3 }, 'heading').text).toBe('### north wind')
-    expect(applied('### north wind', { from: 3, to: 3 }, 'heading').text).toBe('north wind')
-    expect(applied('# north wind', { from: 3, to: 3 }, 'heading').text).toBe('## north wind')
-    expect(applied('#### north wind', { from: 3, to: 3 }, 'heading').text).toBe('### north wind')
+    expect(applied('north wind', { from: 3, to: 3 }, 'heading')!.text).toBe('## north wind')
+    expect(applied('## north wind', { from: 3, to: 3 }, 'heading')!.text).toBe('### north wind')
+    expect(applied('### north wind', { from: 3, to: 3 }, 'heading')!.text).toBe('north wind')
+    expect(applied('# north wind', { from: 3, to: 3 }, 'heading')!.text).toBe('## north wind')
+    expect(applied('#### north wind', { from: 3, to: 3 }, 'heading')!.text).toBe('### north wind')
   })
 
   it('changes only the caret’s line when a heading press meets a selection', () => {
-    expect(applied('north\nsouth', { from: 0, to: 11 }, 'heading').text).toBe('## north\nsouth')
+    expect(applied('north\nsouth', { from: 0, to: 11 }, 'heading')!.text).toBe('## north\nsouth')
   })
 
   it('does nothing when a block mark is asked for in an empty note', () => {
