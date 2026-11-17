@@ -46,7 +46,16 @@
 <!-- No Escape handler here: the window routes that key in one place (`escapeAction`), so that one press dismisses one
      thing. A second listener on `window` closed About *and* the note behind it. -->
 
-<div class="scrim" role="presentation" onclick={onClose}>
+<!-- The handler is on the scrim, so it has to ask where the click actually landed: every click inside the panel
+     bubbles here as well, and taking them all meant *Copy details*, a link, and Diagnostics each closed the panel
+     before doing their job. Svelte 5 has no `|self` modifier, hence the explicit comparison. -->
+<div
+  class="scrim"
+  role="presentation"
+  onclick={(event) => {
+    if (event.target === event.currentTarget) onClose()
+  }}
+>
   <div class="panel" role="dialog" aria-label="About Jott" tabindex="-1">
     <header>
       <h2>Jott</h2>

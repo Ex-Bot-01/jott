@@ -600,6 +600,10 @@
   }
 
   async function openDiagnostics() {
+    // About goes away as the drawer arrives. The drawer is a row of the window rather than an overlay, so a panel left
+    // open would sit over it behind a dimming scrim — over the rows the person pressed the button to read. One thing on
+    // screen at a time, and the way back is Ctrl+Shift+D either way.
+    showAbout = false
     showDiagnostics = true
     void loadAbout()
     // Asked again every time it opens. The queue and the counts are facts about right now, and a drawer stuck on

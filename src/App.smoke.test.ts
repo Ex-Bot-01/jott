@@ -852,8 +852,36 @@ describe('the window mounts', () => {
     diag!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     await vi.waitFor(() => expect(document.body.textContent ?? '').toContain('What Jott is doing'))
 
+    // One thing on screen at a time. The drawer lives in the window's own flow, so an About panel left open would
+    // float above it behind a dimming scrim — over the very rows the person pressed the button to read.
+    expect(document.querySelector('[role="dialog"][aria-label="About Jott"]')).toBeNull()
+
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
     await vi.waitFor(() => expect(document.body.textContent ?? '').not.toContain('What Jott is doing'))
+    expect(errors).toEqual([])
+  })
+
+  it('keeps About open when a click lands inside it', async () => {
+    // The dismiss handler sat on the scrim, and every click inside the panel bubbled up to it — so *Copy details*,
+    // a link, and even the Diagnostics button each closed the panel before doing their job. Only a click that
+    // actually landed on the scrim means "out".
+    const { errors } = await start()
+    ;(document.querySelector('button[aria-label="About Jott"]') as HTMLElement).click()
+    await vi.waitFor(() => expect(document.querySelector('[role="dialog"][aria-label="About Jott"]')).not.toBeNull())
+
+    const dialog = () => document.querySelector('[role="dialog"][aria-label="About Jott"]')
+    ;(document.querySelector('.panel') as HTMLElement).dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    expect(dialog(), 'a click inside the panel dismissed it').not.toBeNull()
+
+    const copy = [...document.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Copy details')!
+    copy.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    expect(dialog(), 'Copy details dismissed the panel it was standing in').not.toBeNull()
+
+    // And the scrim still works, because that is the part of the screen that means "away with you".
+    ;(document.querySelector('.scrim') as HTMLElement).dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await vi.waitFor(() => expect(dialog()).toBeNull())
     expect(errors).toEqual([])
   })
 
