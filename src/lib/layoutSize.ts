@@ -76,6 +76,17 @@ export function sideFromPointer(clientX: number, viewportW: number): number {
   return clampSide(clientX, viewportW)
 }
 
+/** The height a drag asks for, measured from where the grab started.
+ *
+ *  Not "everything below the pointer", which is what the first version did: the drawer's bottom edge is *not* the
+ *  window's — the status strip sits below it, and a border plus the bottom padding sit inside its declared height — so
+ *  that reading overshot by about 40 px. Pressing the visible edge jumped the drawer taller, which slid the strip out
+ *  from under the pointer and made the double-click reset impossible to land. A delta cannot drift, whatever else is
+ *  underneath. */
+export function drawerHeightFromDrag(originClientY: number, originHeightPx: number, clientY: number, viewportH: number): number {
+  return clampDrawer(originHeightPx + (originClientY - clientY), viewportH)
+}
+
 /** The tallest this window will hold: 70 % of it, or whatever leaves the note pane 200 px — whichever is smaller,
  *  with the floor last so a comically short window still gets a drawer it can read. */
 export function drawerMax(viewportH: number): number {

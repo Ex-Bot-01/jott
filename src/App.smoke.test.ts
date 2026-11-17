@@ -886,9 +886,10 @@ describe('the window mounts', () => {
   })
 
   it('puts the grab strip where the line you can see is', async () => {
-    // Measured in the browser, not in jsdom: with the drawer's own top padding above it, the strip began a few pixels
-    // *below* the border it belongs to — so aiming at the line you can see landed in the note pane and dragged a text
-    // selection instead. The padding therefore moves below the handle, and the handle starts at the edge.
+    // A claim about what the stylesheet says. What prompted it was measured in the browser — with the drawer's own top
+    // padding above it, the strip began a few pixels *below* the border it belongs to, so aiming at the line you can
+    // see landed in the note pane and dragged a text selection instead — but jsdom computes no layout, so all this can
+    // hold is the two rules that put the strip flush with the edge.
     const sheet = readFileSync(join(process.cwd(), 'src', 'lib', 'Diagnostics.svelte'), 'utf8')
     expect(rule(sheet, '.drawer')).toContain('padding: 0 0.9rem 0.8rem')
     expect(rule(sheet, '.splitter')).not.toMatch(/margin: -/)
@@ -952,8 +953,10 @@ describe('the window mounts', () => {
 
     // jsdom's window is 1024 px wide, so the ceiling here is 460 px: every figure below stays inside it deliberately,
     // because a test that measured a clamp would be testing `layoutSize.ts` for the second time.
-    handle.dispatchEvent(new MouseEvent('pointerdown', { clientX: 300, bubbles: true }))
-    handle.dispatchEvent(new MouseEvent('pointermove', { clientX: 400, bubbles: true }))
+    // `buttons: 1` because that is what a real drag reports; a move with no button held is a different case and has
+    // its own test below ("stops dragging when the release never arrives").
+    handle.dispatchEvent(new MouseEvent('pointerdown', { clientX: 300, buttons: 1, bubbles: true }))
+    handle.dispatchEvent(new MouseEvent('pointermove', { clientX: 400, buttons: 1, bubbles: true }))
     await vi.waitFor(() => expect(handle.getAttribute('aria-valuenow')).toBe('400'))
     // Nothing is written mid-drag. A drag in progress is not yet a decision, and a webview's storage should not take
     // one write per pixel of the way there.
@@ -1132,6 +1135,143 @@ describe('the window mounts', () => {
     } finally {
       // Restored whatever the assertions did: every later test in this file mounts a 768 px window.
       Object.defineProperty(window, 'innerHeight', { value: realHeight, configurable: true })
+    }
+  })
+
+  it('re-clamps the drawer when the window changes shape, without forgetting the height', async () => {
+    // Undocking from a 27" monitor is the ordinary way into this: the drawer opened at 537 px in a 768 px window and
+    // the window is now 400 px tall. Without a re-clamp the note pane collapses and the status strip leaves the bottom
+    // edge — the exact failure the ceiling exists to prevent, reached by resizing rather than by loading.
+    localStorage.setItem(DRAWER_KEY, '900')
+    scenario.current = 'vault'
+    const { errors } = await start()
+    const drawer = await openDrawer()
+    await vi.waitFor(() => expect(drawer.getAttribute('style') ?? '').toContain('height: 537px'))
+
+    const realHeight = window.innerHeight
+    Object.defineProperty(window, 'innerHeight', { value: 400, configurable: true })
+    try {
+      window.dispatchEvent(new Event('resize'))
+      await vi.waitFor(() => expect(drawer.getAttribute('style') ?? '').toContain('height: 200px'))
+      // The memory is the desk's; the clamp is this window's. Rewriting it here is how a laptop quietly forgets the
+      // height chosen on the monitor it was docked to.
+      expect(localStorage.getItem(DRAWER_KEY)).toBe('900')
+    } finally {
+      Object.defineProperty(window, 'innerHeight', { value: realHeight, configurable: true })
+    }
+    expect(errors).toEqual([])
+  })
+
+  it('re-clamps the sidebar when the window narrows, and says so to the keyboard', async () => {
+    localStorage.setItem(SIDE_KEY, '900')
+    const { errors } = await start()
+    const handle = document.querySelector('[data-testid="sidebar-splitter"]') as HTMLElement
+    await vi.waitFor(() => expect(handle.getAttribute('aria-valuenow')).toBe('460'))
+
+    const realWidth = window.innerWidth
+    Object.defineProperty(window, 'innerWidth', { value: 820, configurable: true })
+    try {
+      window.dispatchEvent(new Event('resize'))
+      await vi.waitFor(() => expect(handle.getAttribute('aria-valuenow')).toBe('369'))
+      // The announced ceiling has to move with the window too: `innerWidth` is not reactive, so an attribute read
+      // straight off it would keep telling a screen reader about a width this window cannot hold.
+      expect(handle.getAttribute('aria-valuemax')).toBe('369')
+      expect(localStorage.getItem(SIDE_KEY)).toBe('900')
+    } finally {
+      Object.defineProperty(window, 'innerWidth', { value: realWidth, configurable: true })
+    }
+    expect(errors).toEqual([])
+  })
+
+  it('ignores a right-button press on the handle', async () => {
+    // `pointerdown` fires for every button. Without a guard, opening the context menu over the strip resized the
+    // column — a width change nobody asked for, delivered by the gesture that means "leave this alone".
+    const { errors } = await start()
+    const handle = document.querySelector('[data-testid="sidebar-splitter"]') as HTMLElement
+
+    handle.dispatchEvent(new MouseEvent('pointerdown', { clientX: 400, button: 2, buttons: 2, bubbles: true }))
+    handle.dispatchEvent(new MouseEvent('pointermove', { clientX: 420, buttons: 2, bubbles: true }))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    expect(handle.getAttribute('aria-valuenow')).toBe('364')
+    expect(localStorage.getItem(SIDE_KEY)).toBeNull()
+    expect(errors).toEqual([])
+  })
+
+  it('stops dragging when the release never arrives', async () => {
+    // Pointer capture is best effort — the code allows for a webview that refuses it. If the button comes up somewhere
+    // else and nothing notices, the window stays in `user-select: none` with a handle that resizes on plain hover.
+    const { errors } = await start()
+    const handle = document.querySelector('[data-testid="sidebar-splitter"]') as HTMLElement
+
+    handle.dispatchEvent(new MouseEvent('pointerdown', { clientX: 300, buttons: 1, bubbles: true }))
+    handle.dispatchEvent(new MouseEvent('pointermove', { clientX: 400, buttons: 1, bubbles: true }))
+    await vi.waitFor(() => expect(handle.getAttribute('aria-valuenow')).toBe('400'))
+
+    // No `pointerup` follows. The next move simply reports that no button is held.
+    handle.dispatchEvent(new MouseEvent('pointermove', { clientX: 440, buttons: 0, bubbles: true }))
+    await vi.waitFor(() => expect(localStorage.getItem(SIDE_KEY)).toBe('400'))
+
+    // And a later move with a button down must not resurrect the abandoned drag.
+    handle.dispatchEvent(new MouseEvent('pointermove', { clientX: 440, buttons: 1, bubbles: true }))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(handle.getAttribute('aria-valuenow')).toBe('400')
+    expect(errors).toEqual([])
+  })
+
+  it('keeps what a cancelled drag reached', async () => {
+    // A context menu or a lost window cancels the pointer instead of releasing it. The width you dragged to is still
+    // the width you wanted, and the cursor must come out of resize mode either way.
+    const { errors } = await start()
+    const handle = document.querySelector('[data-testid="sidebar-splitter"]') as HTMLElement
+
+    handle.dispatchEvent(new MouseEvent('pointerdown', { clientX: 300, buttons: 1, bubbles: true }))
+    handle.dispatchEvent(new MouseEvent('pointermove', { clientX: 380, buttons: 1, bubbles: true }))
+    handle.dispatchEvent(new MouseEvent('pointercancel', { clientX: 380, bubbles: true }))
+
+    await vi.waitFor(() => expect(localStorage.getItem(SIDE_KEY)).toBe('380'))
+    expect(handle.getAttribute('aria-valuenow')).toBe('380')
+    expect(errors).toEqual([])
+  })
+
+  it('returns the drawer to its default height on double-click', async () => {
+    // The tooltip promises it, so something has to do it. (The promise was also unreachable while pressing the edge
+    // jumped the strip out from under the pointer — see `drawerHeightFromDrag`.)
+    scenario.current = 'vault'
+    const { errors } = await start()
+    await openDrawer()
+    const handle = document.querySelector('[data-testid="drawer-splitter"]') as HTMLElement
+
+    handle.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }))
+    await vi.waitFor(() => expect(handle.getAttribute('aria-valuenow')).toBe('336'))
+
+    handle.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
+    await vi.waitFor(() => expect(handle.getAttribute('aria-valuenow')).toBe('320'))
+    expect(localStorage.getItem(DRAWER_KEY)).toBe('320')
+    expect(errors).toEqual([])
+  })
+
+  it('keeps the copy-it-yourself fallback inside the part that scrolls', async () => {
+    // The drawer clips its own overflow and only `.body` scrolls. The clipboard-refused textarea sat after the footer,
+    // so at a short drawer height the one text you were meant to copy could not be reached at all — jsdom cannot see
+    // the clipping, but it can see which box the textarea ended up in.
+    scenario.current = 'vault'
+    const { errors } = await start()
+    await openDrawer()
+
+    const copy = [...document.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Copy details')!
+    copy.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await vi.waitFor(() => expect(document.querySelector('.body textarea')).not.toBeNull())
+    expect(errors).toEqual([])
+  })
+
+  it('tells both handles to leave a finger drag alone', () => {
+    // A claim about what the two stylesheets say, not about what a screen shows. Without `touch-action: none`,
+    // Chromium and WebView2 claim a finger drag as a pan gesture, suppress the moves and fire `pointercancel` — so on
+    // a touch laptop the handle jumps, then stops following, and keeps whatever it jumped to.
+    for (const rel of [['App.svelte'], ['lib', 'Diagnostics.svelte']]) {
+      const sheet = readFileSync(join(process.cwd(), 'src', ...rel), 'utf8')
+      expect(rule(sheet, '.splitter'), rel.join('/')).toContain('touch-action: none')
     }
   })
 

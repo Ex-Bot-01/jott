@@ -42,7 +42,7 @@ set — drag its top edge, or use the keys, **Home** for the default:
 | --- | --- |
 | default | **320 px** |
 | floor | **180 px** |
-| ceiling | **70 % of the window, or whatever leaves the note pane 200 px** — whichever is smaller |
+| ceiling | **70 % of the window, or whatever leaves the note pane 200 px** — and never below the 180 px floor, which wins in a very short window (a 480×320 CSS-px window at 150 % scaling is one) |
 | remembered | yes (`jott.layout.drawerPx`) |
 
 The height you choose goes into the activity list rather than into an empty box: both caps are gone and the list is
@@ -70,10 +70,27 @@ looked like a rendering fault. And the drawer's grab strip began a few pixels *b
 aiming at the line you could see dragged a text selection out of the note pane instead. The strip is flush with the
 edge now.
 
+## Caught by the review, before it shipped
+
+The whole-branch review found four things the harness pass had not: the drawer's drag measured its height as
+"everything below the pointer", which forgot that the status strip sits under it — so pressing the edge jumped the
+drawer about 40 px taller and slid the strip out from under the cursor, making the promised double-click reset nearly
+impossible to land. It is a delta from where the grab started now (`drawerHeightFromDrag`), which cannot drift whatever
+else is underneath. A right-button press on either handle resized things, so both take the primary button only, and a
+move that reports no button held ends the drag instead of latching into "resizes on hover". Neither handle set
+`touch-action`, so on a touchscreen WebView2 answered a finger drag with a pan and a `pointercancel` — one property each.
+And the drawer never re-clamped when the window changed shape, which is how undocking with the drawer open collapsed
+the note pane and pushed the status strip off the bottom edge; it now follows the same rule as the sidebar — clamp for
+this window, leave the memory alone. The clipboard-refused "copy it yourself" box also moved inside the part that
+scrolls: it used to sit after the footer in a clipped column, unreachable at exactly the short heights where you need it.
+
 ## Numbers for this release
 
-* Front end: **436 Vitest tests passing** (was 410), `npm run build` exit 0, `svelte-check` **0 errors, 0 warnings**.
-* Rust: untouched — no command, no core change, nothing asked of note-processor.
+* Front end: **445 Vitest tests passing** (was 410), `npm run build` exit 0, `svelte-check` **0 errors, 0 warnings**.
+* Rust: no code touched. `apps/shell/Cargo.lock` is bumped with the manifest, as every release commit since 0.0.23 has
+  done — leaving it at 0.0.25 while `Cargo.toml` said 0.0.26 makes any `cargo build --locked` fail outright (checked:
+  exit 101 against the stale lock, 0 against the fixed one), and CI's plain `npx tauri build` would have rewritten a
+  tracked file mid-release.
 * New module `src/lib/layoutSize.ts`: every limit and both memories, tested as arithmetic. `jsdom` has no layout
   engine, so the pixels were checked another way — the browser harness (`npm run ui`) at 1920/1200/820 px window
   widths, in light and dark, dragging both handles with a real pointer: sidebar wide to its 540 px ceiling with every

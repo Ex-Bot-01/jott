@@ -186,6 +186,10 @@
    *  the handle is made findable instead: it is focusable, tinted on hover and focus, and outlined in forced colours. */
   const layoutStore = typeof localStorage === 'undefined' ? null : localStorage
   let sidePx = $state(loadLayout(layoutStore, innerWidth, innerHeight).sidePx)
+  /** The viewport, mirrored into state. `innerWidth` is not reactive, so a handle that reads it directly keeps
+   *  announcing the ceiling of the window somebody *had* — after a narrow-drag, a screen reader is still told about
+   *  540 px this window cannot give it. The resize handler below is the only writer. */
+  let viewport = $state({ w: innerWidth, h: innerHeight })
   /** True between `pointerdown` and `pointerup`, so the cursor and text selection behave while the pointer wanders.
    *  It is also what makes a released drag stop: a move that arrives without it changes nothing. */
   let draggingSide = $state(false)
@@ -210,12 +214,15 @@
     }
     // Arrows would otherwise scroll the tree, and Home would send it to the top of the list.
     event.preventDefault()
-    sidePx = clampSide(next, innerWidth)
+    sidePx = clampSide(next, viewport.w)
     // Saved at every stop: a person who nudges twice and closes the window should not lose it.
     saveSide(layoutStore, sidePx)
   }
 
   function startSideDrag(event: PointerEvent) {
+    // The primary button only. `pointerdown` fires for every button, and taking a right-press as a grab both resized
+    // the column and hijacked the gesture whose whole meaning is "leave this alone".
+    if (event.button !== 0) return
     // Capture so the pointer keeps reporting to the handle while it travels over the note pane. jsdom has no capture
     // at all and some webviews refuse it for a synthetic pointer, hence both guards: a drag that cannot capture still
     // drags, it just stops tracking when the pointer leaves the strip.
@@ -225,12 +232,19 @@
       // Nothing to do.
     }
     draggingSide = true
-    sidePx = sideFromPointer(event.clientX, innerWidth)
+    sidePx = sideFromPointer(event.clientX, viewport.w)
   }
 
   function moveSideDrag(event: PointerEvent) {
     if (!draggingSide) return
-    sidePx = sideFromPointer(event.clientX, innerWidth)
+    // A move that reports no button held means the release was never seen — capture refused, or the button came up
+    // over the note pane. Finish here rather than latch into a handle that resizes on plain hover and leaves the
+    // whole window in `user-select: none`.
+    if (event.buttons === 0) {
+      endSideDrag()
+      return
+    }
+    sidePx = sideFromPointer(event.clientX, viewport.w)
   }
 
   /** Release, and the cancelled release too — a drag interrupted by a context menu or a lost window must not leave the
@@ -249,7 +263,10 @@
   /** A narrower window narrows the column *for now* and leaves the memory alone: the remembered width belongs to the
    *  desk this app is used on, the clamp belongs to the window it happens to be in. Rewriting the preference here is
    *  how a laptop would quietly forget the width chosen on the monitor it was docked to. */
-  const onWindowResize = () => (sidePx = clampSide(sidePx, innerWidth))
+  const onWindowResize = () => {
+    viewport = { w: innerWidth, h: innerHeight }
+    sidePx = clampSide(sidePx, viewport.w)
+  }
   if (typeof addEventListener === 'function') addEventListener('resize', onWindowResize)
   onDestroy(() => {
     if (typeof removeEventListener === 'function') removeEventListener('resize', onWindowResize)
@@ -1447,7 +1464,7 @@
     tabindex="0"
     aria-label="Sidebar width"
     aria-valuemin={SIDE_MIN}
-    aria-valuemax={sideMax(innerWidth)}
+    aria-valuemax={sideMax(viewport.w)}
     aria-valuenow={sidePx}
     title="Drag to resize the list · double-click or Home for the default width"
     data-testid="sidebar-splitter"
@@ -1749,6 +1766,10 @@
     border: 0;
     background: transparent;
     cursor: ew-resize;
+    /* Without this, Chromium and WebView2 treat a finger drag on the strip as a pan of the page: they suppress the
+       moves and fire `pointercancel`, so on a touch laptop the handle jumps and then stops following. Mouse and
+       keyboard are untouched by this property. */
+    touch-action: none;
   }
 
   /* The tint is how the strip says "I am grabbable" to a pointer. It is not the only way: the same strip takes the

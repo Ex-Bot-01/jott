@@ -15,7 +15,7 @@
     DRAWER_DEFAULT,
     DRAWER_MIN,
     clampDrawer,
-    drawerFromPointer,
+    drawerHeightFromDrag,
     drawerMax,
     loadLayout,
     saveDrawer,
@@ -111,6 +111,13 @@
   const store = typeof localStorage === 'undefined' ? null : localStorage
   let heightPx = $state(loadLayout(store, innerWidth, innerHeight).drawerPx)
   let dragging = $state(false)
+  /** Where the current drag started. The height is a delta from here rather than "everything below the pointer":
+   *  the status strip lives under this drawer, so that reading overshoots and the first press jumps the edge away
+   *  from the cursor. See `drawerHeightFromDrag`. */
+  let grab = $state<{ y: number; h: number } | null>(null)
+  /** The viewport in state, because `innerHeight` is not reactive: read directly, `aria-valuemax` would go on naming
+   *  the ceiling of the window this drawer was opened in after somebody shrinks it. */
+  let viewport = $state({ w: innerWidth, h: innerHeight })
 
   function nudgeHeight(event: KeyboardEvent) {
     const step = event.shiftKey ? 48 : 16
@@ -131,31 +138,55 @@
         return
     }
     event.preventDefault()
-    heightPx = clampDrawer(next, innerHeight)
+    heightPx = clampDrawer(next, viewport.h)
     saveDrawer(store, heightPx)
   }
 
   function startDrag(event: PointerEvent) {
+    // The primary button only: a right-press means "show me the menu", and treating it as a grab both resized the
+    // drawer and hijacked the gesture whose meaning is leave-it-alone.
+    if (event.button !== 0) return
     try {
       ;(event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId)
     } catch {
       // A drag that cannot capture still drags; it just stops tracking once the pointer leaves the strip.
     }
     dragging = true
-    heightPx = drawerFromPointer(event.clientY, innerHeight)
+    grab = { y: event.clientY, h: heightPx }
   }
 
   function moveDrag(event: PointerEvent) {
     if (!dragging) return
-    heightPx = drawerFromPointer(event.clientY, innerHeight)
+    // No button held means the release was never seen — capture refused, or the button came up somewhere else. End
+    // here rather than leave a handle that resizes on hover and a window stuck in `user-select: none`.
+    if (event.buttons === 0) {
+      endDrag()
+      return
+    }
+    if (grab === null) return
+    heightPx = drawerHeightFromDrag(grab.y, grab.h, event.clientY, viewport.h)
   }
 
-  /** Release, or a cancelled drag. Nothing is written mid-drag: a drag in progress is not yet a decision. */
+  /** Release, or a cancelled drag. Nothing is written mid-drag: a drag in progress is not yet a decision; and a
+   *  cancelled one still keeps the height it reached, because that is where the pointer stopped. */
   function endDrag() {
     if (!dragging) return
     dragging = false
+    grab = null
     saveDrawer(store, heightPx)
   }
+
+  /** A shorter window shortens the drawer *for now*, exactly as it narrows the sidebar: the remembered height belongs
+   *  to the desk, the clamp to this window. Without this, undocking with the drawer open leaves the note pane
+   *  collapsed and pushes the status strip off the bottom edge. */
+  const onWindowResize = () => {
+    viewport = { w: innerWidth, h: innerHeight }
+    heightPx = clampDrawer(heightPx, viewport.h)
+  }
+  if (typeof addEventListener === 'function') addEventListener('resize', onWindowResize)
+  onDestroy(() => {
+    if (typeof removeEventListener === 'function') removeEventListener('resize', onWindowResize)
+  })
 </script>
 
 <!-- Escape is routed once, by App (`escapeAction`). This drawer used to listen on `window` itself, which meant one
@@ -182,7 +213,7 @@
     tabindex="0"
     aria-label="Diagnostics height"
     aria-valuemin={DRAWER_MIN}
-    aria-valuemax={drawerMax(innerHeight)}
+    aria-valuemax={drawerMax(viewport.h)}
     aria-valuenow={heightPx}
     title="Drag to resize · double-click or Home for the default height"
     data-testid="drawer-splitter"
@@ -276,6 +307,22 @@
       <li class="quiet">Nothing has been asked of np yet.</li>
     {/each}
   </ol>
+
+  {#if revealFailed && logFile}
+    <!-- The file manager said no. Nothing new to show, so the line says where to look and offers the path. Both this
+         and the clipboard fallback below live *inside* `.body`, because that is the only box in here that scrolls:
+         left after the footer they sat in a clipped flex column, unreachable at a short drawer height — which is
+         precisely when the text they carry is most wanted. -->
+    <p class="quiet reveal-fallback">
+      The file manager would not open. The log is at
+      <code>{logFile}</code>
+      <button type="button" onclick={() => void copyLogPath()}>Copy path</button>
+    </p>
+  {/if}
+
+  {#if manual}
+    <textarea bind:this={clipBox} readonly rows="6" aria-label="Diagnostics text to copy">{snapshot ? copyText(snapshot, jottVersion) : ''}</textarea>
+  {/if}
   </div>
 
   <footer>
@@ -289,18 +336,6 @@
     <span class="quiet">Ctrl+Shift+D closes this</span>
   </footer>
 
-  {#if revealFailed && logFile}
-    <!-- The file manager said no. Nothing new to show, so the line says where to look and offers the path. -->
-    <p class="quiet reveal-fallback">
-      The file manager would not open. The log is at
-      <code>{logFile}</code>
-      <button type="button" onclick={() => void copyLogPath()}>Copy path</button>
-    </p>
-  {/if}
-
-  {#if manual}
-    <textarea bind:this={clipBox} readonly rows="6" aria-label="Diagnostics text to copy">{snapshot ? copyText(snapshot, jottVersion) : ''}</textarea>
-  {/if}
 </section>
 
 <style>
@@ -343,6 +378,9 @@
     background: transparent;
     cursor: ns-resize;
     flex: 0 0 auto;
+    /* See the sidebar's handle: without this a finger drag is a page pan, and WebView2 answers it with
+       `pointercancel` instead of moves. */
+    touch-action: none;
   }
 
   .splitter:hover,

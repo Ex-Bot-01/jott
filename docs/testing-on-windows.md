@@ -730,13 +730,19 @@ not move. That separation is deliberate.
 **The diagnostics drawer.** `Ctrl+Shift+D`. It should now span the **whole width** of the window, with the runtime
 facts on the left and the activity rows on the right (on a narrow window they stack), and the grey status strip should
 still be the last thing at the bottom edge — not above the drawer. Read the **log** row: a path like
-`C:\Users\chris\AppData\Roaming\jott\logs\jott.jsonl` should be on one line, or break at a `\` — never in the middle of
-a word.
+`C:\Users\chris\AppData\Roaming\jott\logs\jott.jsonl` should now fit on **one line**, because the drawer is wide
+enough for it. If your window is narrow enough that it has to break, it may break anywhere in the path — that is what
+CSS does with a word longer than the column, and 0.0.26 only changed *where* it prefers not to break (mid-word when
+there is room, which there now is). What I want to hear about is a path that is broken even in a wide window.
 
 **Its height is yours.** Put the cursor on the drawer's top edge until it turns into a resize arrow and drag up: you
-should get **more activity rows**, not more empty space. Drag it down to the floor (180 px) and let go — the note pane
-never disappears, because the drawer stops at 70 % of the window or whatever leaves the note 200 px. `Home` while the
-edge has focus returns the default 320 px; reopen the drawer and your height is still there.
+should get **more activity rows**, not more empty space — and the edge should stay under your finger from the moment
+you press it, with no jump. Drag it down to the floor (180 px) and let go. Going up, it stops at 70 % of the window or
+at whatever leaves the note pane 200 px; in a very short window the 180 px floor wins instead, so on a small screen —
+or a window you have dragged down near 300 px — the drawer can take more than half of it. That is the floor doing its
+job, not the ceiling failing: tell me if the *note pane* vanishes or the bottom status strip leaves the screen at any
+window size, because that one is a bug. `Home` while the edge has focus returns the default 320 px; double-clicking it
+does too; reopen the drawer and your height is still there.
 
 **About → Diagnostics.** Press **About**, then **Diagnostics**. Expect exactly one thing on screen: the drawer, with
 About gone. While you are in About, press **Copy details** — the panel must stay open (before 0.0.26 any click inside

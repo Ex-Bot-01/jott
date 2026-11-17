@@ -20,6 +20,7 @@ import {
   clampDrawer,
   clampSide,
   drawerFromPointer,
+  drawerHeightFromDrag,
   drawerMax,
   loadLayout,
   saveDrawer,
@@ -89,6 +90,17 @@ describe('the limits', () => {
   it('holds a dragged or remembered height inside those limits', () => {
     expect(clampDrawer(10, 768)).toBe(DRAWER_MIN)
     expect(clampDrawer(5000, 768)).toBe(537)
+  })
+
+  it('keeps the height you grabbed when you grab the edge where it already is', () => {
+    // The drawer's bottom edge is not the window's: the status strip sits below it, and a border plus the bottom
+    // padding sit inside its declared height. So "everything below the pointer" overshoots — pressing the visible
+    // edge jumped the drawer about 40 px taller, which also slid the strip out from under the pointer so a
+    // double-click never landed twice. A drag is therefore a delta from where the grab started.
+    expect(drawerHeightFromDrag(418, 320, 418, 768)).toBe(320)
+    expect(drawerHeightFromDrag(418, 320, 378, 768)).toBe(360)
+    expect(drawerHeightFromDrag(418, 320, 100, 768)).toBe(537) // still clamped
+    expect(drawerHeightFromDrag(418, 320, 700, 768)).toBe(DRAWER_MIN)
   })
 
   it('grows the drawer when its top edge is dragged up', () => {
