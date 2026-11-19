@@ -621,6 +621,16 @@ switch folders or quit. When you close a folder or leave the app, they should go
 Task Manager ever shows a `np.exe` still running after Jott has closed, that is a bug worth telling me about — on
 Windows it means your vault's index stays locked for the next np.
 
+**A second `jott.exe` in that list is now the thing to report.** Until recently, double-clicking the icon while a
+window was already open started a *second* Jott. Nothing said so: the new window looked like a slow redraw, and then
+the two of them quietly disagreed about your notes — both wrote the same stamp file, so a note one window marked done
+could turn back into *waiting*, and the recents list lost whichever folder the slower one had never loaded. A second
+launch now brings the existing window to the front (and if that ever stops working: two `jott.exe` lines in Task
+Manager, please). If you are building Jott from source as well as installing it, expect the same rule — the lock is
+named after the app identifier in `tauri.conf.json`, not after the `.exe`, so a debug build and an installed one are
+the same program to Windows. That is deliberate here: two of them pointed at one folder is exactly the disagreement
+this fixes.
+
 ## 2b-z. Since 0.0.22: indexing stops chasing its own tail, and a download you cannot miss
 
 You reported two things in the same message, and they turned out to be one bug wearing two hats. I have kept them

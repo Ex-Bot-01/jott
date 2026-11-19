@@ -60,6 +60,59 @@ pub enum StoreError {
     Paths(#[from] AppPathsError),
 }
 
+/// Merge what is on disk with the list one process wants to write, and return the union.
+///
+/// A vault either window knows about stays in the file; `last_opened` takes the later of the two, because both
+/// are true statements about different windows and the recents list can only hold one. Consent has no timestamp
+/// on it — neither does a `FileStamp`, which is why issue #7 says "the newer record" is not a question these
+/// files can answer — so the rule below is a rule, stated out loud rather than dressed up as a fact.
+pub fn merge_registry(disk: &[VaultEntry], ours: &[VaultEntry]) -> Vec<VaultEntry> {
+    let mut merged: Vec<VaultEntry> = disk.to_vec();
+    for entry in ours {
+        let existing = merged.iter().position(|e| to_abs(&e.path) == to_abs(&entry.path));
+        let Some(index) = existing else {
+            // A vault this process added and the other has never heard of: keep it.
+            merged.push(entry.clone());
+            continue;
+        };
+        let disk_entry = &merged[index];
+        let consent = merge_consent(disk_entry.consent, entry.consent, disk_entry.last_opened, entry.last_opened);
+        if entry.last_opened < disk_entry.last_opened {
+            // The other window saw this folder more recently. Leave its row where it is and take only the
+            // consent decision, which the rule below may still have moved.
+            merged[index].consent = consent;
+            continue;
+        }
+        // This process's open is the more recent one, so it takes the row's *place* in the file as well as its
+        // timestamp: the recents list is the file's order, and `last_opened` breaks a tie between two entries
+        // sharing a millisecond by that order. Rewriting the timestamp in place would leave a just-opened vault
+        // behind one opened before it — which is how `register`'s "move it to the front" behaved before the merge,
+        // and a fix for one window must not quietly change what another window's clicks mean.
+        merged.remove(index);
+        merged.push(VaultEntry { path: entry.path.clone(), last_opened: entry.last_opened, consent });
+    }
+    merged
+}
+
+/// Which consent answer survives, given when each side last saw the folder.
+fn merge_consent(disk: Consent, ours: Consent, disk_at: SystemTime, ours_at: SystemTime) -> Consent {
+    if disk == ours {
+        return disk;
+    }
+    // `Undecided` is the absence of an answer, not an answer of its own (§11), so it never overwrites one. Every
+    // write path reads the current consent first (`register`, `set_consent`), so a blank here means this process
+    // started before anyone answered.
+    if disk == Consent::Undecided {
+        return ours;
+    }
+    if ours == Consent::Undecided {
+        return disk;
+    }
+    // Two real, different answers. The folder most recently in front of a person wins, and the disk breaks the
+    // tie because that is the answer somebody has already been shown on screen.
+    if ours_at > disk_at { ours } else { disk }
+}
+
 /// The file as it sits on disk. `version` is here so a later format can tell this one apart
 /// instead of guessing from which keys happen to be present.
 #[derive(Debug, Serialize, Deserialize)]
@@ -177,14 +230,21 @@ impl VaultStore {
             .unwrap_or(Consent::Undecided)
     }
 
-    /// Write the whole registry: a temp file in the same directory, then one rename. A crash
-    /// leaves either the old file or the new one, never half of either.
+    /// Write the whole registry: merged with what is on disk, into a temp file in the same directory, then
+    /// one rename. A crash leaves either the old file or the new one, never half of either.
+    ///
+    /// The merge is issue #7's cheap half. Nothing stopped a second Jott from opening the same vault — double-click
+    /// the icon with a window already up, or pin two shortcuts — and each process rewrote the whole file from the
+    /// list it loaded at *its* startup, so whichever saved last erased a vault the other one had added. Merging is
+    /// not the fix for two writers (that is the single-instance guard in the shell); it is the reason a second
+    /// writer costs a person nothing but the answer they were about to lose anyway.
     fn save(&self, entries: &[VaultEntry]) -> Result<(), StoreError> {
         let dir = self.file().parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
         std::fs::create_dir_all(&dir).map_err(|source| StoreError::Io { path: dir.clone(), source })?;
+        let merged = merge_registry(&self.load(), entries);
         let registry = Registry {
             version: 1,
-            vaults: entries.iter().map(VaultStore::to_stored).collect(),
+            vaults: merged.iter().map(VaultStore::to_stored).collect(),
         };
         let text = serde_json::to_string_pretty(&registry)
             .expect("a registry of strings and numbers serializes");
@@ -262,4 +322,65 @@ pub fn to_abs(path: &Path) -> PathBuf {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    //! The half of issue #7 that only the writer can see: a save has to survive being handed a list that is
+    //! already out of date, because that is exactly what a second process does. Every public operation reads
+    //! first, so this is reachable only from inside the module — the tests in `tests/vault_store.rs` cover the
+    //! rule itself, and these cover that `save` actually applies it.
+
+    use super::{Consent, VaultEntry, VaultStore};
+    use std::path::PathBuf;
+    use std::time::{Duration, SystemTime};
+
+    fn entry(path: &str, ms: u64, consent: Consent) -> VaultEntry {
+        VaultEntry { path: PathBuf::from(path), last_opened: SystemTime::UNIX_EPOCH + Duration::from_millis(ms), consent }
+    }
+
+    fn store(dir: &tempfile::TempDir) -> VaultStore {
+        VaultStore::new(dir.path().join("appdata"))
+    }
+
+    #[test]
+    fn a_stale_save_gives_back_the_vault_it_never_heard_of() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir);
+        // What is on disk: another window added `two`.
+        store.save(&[entry("/vaults/one", 1_000, Consent::Undecided)]).unwrap();
+        store.save(&[entry("/vaults/one", 1_000, Consent::Undecided), entry("/vaults/two", 2_000, Consent::Granted)]).unwrap();
+
+        // What this window is about to write: a list loaded before `two` existed.
+        store.save(&[entry("/vaults/one", 3_000, Consent::Declined)]).unwrap();
+
+        let on_disk = store.load();
+        let paths: Vec<String> = on_disk.iter().map(|e| e.path.display().to_string()).collect();
+        assert_eq!(on_disk.len(), 2, "a whole-file rewrite must not forget another process: {paths:?}");
+        assert!(paths.contains(&"/vaults/two".to_string()), "the other window's vault is still listed: {paths:?}");
+        // `one` moves to the end rather than keeping its row, which is `register`'s existing rule: the recents
+        // list is this file's order, and a re-open belongs at the front of it.
+        assert_eq!(paths[1], "/vaults/one", "the vault this write opened is the most recent one: {paths:?}");
+        let one = on_disk.iter().find(|e| e.path.display().to_string() == "/vaults/one").unwrap();
+        assert_eq!(one.consent, Consent::Declined, "and the write still lands its own answer");
+    }
+
+    #[test]
+    fn a_stale_save_does_not_roll_back_a_newer_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store(&dir);
+        store.save(&[entry("/vaults/one", 9_000, Consent::Granted)]).unwrap();
+
+        // This process last saw `one` five seconds ago and thinks it is undecided.
+        store.save(&[entry("/vaults/one", 4_000, Consent::Undecided)]).unwrap();
+
+        let on_disk = store.load();
+        assert_eq!(on_disk.len(), 1);
+        assert_eq!(on_disk[0].consent, Consent::Granted, "a blank answer from a stale window is not a new answer");
+        assert_eq!(
+            on_disk[0].last_opened.duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(),
+            9_000,
+            "and the newer open stays the newer open"
+        );
+    }
 }

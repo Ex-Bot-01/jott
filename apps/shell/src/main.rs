@@ -9,6 +9,27 @@ use tauri_plugin_window_state::StateFlags;
 
 fn main() {
     tauri::Builder::default()
+        // One Jott per user account, so a second double-click wakes the window that is already there instead of
+        // starting a second process that writes the same vault (#7). The winner takes the lock — a named mutex on
+        // Windows (`platform_impl/windows.rs:93`), a D-Bus name on Linux, a Unix socket on macOS — and the loser
+        // hands its arguments over and exits without ever painting.
+        //
+        // First in the list because the plugin's own docs say so (`tauri-plugin-single-instance-2.5.5/src/lib.rs:141`:
+        // "a second instance must be detected before the rest of your setup runs") and that matters here more than
+        // in most apps: `tauri-plugin-window-state` restores geometry and our `setup` shows a window, so an instance
+        // that is about to lose should not have done either. The lock is named from `config().identifier`
+        // (`windows.rs:81`), not from the path of the `.exe`, which is why a debug build and an installed Jott are
+        // the same program as far as this line is concerned — see §3 of `docs/testing-on-windows.md`.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            // This runs in the instance that already holds the lock — the one the person was looking at, or
+            // meant to be. All three calls, because each covers a case the others miss: `set_focus` on a minimized
+            // window does nothing, and `show` alone leaves it behind the windows it should be in front of.
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         // Only for one line: a model finished downloading while the window was not focused. The window's
         // own banner says the same thing, so a refusal or an absent notifier changes nothing (§4).

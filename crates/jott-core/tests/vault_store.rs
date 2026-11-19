@@ -329,3 +329,101 @@ fn a_saved_timestamp_is_the_one_that_goes_back_out() {
     let age = SystemTime::now().duration_since(opened).expect("opened just now");
     assert!(age < Duration::from_secs(60), "last_opened is now, not an epoch zero: {age:?}");
 }
+
+// ---- issue #7: two windows, one registry file ------------------------------------------------------
+
+/// Nothing stopped a second Jott from opening the same vault — double-click the icon while a window is
+/// already up, or pin two shortcuts. `App::open` refuses two sessions *inside* one process for exactly this
+/// reason ("two queues on one workspace would race over np's lock and both write the same stamp file, so this
+/// is not a nicety"), and that reasoning stopped at the process boundary.
+///
+/// The registry is rewritten whole, so whichever process saved last wrote the list it had loaded at *its*
+/// startup: a vault the other window added simply vanished, and `last_opened_ms` for the shared path became
+/// whatever that process happened to see. A merge before writing costs nothing and fixes both halves.
+#[test]
+fn a_write_that_forgot_a_vault_gives_it_back() {
+    let disk = vec![
+        entry("/vaults/one", 1_000, Consent::Undecided),
+        entry("/vaults/two", 2_000, Consent::Granted),
+    ];
+    // The stale snapshot: this process opened `one` and never heard of `two`.
+    let ours = vec![entry("/vaults/one", 3_000, Consent::Undecided)];
+
+    let merged = jott_core::vault::store::merge_registry(&disk, &ours);
+    let paths: Vec<String> = merged.iter().map(|e| e.path.display().to_string()).collect();
+    assert_eq!(merged.len(), 2, "the other window's vault is still in the list: {paths:?}");
+    // The re-opened folder lands at the end of the file rather than keeping its old row, because the recents list
+    // *is* this file's order and `register` has always moved a re-opened vault to the front of it. Two entries in
+    // the same millisecond are broken by that order, so getting this wrong is visible as a wrong recents list.
+    assert_eq!(paths, vec!["/vaults/two", "/vaults/one"], "and the folder just opened is the most recent one");
+
+    let one = &merged[1];
+    assert_eq!(one.last_opened.duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(), 3_000, "and this process's open is what counts as most recent");
+    let two = &merged[1];
+    assert_eq!(two.consent, Consent::Granted, "the other window's answers travel untouched");
+    assert_eq!(two.last_opened.duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(), 2_000);
+}
+
+/// A blank answer must not overwrite a real one. `register` reads the current consent before writing, so an
+/// `Undecided` in this process's list means *this process never saw an answer* — not that somebody un-answered
+/// the question.
+#[test]
+fn an_answer_on_disk_beats_this_process_being_blank() {
+    let disk = vec![entry("/vaults/one", 1_000, Consent::Declined)];
+    let ours = vec![entry("/vaults/one", 2_000, Consent::Undecided)];
+
+    let merged = jott_core::vault::store::merge_registry(&disk, &ours);
+    assert_eq!(merged[0].consent, Consent::Declined, "a download decision is not lost to a stale window");
+}
+
+/// Two windows, two answers, one file. `FileStamp` has no timestamp on a verdict and neither does a registry
+/// entry, so "the newer answer" is not a question the file can answer — the issue says so, and inventing a
+/// clock here would be worse than admitting the rule. The rule that wins is *whichever folder was most recently
+/// in front of a person*, which the file can see, with the disk breaking a tie because it is the one answer
+/// somebody has already been shown.
+#[test]
+fn two_processes_that_both_answered_are_settled_by_a_stated_rule() {
+    let disk = vec![entry("/vaults/one", 5_000, Consent::Granted)];
+    let ours_stale = vec![entry("/vaults/one", 4_000, Consent::Declined)];
+    assert_eq!(jott_core::vault::store::merge_registry(&disk, &ours_stale)[0].consent, Consent::Granted);
+
+    let ours_fresher = vec![entry("/vaults/one", 6_000, Consent::Declined)];
+    assert_eq!(jott_core::vault::store::merge_registry(&disk, &ours_fresher)[0].consent, Consent::Declined);
+
+    // Same timestamp: the answer already on disk, because that is the one a window has drawn.
+    let tied = vec![entry("/vaults/one", 5_000, Consent::Declined)];
+    assert_eq!(jott_core::vault::store::merge_registry(&disk, &tied)[0].consent, Consent::Granted);
+}
+
+/// Two `VaultStore`s standing in for two windows on one app-data folder, interleaved the way a person
+/// interleaves them. Every public write reads first and merges second, so neither window's clicks erase the
+/// other's — and the answers stay attached to the folders they were given about.
+#[test]
+fn two_windows_on_one_registry_both_keep_their_vaults_and_their_answers() {
+    let _turn = SERIAL.lock().unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("appdata");
+    let one = vault_in(tmp.path(), "one");
+    let two = vault_in(tmp.path(), "two");
+
+    let first = VaultStore::new(root.clone());
+    let second = VaultStore::new(root.clone());
+    first.register(&one).unwrap();
+    second.register(&two).unwrap();
+    first.set_consent(&one, Consent::Granted).unwrap();
+    second.set_consent(&two, Consent::Declined).unwrap();
+
+    assert_eq!(first.consent(&one), Consent::Granted);
+    assert_eq!(first.consent(&two), Consent::Declined, "the other window's answer is readable from this one");
+    let paths: Vec<String> = read_registry(&root)["vaults"].as_array().unwrap()
+        .iter().map(|e| e["path"].as_str().unwrap().to_string()).collect();
+    assert_eq!(paths.len(), 2, "both folders are still in the list: {paths:?}");
+}
+
+fn entry(path: &str, ms: u64, consent: Consent) -> jott_core::vault::store::VaultEntry {
+    jott_core::vault::store::VaultEntry {
+        path: PathBuf::from(path),
+        last_opened: SystemTime::UNIX_EPOCH + Duration::from_millis(ms),
+        consent,
+    }
+}
