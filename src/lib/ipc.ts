@@ -354,14 +354,11 @@ export const onIngestEvent = (handler: (event: IngestEvent) => void) => listen<I
 export const onVaultChanged = (handler: (change: VaultChanged) => void) => listen<VaultChanged>('vault://changed', (e) => handler(e.payload))
 export const onNpMissing = (handler: (payload: NpMissingPayload) => void) => listen<NpMissingPayload>('np://missing', (e) => handler(e.payload))
 
-/** Asked once when the window closes, so the queue can finish what it started (§11). */
+/** Asked once when the window closes, so the queue can finish what it started (§11).
+ *
+ * Nothing here calls it: the shell runs the same close-out itself when it is told to quit
+ * (`apps/shell/src/main.rs`, `RunEvent::ExitRequested`), which is where an async wait actually works. It stays on
+ * the surface because the command is registered and the dev harness answers it — but a save on unload is not what
+ * this is for. The helper that claimed otherwise went in issue #1's fix: Tauri does not guarantee an `invoke`
+ * fired from an unload hook reaches Rust, and `Editor.svelte`'s `pagehide` handler saves through `save_note`. */
 export const flushOnClose = () => invoke<void>('flush_on_close')
-
-/** For the unload hook: Tauri has no `beforeunload` save of its own. */
-export async function saveBeforeUnload(rel: string, text: string): Promise<void> {
-  try {
-    await saveNote(rel, text)
-  } finally {
-    await flushOnClose()
-  }
-}
