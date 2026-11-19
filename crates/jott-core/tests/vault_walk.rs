@@ -3,7 +3,7 @@
 //! and a state we did not measure is never invented.
 
 use jott_core::vault::stamps::{StampState, Stamps};
-use jott_core::vault::walk::{walk, walk_with, EntryKind, HashCache, TreeEntry};
+use jott_core::vault::walk::{cache_key, walk, walk_with, EntryKind, HashCache, TreeEntry};
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
@@ -417,4 +417,93 @@ fn two_vaults_with_a_note_of_the_same_name_are_not_the_same_note() {
         "the second vault's a.md was judged on its own bytes"
     );
     assert_eq!(cache.stats().1, 2, "both were read; neither borrowed the other's digest");
+}
+
+// ---- issue #3: one file, two spellings, and a cache that forgot neither ------------------------------
+
+/// The digest cache is keyed by a path spelled by whichever code path got there first. `WalkDir` spells it the
+/// way the operating system does; Jott's own write paths call `invalidate(root.join(rel))`, and `rel` is
+/// `/`-joined on every platform because `rel_of` keeps "the same spelling np uses". On Windows that is two
+/// strings for one note — `D:\notes\a/b.md` beside `D:\notes\a\b.md` — so `forget` removed nothing, and every
+/// note *below* the vault root kept the digest of the bytes a save had just replaced. Notes at the root were
+/// unaffected, which is why a shallow test vault never saw it; Linux cannot produce that pair at all.
+///
+/// What Linux *can* produce is any other two spellings of one file, and they go wrong the same way — so this
+/// pins the mechanism with the separators Linux does distinguish. The Windows pair is pinned beside it, for
+/// whoever adds a Windows runner to `cargo test`.
+#[test]
+fn one_file_spelled_two_ways_is_remembered_under_one_key() {
+    let plain = cache_key(Path::new("/vault/notes/a.md"));
+    assert_eq!(plain, cache_key(Path::new("/vault/./notes//a.md")), "a `.` and a doubled separator are the same folder");
+    assert_eq!(plain, cache_key(Path::new("/vault/notes/./a.md")));
+
+    // A root that arrives with a trailing separator is still the same vault.
+    let rooted = Path::new("/vault/notes/");
+    assert_eq!(cache_key(&rooted.join("a.md")), plain);
+}
+
+#[cfg(windows)]
+#[test]
+fn the_walks_spelling_and_a_joined_rel_are_the_same_key_on_windows() {
+    // The reported bug, in the two strings that produce it: what `WalkDir` displays, and what
+    // `write_note_with` builds with `root.join("a/b.md")`.
+    let walked = PathBuf::from(r"D:\notes\a\b.md");
+    let written = PathBuf::from(r"D:\notes").join("a/b.md");
+    assert_eq!(cache_key(&walked), cache_key(&written));
+}
+
+/// Normalising spelling must not become normalising *identity*. Two notes sharing a byte count and a timestamp
+/// are the case `two_vaults_with_a_note_of_the_same_name_are_not_the_same_note` already covers, and a key that
+/// collapsed them would answer one note's digest for the other.
+#[test]
+fn two_files_never_share_a_key() {
+    assert_ne!(cache_key(Path::new("/vault/one/a.md")), cache_key(Path::new("/vault/two/a.md")));
+    // Case is left exactly as it arrived: on Windows a case difference only costs a re-read, while folding case
+    // would put two genuinely different Linux names on one key.
+    assert_ne!(cache_key(Path::new("/vault/A.md")), cache_key(Path::new("/vault/a.md")));
+}
+
+/// On Linux a backslash is an ordinary character in a name, not a separator. Replacing every `\\` with `/` — the
+/// obvious fix — would put a file named `a\\b.md` and one at `a/b.md` on the same key, which is a wrong marker
+/// invented out of thin air to fix a bug that only bites on Windows. The key is built from `components()` for
+/// exactly this reason: platform-aware, so Windows splits both ways and Linux does not.
+#[cfg(unix)]
+#[test]
+fn a_backslash_in_a_linux_file_name_is_not_a_folder_boundary() {
+    assert_ne!(cache_key(Path::new("/vault/a\\b.md")), cache_key(Path::new("/vault/a/b.md")));
+}
+
+/// The promise written on `write_note_with`: *"the tree's digest cache forgets this file: the walk must not judge
+/// it from the bytes it just replaced, which would mean resting correctness on a timestamp's resolution."* Same
+/// byte count, timestamp put back where it was, so `reuse` has nothing left to question — and a root spelled with
+/// a `.` in it, which is the miss Windows hits on every nested note.
+#[test]
+fn a_save_of_ours_is_never_judged_from_the_bytes_it_replaced() {
+    let dir = TempDir::new().unwrap();
+    put(dir.path(), "notes/a.md", b"# A\n");
+    let path = dir.path().join("notes/a.md");
+
+    // The old bytes are on record as indexed, so a reused digest shows up as a marker rather than as silence.
+    let mut stamps = stamps_for(dir.path());
+    stamps.mark_indexed("notes/a.md", &jott_core::hashes::sha256_file(&path).unwrap());
+
+    // `walk`, not `walk_with`: it is the shared cache that `invalidate` clears, and a private one would prove
+    // nothing about the path a save takes. The root carries a `.` so the two spellings differ on any platform.
+    let spelled = PathBuf::from(format!("{}/.", dir.path().display()));
+    let entries = walk(&spelled, &stamps).unwrap();
+    assert_eq!(state_of(&entries, "notes/a.md"), Some(StampState::Indexed));
+
+    let before = std::fs::metadata(&path).unwrap().modified().unwrap();
+    jott_core::vault::files::write_note_with(dir.path(), "notes/a.md", b"# Z\n", &jott_core::vault::watch::SelfWrites::new())
+        .expect("the save itself");
+    // As if the filesystem quantised: bytes moved, timestamp did not — exFAT sticks and some SMB shares do this
+    // to within two seconds, which is how a stale digest becomes a visible lie.
+    std::fs::File::options().write(true).open(&path).unwrap().set_modified(before).unwrap();
+
+    let entries = walk(&spelled, &stamps).unwrap();
+    assert_eq!(
+        state_of(&entries, "notes/a.md"),
+        Some(StampState::Waiting),
+        "the tree judged the new bytes from the digest of the old ones"
+    );
 }
