@@ -334,8 +334,47 @@ pub fn set_auto_fetch(path: &Path, allow: bool) -> Result<(), ConsentError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|source| ConsentError::Write { path: path.to_path_buf(), source })?;
     }
-    std::fs::write(path, document.to_string()).map_err(|source| ConsentError::Write { path: path.to_path_buf(), source })
+
+    // Written beside the destination and renamed over it, as `VaultStore::save` and `Stamps::save` do it: a crash
+    // leaves either the old file or the new one, never half of either (issue #4). This was the last whole-file
+    // rewrite Jott did in place, and it is the one file here that nobody owns — somebody's mirror URL, their log
+    // level, comments, keys Jott has never heard of, and since note-processor#7 the `embeddings.provider` and
+    // `embeddings.model` that say what the person answered. A truncated `config.toml` makes np answer every
+    // request with its own parse error, Jott reports `configUnreadable`, and the consent answer is gone with it.
+    //
+    // The cost of a rename is honest and stated: writing now needs permission to create a file in the folder, not
+    // only to open the one that is there. A read-only folder therefore refuses the write instead of half-doing it,
+    // which is the same bargain the registry and the stamp file already make.
+    let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_else(|| "config.toml".into());
+    let temp = path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(format!("{name}.tmp-{}-{}", std::process::id(), WRITE_TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+    let written = std::fs::write(&temp, document.to_string()).map_err(|source| ConsentError::Write {
+        path: path.to_path_buf(),
+        source,
+    });
+    if let Err(error) = written {
+        let _ = std::fs::remove_file(&temp);
+        return Err(error);
+    }
+    // A rename moves the temporary into place with *its* permission bits, so the destination's own are copied
+    // across first. `config.toml` can name a mirror somebody did not want read; Jott must not be the reason that
+    // changes. Best effort: a filesystem without permission bits answers an error here, and that is no reason to
+    // fail someone's consent answer.
+    if let Ok(existing) = std::fs::metadata(path) {
+        let _ = std::fs::set_permissions(&temp, existing.permissions());
+    }
+    std::fs::rename(&temp, path).map_err(|source| {
+        // np indexes this folder, so a leftover temporary is the one thing this rewrite must not leave behind.
+        let _ = std::fs::remove_file(&temp);
+        ConsentError::Write { path: path.to_path_buf(), source }
+    })
 }
+
+/// So two writes from one process — opening an undecided folder while a consent answer is in flight — never share
+/// a temporary name. The pid separates processes; this separates the calls inside one.
+static WRITE_TICK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// `None` when the file does not exist yet — which is a state, not a failure. A parse error is one:
 /// §4 says show np's problem rather than inventing an answer to it.
