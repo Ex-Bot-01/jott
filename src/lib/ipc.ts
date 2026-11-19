@@ -193,6 +193,9 @@ export interface IpcError {
     | 'tooLarge'
     | 'notUtf8'
     | 'npGenerated'
+    /** A name Jott will not write: a Windows device stem (`nul`, `aux`, `com1`), where the bytes would go to the
+     *  device and the save would still report success. Refused on every platform, so the sentence has to arrive. */
+    | 'reservedName'
     | 'noVault'
     | 'npGone'
     | 'npRefused'

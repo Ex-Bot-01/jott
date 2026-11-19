@@ -48,6 +48,9 @@ pub enum ErrorKind {
     TooLarge,
     NotUtf8,
     NpGenerated,
+    /// A name Jott will not write: a Windows device stem (`nul`, `aux`, `com1`), where the bytes would go to the
+    /// device instead of the folder and the save would still report success (§5).
+    ReservedName,
     NoVault,
     /// np could not be reached, or never answered: not installed, not runnable, killed mid-request, or silent past
     /// its deadline. Nothing about the *content* of a request.
@@ -74,6 +77,7 @@ impl From<FileError> for IpcError {
             FileError::IntoItself { .. } => (ErrorKind::IntoItself, source.to_string()),
             FileError::TooLarge { .. } => (ErrorKind::TooLarge, source.to_string()),
             FileError::NpGenerated { .. } => (ErrorKind::NpGenerated, source.to_string()),
+            FileError::ReservedName { .. } => (ErrorKind::ReservedName, source.to_string()),
             FileError::Io { .. } => (ErrorKind::Io, source.to_string()),
         };
         IpcError { kind, message }
