@@ -889,6 +889,12 @@ Three things worth knowing before you file it:
   if you see it again on 0.0.6, that quoted text is the thing I need.
 - **"Jott is starting…" that never goes away** means the bundle loaded but the app did not mount. That text is
   drawn by plain HTML precisely so this case has something to show.
+- **An editor that loads unstyled** — no colours, no line heights, controls stacked — is what a document policy that
+  is one directive too strict looks like: it fails quietly rather than loudly. The window now runs under a
+  Content-Security-Policy (it used to run with none), and CodeMirror paints by writing its own `<style>` elements,
+  so the policy has to allow inline styles. If you ever see this, open the console: a CSP refusal is the first line
+  in it, worded as "Refused to apply inline style …". Same for a blank window whose console says
+  "Refused to load the script".
 - **A status line naming no np version** means Jott could not find np. The installer carries it, so on a normal
   install that is a bug — unless `NP_PATH` points somewhere that no longer exists, which wins on purpose.
 
