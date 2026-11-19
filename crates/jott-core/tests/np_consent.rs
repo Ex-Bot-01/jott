@@ -495,3 +495,65 @@ fn a_consent_error_names_the_file_it_failed_on() {
     assert!(said.contains("note-processor/config.toml"), "{said}");
     assert!(said.contains("[models]"), "{said}");
 }
+
+// ---- issue #4: rewriting a file nobody owns ---------------------------------------------------------
+
+/// The rewrite goes through a temporary beside the destination, and a temporary is a **new** file — so it would
+/// arrive with the umask's mode and rename that over whatever the person had chosen. `config.toml` can hold a
+/// mirror URL somebody did not want read; the point of issue #4 is that Jott must not be the reason it changes.
+#[cfg(unix)]
+#[test]
+fn a_rewrite_keeps_the_permission_bits_the_file_already_had() {
+    use std::os::unix::fs::PermissionsExt;
+    let _turn = SERIAL.lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    std::fs::write(&path, "[models]\nauto_fetch = true\n").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+    set_auto_fetch(&path, false).unwrap();
+
+    assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600, "the rewrite changed who can read someone's settings file");
+    assert!(!auto_fetch_allowed(&path), "and the key still landed");
+}
+
+/// A write that cannot happen must cost nothing. The directory is the one thing in the way here, so neither the
+/// temp nor an in-place open can succeed — and the file a person has stays byte for byte what it was.
+#[cfg(unix)]
+#[test]
+fn a_write_that_cannot_happen_leaves_the_file_a_person_has_intact() {
+    use std::os::unix::fs::PermissionsExt;
+    let _turn = SERIAL.lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let before = rich_config();
+    std::fs::write(&path, &before).unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o500)).unwrap();
+
+    let error = set_auto_fetch(&path, false).expect_err("a folder nobody can write into refuses the write");
+    assert!(matches!(error, ConsentError::Write { .. }), "{error}");
+
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), before, "np's config survived an attempt that failed");
+}
+
+/// The temporary is a file in the same folder as np's config, and np indexes this folder — so a leftover would be
+/// the one thing this rewrite must not leave behind. (`.tmp-<pid>` is not a `.md`, but "invisible to np" was the
+/// reason `write_note_with` writes in place, and it is worth a line to keep the promise here too.)
+#[test]
+fn a_successful_rewrite_leaves_no_temporary_behind() {
+    let _turn = SERIAL.lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    std::fs::write(&path, "[models]\nauto_fetch = true\n").unwrap();
+
+    set_auto_fetch(&path, true).unwrap();
+
+    let leftovers: Vec<String> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|name| name != "config.toml")
+        .collect();
+    assert!(leftovers.is_empty(), "stray files beside np's config: {leftovers:?}");
+}
