@@ -32,6 +32,8 @@ pub enum FileError {
     TooLarge { rel: String, limit: u64 },
     #[error("{rel} is one of np's own catalog files, which Jott does not write over")]
     NpGenerated { rel: String },
+    #[error("{rel} is a name Windows keeps for a device (`nul`, `aux`, `com1` …): the bytes would go to the device, not the folder")]
+    ReservedName { rel: String },
     #[error("could not use {rel}: {source}")]
     Io {
         rel: String,
@@ -281,6 +283,47 @@ fn stays_off_np_catalog(rel: &str) -> Result<(), FileError> {
     Ok(())
 }
 
+/// A name Windows resolves to a *device* before it looks at the folder at all.
+///
+/// `CreateFile` matches the segment's stem — the text before the first `.`, case-insensitively — against
+/// `con prn aux nul com1…com9 lpt1…lpt9`, extension or not, in the legacy namespace Jott uses for every path under
+/// 260 characters. So a note called `nul.md` did not fail: `File::create` opened NUL, the bytes went out, `sync_all`
+/// was content, and Jott reported **saved** — while reading `D:\notes\nul` back answered empty and nothing appeared
+/// in the folder (issue #5). Renaming a note to `nul` moved it into the device namespace and the tree lost it; and
+/// `create_note("aux.md")` answered *already there* for a file nobody has, because `symlink_metadata` succeeded on
+/// the device.
+///
+/// Refused on every platform rather than under `#[cfg(windows)]`, for two reasons. A vault is files: one written on
+/// Linux becomes a silent-loss landmine the day it is synced to Windows, which is the shape of bug this issue is.
+/// And a rule that answers differently by operating system is how "it worked on my machine" gets filed against
+/// somebody else's notes — the same reasoning that refuses np's catalog names everywhere (`stays_off_np_catalog`),
+/// not only where np happens to run.
+///
+/// Deleting such a name stays allowed. On Linux `nul.md` can genuinely exist, and refusing there would strand it in
+/// a vault Jott otherwise manages fine.
+fn stays_off_device_namespace(rel: &str) -> Result<(), FileError> {
+    if rel.split(['/', '\\']).any(is_device_stem) {
+        return Err(FileError::ReservedName { rel: rel.to_string() });
+    }
+    Ok(())
+}
+
+/// Whether one path segment's stem is a Windows device. A leading dot is a whole name in `.gitignore`, so its stem
+/// is empty and nothing here matches it.
+fn is_device_stem(segment: &str) -> bool {
+    let stem = segment.split('.').next().unwrap_or("").to_ascii_lowercase();
+    matches!(stem.as_str(), "con" | "prn" | "aux" | "nul") || port_stem(&stem)
+}
+
+/// `com1`…`com9`, `lpt1`…`lpt9` — spelled out because `com10.md` is a note about the tenth computer, and Windows
+/// agrees that it is a file.
+fn port_stem(stem: &str) -> bool {
+    ["com", "lpt"].iter().any(|prefix| {
+        // One digit, 1–9, matched as a byte slice so an empty rest cannot index into itself.
+        stem.strip_prefix(prefix).is_some_and(|rest| matches!(rest.as_bytes(), [b'1'..=b'9']))
+    })
+}
+
 /// Write `bytes` as the whole file. Nothing is appended, converted or re-encoded on the way out.
 pub fn write_note(root: &Path, rel: &str, bytes: &[u8]) -> Result<(), FileError> {
     write_note_with(root, rel, bytes, default_self_writes())
@@ -296,6 +339,7 @@ pub fn write_note_with(
 ) -> Result<(), FileError> {
     let path = PathGuard::new(root).resolve(rel)?;
     stays_off_np_catalog(rel)?;
+    stays_off_device_namespace(rel)?;
     // Recorded first, so an event that arrives while the bytes are still going out is already ours — into the
     // registry the caller is watching, not whichever one happens to be the default. And the tree's digest cache
     // forgets this file: the walk must not judge it from the bytes it just replaced, which would mean resting
@@ -324,6 +368,7 @@ pub fn write_note_with(
 pub fn create_note(root: &Path, rel: &str) -> Result<(), FileError> {
     let path = PathGuard::new(root).resolve(rel)?;
     stays_off_np_catalog(rel)?;
+    stays_off_device_namespace(rel)?;
     if std::fs::symlink_metadata(to_open_path(&path)).is_ok() {
         return Err(FileError::AlreadyExists { rel: rel.to_string() });
     }
@@ -355,6 +400,7 @@ pub struct LinkRef {
 pub fn create_folder(root: &Path, rel: &str) -> Result<(), FileError> {
     let path = PathGuard::new(root).resolve(rel)?;
     stays_off_np_catalog(rel)?;
+    stays_off_device_namespace(rel)?;
     if std::fs::symlink_metadata(to_open_path(&path)).is_ok() {
         return Err(FileError::AlreadyExists { rel: rel.to_string() });
     }
@@ -368,6 +414,7 @@ pub fn rename(root: &Path, from: &str, to: &str) -> Result<RenameReport, FileErr
     let source = guard.resolve(from)?;
     let target = guard.resolve(to)?;
     stays_off_np_catalog(to)?;
+    stays_off_device_namespace(to)?;
     if std::fs::symlink_metadata(to_open_path(&source)).is_err() {
         return Err(FileError::NotFound { rel: from.to_string() });
     }
@@ -390,6 +437,7 @@ pub fn move_entry(root: &Path, from: &str, to: &str) -> Result<(), FileError> {
     let source = guard.resolve(from)?;
     let target = guard.resolve(to)?;
     stays_off_np_catalog(to)?;
+    stays_off_device_namespace(to)?;
     if std::fs::symlink_metadata(to_open_path(&source)).is_err() {
         return Err(FileError::NotFound { rel: from.to_string() });
     }

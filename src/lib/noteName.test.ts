@@ -54,6 +54,27 @@ describe('the name a new note actually gets', () => {
     }
   })
 
+  it('refuses a name Windows resolves to a device, and says which rule it hit', () => {
+    // Issue #5. `nul`, `AUX.md`, `com1.md`: Windows looks the *stem* up in its legacy device namespace before it
+    // looks at the folder, so `save_note("nul.md")` wrote to NUL, reported "Saved", and left nothing in the vault —
+    // a silent-success path on the platform Jott ships first. Core refuses these too (`check_rel`'s neighbour in
+    // `files.rs`); this is the sentence for the person typing, so the two have to agree.
+    for (const typed of ['nul', 'NUL', 'nul.md', 'AUX.md', 'com1.md', 'LPT9.txt', 'prn', 'notes/nul/plan']) {
+      const result = named(typed)
+      expect(result.rel, `"${typed}" is not a note`).toBeNull()
+      expect((result.said ?? '').toLowerCase(), `"${typed}": ${result.said}`).toContain('windows')
+    }
+  })
+
+  it('does not refuse an ordinary name that merely contains one of those stems', () => {
+    // `null.md` and `auxiliary.md` are notes somebody has already written. The rule is about the stem before the
+    // first dot, which is what Windows matches — nothing wider.
+    for (const typed of ['null', 'auxiliary', 'comet notes', 'lpt', 'a.nul', 'nul-']) {
+      const result = named(typed)
+      expect(result.rel, `"${typed}" is a note`).not.toBeNull()
+    }
+  })
+
   it('warns that a dotted name will never appear in the tree either', () => {
     // Both walks hide names beginning with a dot — Jott's drops any segment starting with one, np excludes them at
     // every depth. The create succeeds, so the sentence has to say the file will be invisible here as well as

@@ -390,3 +390,58 @@ fn a_save_records_itself_so_the_watcher_can_stay_quiet() {
     assert!(files::is_our_write("saved.md"), "the watcher would otherwise reload what we just wrote");
     assert!(!files::is_our_write("someone-else.md"));
 }
+
+// ---- issue #5: names Windows resolves to a device ---------------------------------------------------
+
+/// A base name Windows looks up in its legacy device namespace before it looks at the folder: `CreateFile`
+/// opens the *device* when the stem matches, extension or not. So `save_note("nul.md", …)` succeeded — bytes
+/// went to NUL, `sync_all` was happy, Jott reported **saved** — and reading `D:\notes\nul` back answered empty,
+/// so the note "saved" and nothing appeared in the folder. Renaming an existing note to `nul` moved it into the
+/// device namespace and the tree lost it. And `create_note("aux.md")` answered *already there* for a file nobody
+/// has, because `symlink_metadata` succeeded on the device.
+#[test]
+fn a_name_windows_keeps_for_a_device_is_refused_before_anything_is_written() {
+    let (_dir, root) = vault();
+
+    for rel in ["nul.md", "NUL", "notes/aux.md", "AUX.MD", "com1.md", "LPT9.txt", "PRN", "con.md"] {
+        let error = files::write_note(&root, rel, b"typed and lost\n").expect_err(rel);
+        assert!(matches!(error, FileError::ReservedName { .. }), "{rel}: {error}");
+        assert!(error.to_string().to_lowercase().contains("windows"), "the sentence has to say why: {error}");
+    }
+
+    // The same stems are refused wherever a name is chosen, not only where bytes go out.
+    let (_dir2, root2) = vault();
+    assert!(matches!(files::create_note(&root2, "com1.md"), Err(FileError::ReservedName { .. })));
+    assert!(matches!(files::create_folder(&root2, "aux"), Err(FileError::ReservedName { .. })));
+    write_raw(&root2, "real.md", b"# Real\n");
+    let error = files::rename(&root2, "real.md", "nul").expect_err("a rename into the device namespace");
+    assert!(matches!(error, FileError::ReservedName { .. }), "{error}");
+    assert!(root2.join("real.md").is_file(), "the note that could not be renamed is still where it was");
+
+    // A folder anywhere in the path counts: `notes/nul/a.md` creates a folder called `nul`.
+    assert!(matches!(files::write_note(&root2, "notes/nul/a.md", b"x\n"), Err(FileError::ReservedName { .. })));
+}
+
+/// The refusal is about the stem Windows matches, not about the letters appearing anywhere. Refusing more than
+/// that would be Jott inventing a rule the operating system does not have — and `null.md`, `auxiliary.md` and
+/// `comet.md` are ordinary notes somebody has already written.
+#[test]
+fn an_ordinary_name_that_happens_to_contain_a_reserved_stem_is_still_allowed() {
+    let (_dir, root) = vault();
+    for rel in ["null.md", "auxiliary.md", "comet.md", "lpt.md", "a.nul", "notes/nulled/a.md", ".gitignore", "nul-.md"] {
+        files::write_note(&root, rel, b"# fine\n").unwrap_or_else(|e| panic!("{rel}: {e}"));
+    }
+}
+
+/// The hazard itself, on the only platform that has it: writing through no part of Jott at all and watching the
+/// bytes not arrive. This is what "please confirm on real Windows" asks for; `cargo test` runs on Linux today, so
+/// here it is a pinned description of a measured Win32 rule rather than something this box can observe.
+#[cfg(windows)]
+#[test]
+fn windows_writes_into_the_device_rather_than_the_folder_when_the_stem_matches() {
+    let (_dir, root) = vault();
+    let target = root.join("nul.md");
+    // Not `files::write_note`: that is the thing under test, and it now refuses.
+    std::fs::write(&target, b"typed and lost\n").expect("CreateFile opened NUL, which succeeds");
+    assert!(!target.exists(), "nothing was created in the folder — the bytes went to the device");
+}

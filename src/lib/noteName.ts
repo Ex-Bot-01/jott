@@ -43,6 +43,26 @@ function suffixOf(name: string): string | null {
   return EXTENSION_SHAPE.test(suffix) ? suffix.toLowerCase() : null
 }
 
+/** The stems Windows looks up in its legacy device namespace before it looks at the folder: `CreateFile` opens the
+ *  *device* when the text before the first `.` matches one of these, extension or not. A note called `nul.md`
+ *  therefore did not fail — the write succeeded into NUL, Jott said "Saved", and nothing landed in the vault. */
+const WINDOWS_DEVICES = ['con', 'prn', 'aux', 'nul']
+/** `com1`–`com9` and `lpt1`–`lpt9`, spelled out because `com10.md` is a note about the tenth computer. */
+const WINDOWS_PORTS = /^(com|lpt)[1-9]$/
+
+/** Whether any segment of a path is one of those stems. Refused on every platform, not only on Windows: a vault is
+ *  files, and a name written on Linux is a silent loss the day the folder is synced to a machine that has devices
+ *  by that name. Core refuses the same stems (`stays_off_device_namespace` in `files.rs`), so the two rules have one
+ *  answer rather than one per operating system. */
+function namesAWindowsDevice(name: string): boolean {
+  return name
+    .split(/[\\/]/)
+    .some((segment) => {
+      const stem = segment.split('.')[0].toLowerCase()
+      return WINDOWS_DEVICES.includes(stem) || WINDOWS_PORTS.test(stem)
+    })
+}
+
 /** Whether the window should open what it made. Images and other binaries keep their names — `+ note` does not refuse
  *  them — but opening one in CodeMirror invites someone to write a paragraph into a PNG and save it. */
 export function opensAsText(rel: string): boolean {
@@ -74,6 +94,15 @@ export function planNoteName(typed: string, folder = ''): Named {
     // A trailing full stop is refused rather than trimmed: on Windows it is not even kept by the filesystem, so
     // silently dropping it would create something with a different name from the one that was typed.
     return { rel: null, said: 'A file name cannot end in a full stop.' }
+  }
+
+  if (namesAWindowsDevice(`${folder}${name}`)) {
+    // Issue #5: the failure this refuses is a *success* — `File::create` opens the device, `sync_all` is happy, and
+    // the note is simply not in the folder afterwards. Silent data loss on the platform Jott ships first.
+    return {
+      rel: null,
+      said: 'Windows keeps that name for a device (`nul`, `aux`, `com1` …), so the file would be written to the device instead of the folder.',
+    }
   }
 
   const target = `${folder}${name}`

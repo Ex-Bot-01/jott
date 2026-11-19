@@ -1506,6 +1506,7 @@ fn every_error_kind_the_window_can_receive() {
         ErrorKind::TooLarge,
         ErrorKind::NotUtf8,
         ErrorKind::NpGenerated,
+        ErrorKind::ReservedName,
         ErrorKind::NoVault,
         ErrorKind::NpGone,
         ErrorKind::NpRefused,
@@ -1520,7 +1521,7 @@ fn every_error_kind_the_window_can_receive() {
         spellings,
         vec![
             "escapesRoot", "notFound", "alreadyExists", "intoItself", "tooLarge", "notUtf8", "npGenerated",
-            "noVault", "npGone", "npRefused", "npTooOld", "io"
+            "reservedName", "noVault", "npGone", "npRefused", "npTooOld", "io"
         ]
     );
 }
@@ -2487,4 +2488,27 @@ fn a_refusal_from_the_registry_arrives_as_the_sentence_it_wrote() {
     .into();
     assert_eq!(io.kind, ErrorKind::Io);
     assert!(io.message.contains("permission denied"), "{}", io.message);
+}
+
+// ---- issue #5: a name Windows keeps for a device ----------------------------------------------------
+
+/// The window asks for `nul.md` and gets a refusal rather than a save that went to NUL. This is the same rule as
+/// `vault_files.rs`, seen from the wire: the sentence has to arrive with a kind the front end lists, because a kind
+/// it does not know falls through to nothing.
+#[tokio::test]
+async fn a_note_named_after_a_windows_device_is_refused_over_ipc() {
+    let _turn = SERIAL.lock().await;
+    let harness = Harness::new();
+    let session = harness.session();
+
+    for rel in ["nul.md", "notes/AUX.md", "com1.md"] {
+        let error = session.save_note(rel, "# typed and lost\n").expect_err(rel);
+        assert_eq!(error.kind, ErrorKind::ReservedName, "{rel}: {}", error.message);
+        assert!(error.message.contains("Windows"), "the sentence says why: {}", error.message);
+    }
+
+    // A note that is merely named *near* one of those stems still saves — the rule is a stem, not a substring.
+    session.save_note("null.md", "# a real note\n").expect("null.md is a note");
+    let listing = session.listing().expect("listing");
+    assert_eq!(listing.nodes.len(), 1, "and it is the only thing in the vault: {:?}", listing.nodes.iter().map(|n| n.rel.clone()).collect::<Vec<_>>());
 }
