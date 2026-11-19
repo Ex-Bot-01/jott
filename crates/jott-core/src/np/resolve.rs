@@ -25,7 +25,14 @@ pub const MIN_NP_VERSION: (u64, u64, u64) = (0, 5, 1);
 /// The np release Jott puts inside its installer, and the one an older install is pointed at. CI downloads the one
 /// named in `packaging/np-pin.json`; `the_hint_names_the_np_the_installer_ships` fails if the two disagree, because
 /// a hint that sends someone to fetch a build Jott then refuses is worse than no hint.
-pub const NP_RELEASE_VERSION: &str = "0.5.1";
+///
+/// 0.6.0 (note-processor#12, #13, #14, #15), checked against the published Linux binary rather than against its
+/// release page: protocol still `1`, the same ten methods in the handshake, and an existing `.np/index.db` opened by
+/// the new build with every note `unchanged` — no re-scan, no re-embed. Two keys appear on a `scan` answer
+/// (`attachments`, `attachment_examples`) and Jott ignores both: `ScanReport` has no `deny_unknown_fields`, so an
+/// added key is silence rather than a fault, which is the direction of tolerance issue #11 wanted kept. The floor
+/// stays 0.5.1 on purpose — nothing here needs 0.6.0, and raising it would refuse a person whose np is fine.
+pub const NP_RELEASE_VERSION: &str = "0.6.0";
 
 /// The floor as a sentence fragment: `0.5.1`. Spelled once so a refusal and an install hint cannot quote different
 /// numbers at the same person.

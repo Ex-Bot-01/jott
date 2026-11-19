@@ -139,7 +139,7 @@ Two more things to report on:
 
 ## 2b-iii. Since 0.0.13: the np inside is 0.4.0, and search stopped guessing
 
-*(Historic: Jott ships np 0.5.1 since 0.0.15, so read every `0.4.0` below as `0.5.1`. The behaviours asked for here are unchanged — only the number on the About line moved.)*
+*(Historic: Jott ships np 0.6.0 since 0.0.29, so read every `0.4.0` and `0.5.1` below as `0.6.0`. The behaviours asked for in §2b-v still apply; §2b-ze adds what 0.6.0 changes on top.)*
 
 Four things to check, all of them about what the window claims:
 
@@ -822,6 +822,38 @@ legitimate answer and not a bug report.
 6. **Now the honest question.** Read a note you actually wrote and say whether it looks better or worse than it did in
    0.0.27. Too-big headings, too-grey code, list bullets shouting — all worth knowing. Nothing here is written in
    stone; it was designed in 0.0.9 and nobody had ever seen it until this week.
+
+## 2b-ze. Since 0.0.29: the backend is np 0.6.0, and eleven issues close
+
+The np inside Jott is **0.6.0**. Protocol is still version 1 and the handshake is the same shape Jott already parses,
+so there is nothing for you to do and no folder to re-index: an index built by 0.5.1 opens in 0.6.0 with every note
+reported `unchanged`, which was checked against the published binaries here before this shipped.
+
+Three things are worth noticing, and one of them I could not check myself:
+
+1. **The About line reads `note-processor (np) 0.6.0`.** If it still says 0.5.1 after installing 0.0.29, the
+   installer carried the old binary — that is a packaging fault worth reporting, not something to work around.
+2. **`INDEX.md` may rewrite itself once.** np writes that file; Jott only greys it out in the tree. Names containing
+   `#`, `?`, `[`, `]`, `(`, `)`, `<`, `>` are now written percent-encoded, so a note called `roadmap#2.md` shows there
+   as `roadmap%232.md`. No note is renamed and nothing else in the window changes. If you keep `INDEX.md` under git,
+   expect one changed line per unusual name on the next index — measured here, exactly one line for a vault of five.
+3. **A meanings-only search with nothing embedded now says why instead of saying "Nothing matched".** np 0.6.0
+   answers a sentence of its own and Jott prints it verbatim. If you still get `Nothing matched “…”` in a folder that
+   has no vectors, tell me what you typed and which build — that means the sentence did not arrive.
+
+The rest of this release is the eleven open issues closed: quitting saves what you typed (#1), a recent folder that no
+longer exists keeps your current vault open (#2), nested notes re-index after a save on Windows (#3), `nul.md` and
+`AUX.md` refused with an explanation (#5), a Content-Security-Policy on the window (#6), one Jott per machine (#7),
+renames off the UI thread with a journal line that counts them (#8), private permissions on unsaved drafts (#9),
+symlink rows that admit what they are (#10), and a scan answer that can no longer be misread as "everything indexed"
+(#11). Sections 1, 3 and 4b above are the parts those changes touch: if you checked them on 0.0.28 and they looked
+fine, look at the same places once more.
+
+One thing I know about and have deliberately not papered over: opening a folder for the very first time *and* typing
+in the search box before its first index finishes can answer `note-processor refused: sqlite: table files already
+exists`. It is upstream (note-processor#18), it happens with 0.5.1 inside as well, and the next keystroke clears it.
+Filed as jott#23 with the transcripts. My measurement is about one try in eight — if you can make it happen twice in a
+row in a real folder, that is a different finding and I want to hear about it.
 
 ## 4. The question only Windows can answer: write-lock contention
 

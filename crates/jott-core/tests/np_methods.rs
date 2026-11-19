@@ -896,3 +896,47 @@ async fn a_scan_answer_missing_one_counter_says_the_answer_was_unreadable() {
     let gone = jott_core::ipc::IpcError::np_fault(&jott_core::np::NpFault { code: -32603, message: "np died mid-request".into() });
     assert_eq!(gone.kind, jott_core::ipc::ErrorKind::NpGone, "\"no answer came\" still means that: {gone:?}");
 }
+
+// ---- np 0.6.0: two keys appear, and one strict parser reads both releases (issue: the version bump)
+
+/// The `scan` answer measured from the published `np-0.6.0-x86_64-unknown-linux-gnu` binary on a vault of three
+/// notes and two attachments (`plan.org`, `scratch.txt`), recorded here rather than copied from the release page:
+///
+/// ```text
+/// {"added":5,"attachment_examples":["plan.org","scratch.txt"],"attachments":2,"notes":3,…}
+/// ```
+///
+/// `ScanReport` is deliberately strict about the eleven fields Jott reads — issue #11 kept it that way, because a
+/// `{}` must not parse as an all-zero scan and mark every note indexed on the strength of nothing. What makes this
+/// safe is the *other* half of that shape: no `deny_unknown_fields`, so a key Jott has never heard of is silence
+/// rather than a fault. That tolerance is one-directional, and this test is what pins which direction it runs in —
+/// an added key is accepted today; a renamed one would still fault, now as `NpShape` rather than as "np is missing".
+#[tokio::test]
+async fn a_scan_answer_from_np_0_6_0_parses_and_the_new_keys_are_ignored() {
+    let measured_on_0_6_0 = json!({
+        "added": 5, "elapsed_ms": 23, "index_files": ["INDEX.md"], "merged_notes": null, "modified": 0, "moved": 0,
+        "notes": 3, "recorded_merged_notes": "merged=0;paths=",
+        "recorded_upgrade_orphans": "headings=0,tags=0,items=0,links_src=0,links_dst_null=0",
+        "removed": 0, "skipped": [], "unchanged": 5, "unindexable": null,
+        "unresolved_links": 1, "unresolved_targets": ["missing.md"], "upgrade_orphans": null,
+        "attachments": 2, "attachment_examples": ["plan.org", "scratch.txt"],
+    });
+
+    let (_d, client) = spawn(json!({ "replies": { "scan": measured_on_0_6_0 } })).await;
+    let outcome = scan(&client, &vault()).await.expect("np 0.6.0's answer parses");
+    let ScanOutcome::Applied(report) = outcome else { panic!("the document is not a lock: {outcome:?}") };
+    assert_eq!(report.notes, 3, "the counters Jott reads are unchanged");
+    assert_eq!(report.unresolved_targets, vec!["missing.md".to_string()]);
+
+    // The same vault answered by 0.5.1 carries neither key, and absence is the ordinary case for every install that
+    // has not upgraded yet — one parser, both releases, no `attachments: 0` invented for a build that never said it.
+    let mut from_0_5_1 = measured_on_0_6_0.clone();
+    let map = from_0_5_1.as_object_mut().expect("an object");
+    map.remove("attachments");
+    map.remove("attachment_examples");
+    let (_d2, client2) = spawn(json!({ "replies": { "scan": from_0_5_1 } })).await;
+    let older = scan(&client2, &vault()).await.expect("and so does 0.5.1's");
+    let ScanOutcome::Applied(older) = older else { panic!("not a lock: {older:?}") };
+    assert_eq!(older.notes, 3, "the same fields, the same reading");
+    client.shutdown().await.unwrap();
+}

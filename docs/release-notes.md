@@ -1,72 +1,95 @@
-# Jott 0.0.28 — the markdown styling starts working
+# Jott 0.0.29 — every open issue closed, and a newer engine in the box
 
-A note should look like the markdown you typed: heading bigger than prose, `**this**` bold with its asterisks faded,
-a link underlined and its brackets quiet. That has been the design since 0.0.9, in a file called `markdownStyle.ts`,
-with rules in `Editor.svelte` for every class it names, and a test that refuses a class with no rule behind it.
-
-**None of it was reaching the screen.** Not since 0.0.9. Headings were never sized by us, bold was never ours, and
-what looked like deliberately faded markers was another style's grey. This release switches it on, which is why the
-notes look different rather than merely better.
+Eleven issues, all of them real, all of them now fixed. Most are small and some are not: what you typed at the end of
+a session used to be thrown away when you quit; clicking a recent folder that no longer exists replaced the vault you
+were working in; on Windows, saving a note in a subfolder often did not re-index it. Alongside them the
+note-processor inside the installer is now **0.6.0**, which is the part of this release you will not have to do
+anything about.
 
 ## What you'll see
 
-- **Headings are the size they were written to be.** `#` at 1.5em, `##` at 1.3em, `###` at 1.15em, then weight alone
-  down to `######`. Before, every heading in a note was body text with an underline under it.
-- **Titles are no longer underlined.** Underline is what a link means in this editor — see the `[field log]` label in
-  any note — and having every heading wear it too made a page of titles look like a page of things to click. That
-  underline came from CodeMirror's default style, which was answering for us; now our own rules answer and headings
-  say "heading" with size and weight.
-- **The format bar sits over the text it formats.** It used to keep a flat padding while the buffer centres a 74ch
-  measure, so on a wide window the `B` sat about 120 px to the left of the first character — controls floating above
-  empty gutter. Both now read the same measure, which is also why the bar moves inward on a wide window: it follows
-  your text there.
-- **A button that's on looks on.** Pressed was a faint fill with a thin border, and the keyboard-focus ring is a 2 px
-  ink outline — at three-quarters of a centimetre those are one drawing, so "this mark is in what you're looking at"
-  read as "the mouse is over me". Pressed is now a deeper fill with an inner edge; focus keeps its outer ring.
+- **Quitting saves.** Close the window or press Ctrl+Q and the last few seconds of typing go to disk first, with the
+  index closed politely rather than killed mid-write (§11's close-out). It was already written — `flush_on_close`
+  existed — but nothing ever called it, so it never ran. If a note looked unchanged after you reopened Jott, this was
+  why.
+- **A missing recent folder no longer costs you your work.** Clicking a recents row whose folder has been moved or
+  unmounted now says "that path is not a folder" and leaves the vault you had open exactly where it was. It used to
+  replace your session with the failure, which turned a stale row in a list into losing your place.
+- **Nested notes re-index on Windows.** A note at `projects\ideas\x.md` now updates its index entry when you save it.
+  The tree measured the file one way and the invalidation another — `D:\notes\a/b.md` against `D:\notes\a\b.md` — so
+  on Windows every note in a subfolder was re-indexed from bytes that were no longer there, or not at all. Search
+  results for those notes could lag by however long it had been since something else dirtied the folder.
+- **Names Windows would eat are refused.** `nul`, `aux.md`, `com1.txt`, `lpt9.log` cannot be created on Windows in any
+  form, and on Linux or macOS a file with one of those names is a file that vanishes the moment the vault travels:
+  writing it succeeds there and writes to a device instead of to disk. Jott refuses them at the name box and at the
+  disk, and says which rule it's applying. Deleting a file that already has such a name still works everywhere — that
+  is the way out.
+- **The window has a Content-Security-Policy.** It shipped with `csp: null` since the first release. Scripts are
+  same-origin, no remote anything, framing refused; inline styles stay allowed because CodeMirror writes them and an
+  over-strict style policy fails as an unstyled editor rather than as an error.
+- **One Jott per machine.** Starting a second one now wakes the first window — including from the taskbar, where
+  clicking a minimised Jott looked like nothing happening — and refuses to start. Two processes used to share one
+  vault's stamps and recents file by last writer winning silently.
+- **Renaming stops freezing the window.** A rename read every other note in the folder inside a synchronous command,
+  and asked the operating system what the vault root was once per note — 206 syscalls for a five-note folder before a
+  single byte moved. It now runs off the UI thread with one root resolution and one read per note, and the journal says
+  `renamed: from a.md; scanned 143 notes` so a slow rename in a big vault is measurable instead of mysterious.
+- **Your unsaved drafts are yours.** App-data files — the registry of folders you've opened, per-vault index stamps,
+  buffer mirrors, and the diagnostic journal — were created with whatever umask your session happened to have, which
+  on a shared Linux box can mean another user reading the half-written note you never saved. They are `0600` now, in
+  their own `0700` folders, including files that already existed.
+- **Symlinks say what they are.** A symlinked folder used to appear as a plain attachment because nothing asked
+  whether it was a link; a symlinked note showed its size from the link and its indexed-ness from whatever the link
+  pointed at, which could be `/etc/passwd`. Jott still does not follow links out of your vault — that decision is
+  yours to make deliberately, not by accident — but those rows now show `! refused · symlink` and a dangling link
+  reports the path inside your folder rather than an absolute OS path.
+- **A scan answer Jott cannot read no longer looks like success.** If note-processor's report is missing a field it
+  needs, that used to be reported as "note-processor is not installed" — advice pointing at the wrong program — and in
+  one shape, `{}`, the counters defaulted to zero and every note got marked indexed on the strength of nothing. It now
+  says the answer was unreadable, names the missing field, marks nothing, and asks again next time something changes.
+- **Search explains an empty meanings-only result.** With no vectors in a folder, a meanings-only search used to be
+  answered with literally nothing — no hits, no reason — and Jott had to guess. np 0.6.0 answers that state with a
+  sentence of its own, and Jott prints it instead of "Nothing matched".
 
-## Why it never worked, and why nothing said so
+## The engine in the box: note-processor 0.6.0
 
-CodeMirror takes several highlight styles at once, and `fallback: true` decides **precedence between them** — which
-style answers for a tag two of them both claim. It has nothing to do with painting text before the parser catches up,
-which is what a comment of mine in `Editor.svelte` claimed for it. We installed the default style as a fallback and
-then ours as a fallback too, behind it. A fallback behind a fallback loses every tag both want, and ours wants
-heading, strong, emphasis, code, link and the markers — so CodeMirror answered all six and our classes were never
-placed on the page at all.
+Protocol is still version 1, `initialize` still answers the same ten methods, and an index built by 0.5.1 opens in
+0.6.0 with every note reported `unchanged` — no re-scan, no re-embed, nothing for you to do. Checked against the
+published binaries rather than against the release page: hashes verified with `sha256sum -c`, `scripts/fetch-np` run
+for real, and both versions driven over the same fixture vault. Two keys appear in a `scan` answer (`attachments`,
+`attachment_examples`) and Jott ignores both; the floor stays at 0.5.1 because nothing here needs 0.6.0 and a person
+whose np came from an older installer is not running something broken.
 
-The tests could not see this because they were the wrong shape. They read `Editor.svelte` as text and asked whether a
-rule exists for each class in `MARKDOWN_CLASSES`. Every rule does exist. A class named in a stylesheet is easy to
-prove and impossible to see, and there was nothing asking what the rendered editor actually put on the page. There is
-now: mount the window, open a note, look for `.cm-content .md-h1` and `.md-meta`, then select a word, press Bold and
-wait for `.md-strong`. That test failed for nineteen releases' worth of code before this fix, which is what it is for.
-
-Two attempts at this went wrong before that was written, and both the same way: I added `text-decoration: none` for
-headings, watched the pin go green, and looked at a screen with an underline still on it. The second attempt used a
-deeper selector and did the same. The rule was fine; there was simply no element carrying that class to style it onto.
-
-## One thing I said last time that was wrong
-
-I reported that files without a status dot fail to reserve the dot's column, so attachments sit at the wrong depth in
-the tree. Retracted: `Tree.svelte` renders both the twisty and the marker as fixed-width slots on every row, and
-indentation comes only from depth. My two attempts to measure it off screenshots were confounded by the selection
-highlight and the window border. What is real — and I have not changed it, because it's a judgement rather than a
-fault — is that depth is carried *only* by indentation, so a file at the top of the vault that sorts just under a
-collapsed folder reads as that folder's child.
+One visible side effect: np writes `INDEX.md`, and names containing `#`, `?`, `[`, `]`, `(`, `)`, `<`, `>` or a
+newline are now percent-encoded in that catalogue — `roadmap#2.md` appears as `roadmap%232.md`. No note is renamed. If
+you keep `INDEX.md` under git, expect one line per unusual name to change on the next index.
 
 ## Numbers for this release
 
-* Front end: **483 Vitest tests passing** (was 479), `npm run build` exit 0, `svelte-check` **0 errors, 0 warnings**.
-  Verified on the merged result on `main`, not only on the branch.
-* No new dependency; no change to any note's bytes — this is decoration over the buffer you type in, and the file on
-  disk is untouched by opening it.
-* Rust, Tauri and note-processor: unchanged.
-* Checked by eye in both themes at 1400 px before tagging, because three of these four changes are things a
-  stylesheet test can only claim about itself.
+- 380 Rust tests across 28 binaries, 498 Vitest tests, `svelte-check` clean, clippy clean with `-D warnings`.
+- New gates: quit close-out, opening a vault that cannot be opened, single-instance wiring, rename threading, atomic
+  whole-file rewrites, private file permissions, symlink rows, and `np_real_session` — a pre-release gate that drives a
+  real note-processor through a whole session (open, save, index, search, close) instead of stopping at the handshake.
+- Every fix above was reproduced first where a machine could observe it: red tests for the missing quit call, the
+  swallowed registry refusal, the two spellings of one Windows path, the in-place `config.toml` rewrite, the
+  world-readable draft, the symlink row that claimed to be an attachment, and the `{}` scan that marked everything
+  indexed.
 
-## What to look for
+## What I know about and did not fix
 
-`docs/testing-on-windows.md` §2b-zd walks it: a heading should be visibly bigger than its own paragraph and not
-underlined; the bold/italic row should start above the first character of text rather than out in the margin; pressing
-Bold should shade the button in a way you can tell apart from Tab-focusing it. One thing I'd genuinely like to hear
-even if it isn't a bug: if your notes look *worse* now — headings too big, code tint too loud — say which note and
-what bothers you. The styling that's now switched on is what was designed in 0.0.9 and never displayed; if nine
-releases of the other look is what you'd miss, that's a design conversation worth having rather than a defect to log.
+- **A first-run race inside np.** Open a folder that has never been indexed and type in the search box before its
+  first index finishes, and the reader child and the writer child can both try to create the same new database at the
+  same moment; one answers `sqlite: table files already exists`. It reproduces on 0.5.1 as well — about one attempt in
+  eight here — so it is not caused by this upgrade, and I did not want a retry heuristic landing in the same release as
+  a version bump where nobody could tell which change caused a report. Filed upstream as note-processor#18, with
+  jott#23 for what Jott would do if that stalls. The next keystroke clears it.
+- **Two things I cannot see from this box.** The CSP is pinned as a string and the policy is checked by a test, but no
+  webview runs here; if the window ever loads unstyled or blank with `Refused to apply inline style` in the console,
+  that is the policy being too tight and it is a one-line fix. Same for whether a second launch raises your minimised
+  window: the wiring is pinned, the raising needs eyes. Both are in §2b-ze of `docs/testing-on-windows.md`.
+
+## Upgrading
+
+Install over the top. Nothing moved, nothing needs re-indexing, and no setting changes meaning. If you were on 0.0.28
+and the markdown styling looked right, take another look at the places sections 1, 3 and 4b of the testing guide point
+at — several of this release's fixes are invisible until they aren't.

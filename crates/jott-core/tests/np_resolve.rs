@@ -169,10 +169,19 @@ fn np_0_5_0_is_below_the_floor_and_says_which_version_to_get() {
     assert_eq!(floor, "0.5.1", "the sentence a refusal quotes and the constant must be one number");
 }
 
+/// What goes inside the installer, named exactly — asset names are what `scripts/fetch-np` downloads, and a typo in
+/// one is a CI job that fails on somebody's release afternoon rather than here.
+///
+/// The shipped release and the floor are deliberately different numbers now: 0.6.0 goes in the box, 0.5.1 stays
+/// acceptable, because nothing in Jott needs what 0.6.0 added and a person whose np came from an older installer is
+/// not running something broken. The invariant that matters is one-directional, so it is asserted as one: ship at or
+/// above the floor, never below.
 #[test]
 fn the_bundled_asset_names_the_release_we_require() {
+    use jott_core::np::handshake::check_version;
     use jott_core::np::resolve::{asset_for, NP_RELEASE_VERSION};
-    assert_eq!(NP_RELEASE_VERSION, "0.5.1");
-    assert_eq!(asset_for(Os::Windows).as_deref(), Some("np-0.5.1-x86_64-pc-windows-gnu-cross.zip"));
-    assert_eq!(asset_for(Os::Linux).as_deref(), Some("np-0.5.1-x86_64-unknown-linux-gnu.tar.gz"));
+    assert_eq!(NP_RELEASE_VERSION, "0.6.0");
+    assert_eq!(asset_for(Os::Windows).as_deref(), Some("np-0.6.0-x86_64-pc-windows-gnu-cross.zip"));
+    assert_eq!(asset_for(Os::Linux).as_deref(), Some("np-0.6.0-x86_64-unknown-linux-gnu.tar.gz"));
+    assert!(check_version(NP_RELEASE_VERSION).is_ok(), "the installer must not ship a build Jott would refuse");
 }
