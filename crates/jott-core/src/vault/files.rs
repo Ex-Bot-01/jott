@@ -131,10 +131,17 @@ impl PathGuard {
                 break;
             };
             if meta.file_type().is_symlink() {
-                let real = to_open_path(&cursor).canonicalize().map_err(|source| FileError::Io {
-                    rel: cursor.display().to_string(),
-                    source,
-                })?;
+                let real = match to_open_path(&cursor).canonicalize() {
+                    // A link whose target is gone is not there — which is what the tree already said about it
+                    // (`unreadable`), and what this refusal now says too. The `rel` stays vault-relative like every
+                    // other refusal; quoting the OS here used to put an absolute path in a field that has no
+                    // business carrying one (issue #10).
+                    Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+                        return Err(FileError::NotFound { rel: rel.to_string() })
+                    }
+                    Ok(real) => real,
+                    Err(source) => return Err(FileError::Io { rel: cursor.display().to_string(), source }),
+                };
                 if !stays_inside(&canonical_root, &real) {
                     return Err(escaped());
                 }
