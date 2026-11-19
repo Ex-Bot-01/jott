@@ -81,15 +81,69 @@ pub fn decide(
     }
 }
 
+// How much work the calls on *this thread* have made the operating system do, for issue #8's tests:
+// `(times the vault root was canonicalised, notes read)`. Counters rather than timings, because a CI runner's
+// clock says nothing useful and a shape is what this file can answer — rename used to resolve the same directory
+// once per note it opened. Thread-local so the suite's parallel tests cannot count each other's syscalls.
+#[cfg(test)]
+thread_local! {
+    pub(crate) static SYSCALLS: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_syscall_counters() {
+    SYSCALLS.with(|c| c.set((0, 0)));
+}
+
+#[cfg(test)]
+pub(crate) fn syscall_counters() -> (usize, usize) {
+    SYSCALLS.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+fn counted_canonicalise_root(root: &Path) -> Result<PathBuf, FileError> {
+    SYSCALLS.with(|c| c.set((c.get().0 + 1, c.get().1)));
+    root.canonicalize().map_err(|source| FileError::Io { rel: root.display().to_string(), source })
+}
+
+#[cfg(test)]
+fn counted_read(path: &Path) -> std::io::Result<Vec<u8>> {
+    SYSCALLS.with(|c| c.set((c.get().0, c.get().1 + 1)));
+    std::fs::read(to_open_path(path))
+}
+
 /// Which path to hand the OS for this `rel`, and nothing more. See [`to_open_path`] for the Windows
 /// part of that job.
 pub struct PathGuard {
     root: PathBuf,
+    /// What the OS calls `root`, worked out the first time a name needs it and kept for the rest of this
+    /// guard's life. Issue #8: one rename used to ask this question once per note it opened, because every
+    /// `read_note` built its own guard, and a vault on a network share or a symlinked mount pays for each
+    /// asking. Cached inside one guard rather than globally because the guard *is* the operation — a session
+    /// that outlives a remount still gets a fresh answer from the next guard.
+    canonical_root: std::sync::OnceLock<PathBuf>,
 }
 
 impl PathGuard {
     pub fn new(root: &Path) -> Self {
-        Self { root: root.to_path_buf() }
+        Self { root: root.to_path_buf(), canonical_root: std::sync::OnceLock::new() }
+    }
+
+    /// The folder this guard bounds, as it was handed over — not canonicalised, because a walk wants the
+    /// spelling the caller recognises and only the bound-checking needs the OS's own.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// The vault folder as the operating system names it, asked at most once per guard.
+    fn canonical_root(&self) -> Result<PathBuf, FileError> {
+        if let Some(root) = self.canonical_root.get() {
+            return Ok(root.clone());
+        }
+        // A root that cannot be resolved is not cached: one transient failure must not become the answer for
+        // every later name in the same command.
+        let root = canonicalise_root(&self.root)?;
+        Ok(self.canonical_root.get_or_init(|| root).clone())
     }
 
     /// The absolute path to open for `rel`, or [`FileError::EscapesRoot`].
@@ -118,10 +172,7 @@ impl PathGuard {
 
         // The root is what the OS says it is, so a vault reached through a symlink or a mount still
         // bounds itself.
-        let canonical_root = self.root.canonicalize().map_err(|source| FileError::Io {
-            rel: self.root.display().to_string(),
-            source,
-        })?;
+        let canonical_root = self.canonical_root()?;
         let mut cursor = canonical_root.clone();
         for part in rel.split(['/', '\\']).filter(|p| !p.is_empty() && *p != ".") {
             cursor.push(part);
@@ -259,7 +310,14 @@ pub fn is_our_write(rel: &str) -> bool {
 
 /// The bytes of a note, exactly as they are on disk.
 pub fn read_note(root: &Path, rel: &str) -> Result<Vec<u8>, FileError> {
-    let path = PathGuard::new(root).resolve(rel)?;
+    read_note_with(&PathGuard::new(root), rel)
+}
+
+/// [`read_note`] with a guard already to hand. A command that opens more than one note builds one guard and
+/// passes it along, which is the whole of issue #8's first saving: the bound is a property of the vault, not
+/// of the note, and checking it per note costs a `canonicalize` each time.
+pub fn read_note_with(guard: &PathGuard, rel: &str) -> Result<Vec<u8>, FileError> {
+    let path = guard.resolve(rel)?;
     let metadata = std::fs::metadata(to_open_path(&path)).map_err(|source| match source.kind() {
         std::io::ErrorKind::NotFound => FileError::NotFound { rel: rel.to_string() },
         _ => FileError::Io { rel: rel.to_string(), source },
@@ -269,7 +327,29 @@ pub fn read_note(root: &Path, rel: &str) -> Result<Vec<u8>, FileError> {
         // swallowing 200 MB into a buffer.
         return Err(FileError::TooLarge { rel: rel.to_string(), limit: MAX_NOTE_BYTES });
     }
-    std::fs::read(to_open_path(&path)).map_err(|source| FileError::Io { rel: rel.to_string(), source })
+    read_bytes(&path).map_err(|source| FileError::Io { rel: rel.to_string(), source })
+}
+
+/// [`std::fs::canonicalize`] for the vault root, and the only place that call is made here.
+#[cfg(not(test))]
+fn canonicalise_root(root: &Path) -> Result<PathBuf, FileError> {
+    root.canonicalize().map_err(|source| FileError::Io { rel: root.display().to_string(), source })
+}
+
+#[cfg(test)]
+fn canonicalise_root(root: &Path) -> Result<PathBuf, FileError> {
+    counted_canonicalise_root(root)
+}
+
+/// [`std::fs::read`] for a note, and the only place one is opened for reading.
+#[cfg(not(test))]
+fn read_bytes(path: &Path) -> std::io::Result<Vec<u8>> {
+    std::fs::read(to_open_path(path))
+}
+
+#[cfg(test)]
+fn read_bytes(path: &Path) -> std::io::Result<Vec<u8>> {
+    counted_read(path)
 }
 
 /// np's catalogs at the vault root (`INDEX.md` and its shards) are not Jott's to write over: they are
@@ -382,6 +462,11 @@ pub struct RenameReport {
     /// Plan 2 gets np's resolver and the rewriting; this shape exists so that plan does not reshape
     /// this task.
     pub incoming_links: Vec<LinkRef>,
+    /// How many notes the scan had to open to answer (§18.7's "wider than np's resolution"). Carried into the
+    /// journal by the shell, because issue #8's whole complaint is that nobody has ever measured this against
+    /// a vault with thousands of notes — and a log line saying `scanned 4312` turns "renaming feels slow" into a
+    /// number the next person can act on.
+    pub scanned_notes: usize,
 }
 
 /// One note whose text refers to a path.
@@ -426,9 +511,11 @@ pub fn rename(root: &Path, from: &str, to: &str) -> Result<RenameReport, FileErr
     if path_is_under(from, to) {
         return Err(FileError::IntoItself { rel: from.to_string() });
     }
-    let incoming_links = incoming_pointing_at(root, from);
+    // One guard for the whole command: it resolved both ends of the move, and it resolves every note the scan
+    // opens. The scan runs before the move on purpose — after it, `from` no longer exists to search for.
+    let (incoming_links, scanned_notes) = incoming_pointing_at(&guard, from);
     move_within(from, to, source, target)?;
-    Ok(RenameReport { incoming_links })
+    Ok(RenameReport { incoming_links, scanned_notes })
 }
 
 /// Move a file or folder — including a folder full of notes — somewhere else in the vault.
@@ -609,14 +696,19 @@ fn copy_tree(source: &Path, target: &Path) -> Result<(), std::io::Error> {
 /// than promising what does, because this feeds a confirmation dialog before a rename and an
 /// under-report breaks links in silence. Plan 2 replaces the guess with np's own ladder and the
 /// rewriting that goes with it (§13).
-fn incoming_pointing_at(root: &Path, rel: &str) -> Vec<LinkRef> {
-    let Ok(notes) = note_rels(root) else { return Vec::new() };
+/// Also reports how many notes it opened, which is the number issue #8 asks about: nothing here can skip a
+/// note before reading it (a link target can name any file from any folder), so the only honest saving is not
+/// reading twice — and a count is how anyone tells whether that has started happening again.
+fn incoming_pointing_at(guard: &PathGuard, rel: &str) -> (Vec<LinkRef>, usize) {
+    let Ok(notes) = note_rels(guard.root()) else { return (Vec::new(), 0) };
     let mut found = Vec::new();
+    let mut scanned = 0usize;
     for note in notes {
         if note == rel {
             continue;
         }
-        let Ok(bytes) = read_note(root, &note) else { continue };
+        scanned += 1;
+        let Ok(bytes) = read_note_with(guard, &note) else { continue };
         let Ok(text) = std::str::from_utf8(&bytes) else { continue };
         for (offset, target) in link_targets(text) {
             if points_at(&target, rel) {
@@ -624,7 +716,7 @@ fn incoming_pointing_at(root: &Path, rel: &str) -> Vec<LinkRef> {
             }
         }
     }
-    found
+    (found, scanned)
 }
 
 /// Link targets in a note, stripped the way np strips them before placing them: no `|alias`, no
@@ -731,4 +823,59 @@ fn stem_of(name: &str) -> &str {
 
 fn line_at(text: &str, offset: usize) -> u32 {
     text[..offset.min(text.len())].bytes().filter(|b| *b == b'\n').count() as u32 + 1
+}
+
+#[cfg(test)]
+mod tests {
+    //! What one rename costs, in syscalls rather than milliseconds (issue #8). The report says "unmeasured,
+    //! so treat this as a shape problem", and a shape is what a counter can pin: a `HashCache::stats`-shaped
+    //! answer to "did this do work it did not have to do?", on a fixture small enough that no timing would
+    //! have meant anything. Timers here would fail on a loaded runner and pass for the wrong reason; these fail
+    //! because a directory was resolved five times instead of once — twice for the move itself, then once per
+    //! note the scan opened, which is exactly what issue #8 describes.
+
+    use super::{rename, reset_syscall_counters, syscall_counters};
+    use std::path::Path;
+
+    /// A vault with notes at the root and two folders deep, one of which refers to the note being renamed.
+    fn vault(dir: &Path) {
+        for rel in ["top.md", "a/middle.md", "a/b/deep.md", "a/b/other.md"] {
+            let path = dir.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "# note\n").unwrap();
+        }
+        std::fs::write(dir.join("a/b/other.md"), "see [[deep]] and [text](../middle.md)\n").unwrap();
+    }
+
+    #[test]
+    fn one_rename_resolves_the_vault_root_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        vault(tmp.path());
+        reset_syscall_counters();
+
+        let report = rename(tmp.path(), "a/b/deep.md", "a/b/deeper.md").expect("the rename happens");
+        let (canonicalisations, _) = syscall_counters();
+
+        // One guard, one answer: `from`, `to` and every note the scan opens describe the same directory.
+        // Before issue #8 this was 2 + one per note read, because each `read_note` built its own guard and
+        // canonicalised the root again — a rename of one file asking the OS what the vault is, N times.
+        assert_eq!(canonicalisations, 1, "the scan must share the guard that resolved the move");
+        assert_eq!(report.incoming_links.len(), 1, "and the scan still finds the link that refers to it");
+    }
+
+    #[test]
+    fn one_rename_reads_each_other_note_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        vault(tmp.path());
+        reset_syscall_counters();
+
+        rename(tmp.path(), "top.md", "topper.md").expect("the rename happens");
+        let (_, reads) = syscall_counters();
+
+        // Four notes, one of them the file being moved: three reads. This is the floor while the scan has to
+        // open every note — a link target can name any file from any folder, so nothing can be skipped before
+        // it is read (issue #8 says so, and it is right) — but it is also the floor *once*, not once per
+        // guard or once per separator spelling. A second rename that reads six notes is a regression.
+        assert_eq!(reads, 3);
+    }
 }

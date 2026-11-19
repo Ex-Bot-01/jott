@@ -265,7 +265,9 @@ fn a_rename_moves_the_bytes_and_reports_the_links_that_point_at_it() {
         b"see [Q3](notes/q3-review.md) and [[q3-review]] plus a mention of q3-review.md in prose\n",
     );
 
-    let RenameReport { incoming_links } =
+    // Destructured exhaustively on purpose: adding a field to `RenameReport` should be a decision someone makes
+    // here, not something that compiles quietly.
+    let RenameReport { incoming_links, scanned_notes } =
         files::rename(&root, "notes/q3-review.md", "archive/2026/q2-review.md").unwrap();
 
     assert!(!root.join("notes/q3-review.md").exists());
@@ -276,6 +278,9 @@ fn a_rename_moves_the_bytes_and_reports_the_links_that_point_at_it() {
     assert_eq!(sources, ["notes/other.md"], "one note holds two links to that path");
     assert!(incoming_links.iter().all(|l| l.line >= 1), "{incoming_links:?}");
     assert_eq!(incoming_links.len(), 2, "the markdown link and the wikilink: {incoming_links:?}");
+    // Issue #8's number, on the same fixture: two notes exist, one is moving, so exactly one was opened — once.
+    // This is the line a future cache has to beat, and the reason `files.rs` keeps thread-local syscall counters.
+    assert_eq!(scanned_notes, 1, "every other note, read once, with one shared guard");
 }
 
 #[test]
@@ -444,4 +449,40 @@ fn windows_writes_into_the_device_rather_than_the_folder_when_the_stem_matches()
     // Not `files::write_note`: that is the thing under test, and it now refuses.
     std::fs::write(&target, b"typed and lost\n").expect("CreateFile opened NUL, which succeeds");
     assert!(!target.exists(), "nothing was created in the folder — the bytes went to the device");
+}
+
+// ---- issue #8: what a rename says about its own scan
+
+/// The scan behind "what refers to this?" has to open every note — a link target can name any file from any
+/// folder, so nothing can be skipped before it is read. That is fine; what was not fine was doing it with a fresh
+/// `PathGuard` per note (one `canonicalize` of the vault root each time) and reporting nothing about it, so that
+/// "renaming feels slow in my 4,000-note vault" had no number attached to it anywhere.
+#[test]
+fn a_rename_reports_the_notes_it_had_to_open() {
+    let (_dir, root) = vault();
+    for rel in ["a.md", "b/c.md", "b/d/e.md"] {
+        write_raw(&root, rel, "text\n");
+    }
+
+    let report: RenameReport = files::rename(&root, "a.md", "z.md").expect("the rename happens");
+    assert_eq!(report.incoming_links.len(), 0);
+    // Three notes, one of them the file being moved: two opened. The count is what a future cache would have to
+    // beat, and it is in the journal line for the same reason.
+    assert_eq!(report.scanned_notes, 2, "every other note, exactly once");
+
+    let again = files::rename(&root, "b/c.md", "b/cee.md").expect("the second rename happens");
+    assert_eq!(again.scanned_notes, 2, "a nested note is scanned like any other: {again:?}");
+}
+
+/// Renaming a folder scans the same notes — `from` is not itself a note, so nothing is skipped by accident, and
+/// the number says so rather than going to zero on the case that reads most.
+#[test]
+fn renaming_a_folder_reports_the_same_scan() {
+    let (_dir, root) = vault();
+    for rel in ["keep.md", "box/one.md", "box/two.md"] {
+        write_raw(&root, rel, "text\n");
+    }
+
+    let report = files::rename(&root, "box", "moved").expect("the folder moves");
+    assert_eq!(report.scanned_notes, 3, "the folder's own notes plus the one outside it: {report:?}");
 }

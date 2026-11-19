@@ -1631,6 +1631,42 @@ async fn the_log_records_the_file_work_around_np() {
     drop(sentinel);
 }
 
+/// Issue #8's number, in the one place a person can send me. The report says the cost is "unmeasured, so treat
+/// this as a shape problem", and no machine in this loop has a vault of five thousand notes — so the count goes
+/// into the log line, where "renaming feels slow" arrives as something a next person can act on.
+#[tokio::test]
+async fn the_log_says_how_much_a_rename_read() {
+    let _turn = SERIAL.lock().await;
+    let harness = Harness::new();
+    for rel in ["a.md", "deep/b.md", "deep/c.md"] {
+        harness.write(rel, b"text\n");
+    }
+    let journal = Arc::new(jott_core::diagnostics::Journal::open(harness.data.path()));
+    let (sentinel, info) = ipc::np_absent();
+    let session = VaultSession::open_in_with(
+        common::unreachable_np(),
+        info,
+        None,
+        harness.vault.path(),
+        Consent::Undecided,
+        None,
+        harness.data.path().to_path_buf(),
+    )
+    .with_journal(journal.clone());
+
+    session.rename_entry("a.md", "z.md").expect("renamed");
+
+    let lines = journal.read_lines().expect("the log reads back");
+    let renamed = lines.iter().find(|l| l["event"] == "renamed").expect("the rename line");
+    assert_eq!(renamed["rel"], "z.md", "the name it moved to is the row the tree will show");
+    assert_eq!(
+        renamed["detail"].as_str(),
+        Some("from a.md; scanned 2 notes"),
+        "both names and the size of the scan, so a slow rename can be read rather than described: {renamed:?}"
+    );
+    drop(sentinel);
+}
+
 /// The drawer names np's folder already. It has to name Jott's own too, and say when that is a temp fallback —
 /// the case where unsaved drafts land in `%TEMP%\jott-unwritable` and nobody told the person they were there.
 #[tokio::test]
@@ -2412,7 +2448,18 @@ async fn quitting_gives_the_pending_save_its_pass_and_closes_nps_index() {
         .await
         .expect("the close-out returns on its own");
 
-    let asked = asked_before_exit(dir.path());
+    // Polled, not asserted inline: `calls.ndjson` is written by the child, and the line for the last call can
+    // land after `flush_on_quit` returns — the close-out only needed np to receive it. This test failed once on a
+    // runner that was doing both jobs at once, which is the same lesson
+    // `quitting_asks_the_child_that_was_started_at_startup_and_never_claimed` learned first.
+    let mut asked = Vec::new();
+    for _ in 0..40 {
+        asked = asked_before_exit(dir.path());
+        if asked.iter().any(|m| m == "scan") && asked.iter().any(|m| m == "shutdown") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
     assert!(asked.iter().any(|m| m == "scan"), "the save still owed a pass got it: {asked:?}");
     assert!(asked.iter().any(|m| m == "shutdown"), "np was asked to shut down, not killed holding its index open — the Windows lock friction of §3: {asked:?}");
 }

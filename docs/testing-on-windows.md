@@ -844,6 +844,18 @@ Jott must treat "someone else is indexing" as a state, not an error.
 
 Then do it the other way round — `np scan .` running first, and a save in Jott while it works.
 
+## 4b. If your vault is big: one rename, and what the log says about it
+
+Jott has been tested against vaults of a few dozen notes. Renaming a note means answering "what refers to this?",
+and that answer can only come from opening every note in the folder — a link written in `a/b.md` can point at
+something in `c/`. Nothing about it is tuned for thousands of notes yet, and I would rather know than guess.
+
+So if your vault is in the thousands: rename one note in a deep folder, and include the log. The line it writes now
+says how much it read — `"detail": "from old/name.md; scanned 4312 notes"` — which turns "renaming feels slow" into
+a number I can act on. Two things worth mentioning if you notice them: how long the window took to answer, and whether
+the rest of Jott stayed usable while it thought (it should: the scan now runs off the thread that paints, so the
+tree keeps moving).
+
 ## 5. What to send back
 
 Open the drawer (**Ctrl+Shift+D**) and press **Copy details**, then send that text plus one file:

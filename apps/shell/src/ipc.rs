@@ -383,9 +383,30 @@ pub fn create_folder(rel: String, app: State<'_, App>) -> Result<(), IpcError> {
     app.current()?.create_folder(&rel)
 }
 
+/// The one command whose cost grows with the size of the vault rather than with what the person just did: a
+/// rename opens every note to answer "what refers to this?" (§18.7) before it moves one file.
+///
+/// A non-`async` command is resolved inline wherever the IPC message was handled — `tauri-macros` wraps it with
+/// `body_blocking`, which runs the body on the calling context rather than handing it to the async runtime — so
+/// until now that scan ran on the thread that paints, with nothing on screen to say work was happening. Async plus
+/// `spawn_blocking` puts it on the blocking pool: the window keeps painting, and a vault of a few thousand notes
+/// (plus whatever Windows' antivirus does per opened file) no longer freezes it.
+///
+/// What the front end depends on is unchanged: the reply still arrives after the move, and the watcher-driven
+/// refresh still follows it. `save_note`, `create_note` and `delete_entry` stay synchronous deliberately — each
+/// touches one file, so moving them would add a handoff and buy nothing.
 #[tauri::command]
-pub fn rename_entry(from: String, to: String, app: State<'_, App>) -> Result<RenameOutcome, IpcError> {
-    app.current()?.rename_entry(&from, &to)
+pub async fn rename_entry(from: String, to: String, app: State<'_, App>) -> Result<RenameOutcome, IpcError> {
+    // The session is taken out here rather than inside the closure: `State` borrows the managed value for the
+    // request's lifetime, and a blocking task must own everything it touches. `Arc` is what makes that cheap.
+    let session = app.current()?;
+    // Kept for the refusal path: `to` moves into the blocking closure, and a join failure still has to name the
+    // note the person asked about. (CI found this: borrowing `to` after the move is E0382, and nothing on this box
+    // can compile the shell to tell me before push.)
+    let asked_for = to.clone();
+    tauri::async_runtime::spawn_blocking(move || session.rename_entry(&from, &to))
+        .await
+        .map_err(|e| IpcError::io(&asked_for, e))?
 }
 
 #[tauri::command]

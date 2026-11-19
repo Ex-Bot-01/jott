@@ -870,7 +870,13 @@ impl VaultSession {
     pub fn rename_entry(&self, from: &str, to: &str) -> Result<RenameOutcome, IpcError> {
         let report = files::rename(&self.vault, from, to).map_err(IpcError::from)?;
         // Both names matter to the tree: what moved, and whatever it left behind in the index.
-        self.local(LocalRecord::new("renamed").with_rel(to).with_detail(format!("from {from}")));
+        // The scanned count goes in the log because issue #8 is right that nobody has measured this against a
+        // vault with thousands of notes, and "renaming feels slow" is not something a log can answer without it.
+        self.local(
+            LocalRecord::new("renamed")
+                .with_rel(to)
+                .with_detail(format!("from {from}; scanned {} notes", report.scanned_notes)),
+        );
         self.queue.note_saved(to);
         // The new name is owed an embed; the *old* one needs the folder walked, or np keeps answering for a
         // path that is no longer there. A move is not a deletion — np reports `moved` and relinks the row.
