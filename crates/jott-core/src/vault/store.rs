@@ -181,7 +181,7 @@ impl VaultStore {
     /// leaves either the old file or the new one, never half of either.
     fn save(&self, entries: &[VaultEntry]) -> Result<(), StoreError> {
         let dir = self.file().parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
-        std::fs::create_dir_all(&dir).map_err(|source| StoreError::Io { path: dir.clone(), source })?;
+        crate::app_paths::create_private_dir_all(&dir).map_err(|source| StoreError::Io { path: dir.clone(), source })?;
         let registry = Registry {
             version: 1,
             vaults: entries.iter().map(VaultStore::to_stored).collect(),
@@ -190,6 +190,9 @@ impl VaultStore {
             .expect("a registry of strings and numbers serializes");
         let temp = dir.join(format!("vaults.json.tmp-{}", std::process::id()));
         std::fs::write(&temp, text).map_err(|source| StoreError::Io { path: temp.clone(), source })?;
+        // Before the rename, because a rename moves with the temp file's mode: this registry is a list of where
+        // somebody's notes live, and on a shared account that is not a file for strangers (`tests/private_files.rs`).
+        crate::app_paths::make_private(&temp);
         std::fs::rename(&temp, self.file()).map_err(|source| StoreError::Io { path: self.file(), source })
     }
 

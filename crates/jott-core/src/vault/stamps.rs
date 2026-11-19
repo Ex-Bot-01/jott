@@ -127,11 +127,21 @@ impl Stamps {
     /// the old record or the new one.
     pub fn save(&self) -> Result<(), StoreError> {
         let dir = self.file.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
-        std::fs::create_dir_all(&dir).map_err(|source| StoreError::Io { path: dir.clone(), source })?;
+        // `state/` itself is created private too, not just this vault's folder inside it. Its entries are digests,
+        // so a stranger listing it learns no note names — but it does learn how many vaults this account has opened,
+        // and `create_private_dir_all` sets the mode on the folder it is handed, not on the ones it had to make on
+        // the way there.
+        if let Some(state_root) = dir.parent() {
+            let _ = crate::app_paths::create_private_dir_all(state_root);
+        }
+        crate::app_paths::create_private_dir_all(&dir).map_err(|source| StoreError::Io { path: dir.clone(), source })?;
         let text = serde_json::to_string_pretty(&StateFile { version: 1, files: self.files.clone() })
             .expect("a map of strings serializes");
         let temp = dir.join(format!("state.json.tmp-{}", std::process::id()));
         std::fs::write(&temp, text).map_err(|source| StoreError::Io { path: temp.clone(), source })?;
+        // Same reason as the registry, and same timing: the mode has to be on the temp file for the rename to carry
+        // it. The hashed folder name is a name, not a lock.
+        crate::app_paths::make_private(&temp);
         std::fs::rename(&temp, &self.file)
             .map_err(|source| StoreError::Io { path: self.file.clone(), source })
     }
