@@ -240,7 +240,9 @@ impl VaultStore {
     /// writer costs a person nothing but the answer they were about to lose anyway.
     fn save(&self, entries: &[VaultEntry]) -> Result<(), StoreError> {
         let dir = self.file().parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
-        std::fs::create_dir_all(&dir).map_err(|source| StoreError::Io { path: dir.clone(), source })?;
+        // Both halves belong here: owner-only because this is a list of where somebody's notes live (#9), and the
+        // merge because two processes used to overwrite one another's recents (#7).
+        crate::app_paths::create_private_dir_all(&dir).map_err(|source| StoreError::Io { path: dir.clone(), source })?;
         let merged = merge_registry(&self.load(), entries);
         let registry = Registry {
             version: 1,
@@ -250,6 +252,9 @@ impl VaultStore {
             .expect("a registry of strings and numbers serializes");
         let temp = dir.join(format!("vaults.json.tmp-{}", std::process::id()));
         std::fs::write(&temp, text).map_err(|source| StoreError::Io { path: temp.clone(), source })?;
+        // Before the rename, because a rename moves with the temp file's mode: this registry is a list of where
+        // somebody's notes live, and on a shared account that is not a file for strangers (`tests/private_files.rs`).
+        crate::app_paths::make_private(&temp);
         std::fs::rename(&temp, self.file()).map_err(|source| StoreError::Io { path: self.file(), source })
     }
 

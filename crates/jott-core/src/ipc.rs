@@ -1192,7 +1192,12 @@ impl VaultSession {
         // and closed — with one search, say — used to leave its np children alive holding the index open. On
         // Windows that is a locked workspace for the next np, and switching folders did it again each time.
         // Idempotent: if the drain already closed it, this asks nothing of anything.
-        let _ = self.pool.close_within(Duration::from_secs(2)).await;
+        // Four seconds per child to be polite within. Two was not enough on a box doing everything at once:
+        // `shutdown_within` has to win the stdin lock before it can say goodbye, and a reply still being processed
+        // holds that lock — so under load a quit used to give up on asking and kill, which is exactly what §3's
+        // Windows lock friction is about. Still bounded, and still nowhere near waiting for a model: the worst case
+        // here is the queue's 5 s drain cap plus these 4 s, against the 15 s our own quit test says is too long.
+        let _ = self.pool.close_within(Duration::from_secs(4)).await;
     }
 
     /// One line in the hand-off log. Same shape as the queue's: never questioned, never fatal.

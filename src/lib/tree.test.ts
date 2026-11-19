@@ -87,6 +87,15 @@ describe('flattenTree', () => {
     ])
   })
 
+  it('names a symlink as one, instead of a note-shaped row with nothing to show', () => {
+    // Issue #10. The walk does not follow links, so a link used to arrive as an `Attachment` guessed from its name
+    // and no state at all — which draws the same "nothing to show" marker as a folder, on a row that is neither.
+    // The reason is the whole fix: it is what makes the row explainable instead of mysterious.
+    const [row] = flattenTree([entry('notes', { kind: 'Attachment', state: { Refused: 'symlink' } })], new Set())
+    expect(row?.marker).toBe('!')
+    expect(row?.title, 'the reason travels as text, the way `unreadable` and `too-large` already do').toBe('refused · symlink')
+  })
+
   it('says refused without inventing a reason when np gave none', () => {
     // §18.5: with diagnostics off, the marker reads *refused* and stops there.
     const [row] = flattenTree([entry('x.md', { state: { Refused: '' } })], new Set())

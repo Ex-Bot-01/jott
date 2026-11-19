@@ -144,7 +144,12 @@ pub fn note_rels(root: &Path) -> Result<Vec<String>, WalkError> {
     let mut notes = Vec::new();
     for item in WalkDir::new(root).min_depth(1).follow_links(false) {
         let Ok(dir_entry) = item else { continue };
-        if !dir_entry.file_type().is_file() {
+        // A note that is a symlink is still a note the rename scan has to read: `PathGuard` will open it (its rule
+        // is about where the target lives, not what the name is), and a link written inside it points at whatever is
+        // being renamed. Links to folders stay out, because nothing below one is walked (issue #10).
+        let file_like = dir_entry.file_type().is_file()
+            || (dir_entry.file_type().is_symlink() && dir_entry.path().is_file());
+        if !file_like {
             continue;
         }
         let Some(rel) = rel_of(root, dir_entry.path()) else { continue };
@@ -165,7 +170,14 @@ pub fn note_rels(root: &Path) -> Result<Vec<String>, WalkError> {
 
 fn entry_for(dir_entry: &walkdir::DirEntry, rel: &str, stamps: &Stamps, cache: &HashCache) -> TreeEntry {
     let path = dir_entry.path();
-    let metadata = dir_entry.metadata().ok();
+    // Issue #10. The walk does not follow links (`follow_links(false)` above), so a link must never be drawn as the
+    // thing its name happens to look like: that is how `notes -> ../writing/notes` arrived as one grey Attachment
+    // with no contents, and how a 29-byte link to a 4 KB note got a size from the link's `lstat` beside a marker
+    // computed from the target. With `follow_links(false)`, `DirEntry::metadata()` is the *link's* own — so for a
+    // link the facts come from the target when there is one, and the row's number and its reason are about the same
+    // bytes either way.
+    let link = dir_entry.file_type().is_symlink();
+    let metadata = if link { path.metadata().ok() } else { dir_entry.metadata().ok() };
     let size = metadata.as_ref().map(|m| if m.is_dir() { 0 } else { m.len() }).unwrap_or(0);
     // A filesystem that will not answer for an mtime gets no timestamp rather than a plausible one;
     // the tree shows "unknown" for these (Task 10) instead of a date nobody measured.
@@ -194,9 +206,22 @@ fn entry_for(dir_entry: &walkdir::DirEntry, rel: &str, stamps: &Stamps, cache: &
         "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" => EntryKind::Image,
         _ => EntryKind::Attachment,
     };
-    // Only notes have a state to show: np's index rows are notes, and an image row would need the
-    // vision feature the released binaries do not carry (§18.7).
-    let state = (kind == EntryKind::Note && !is_under_processed(rel)).then(|| note_state(path, rel, stamps, cache));
+    // A link carries its own reason instead of a verdict nobody measured: Jott will read through a link that stays
+    // in the vault (`PathGuard`'s rule) but the tree does not walk into one, so claiming `indexed` for bytes it
+    // never listed would be a lie, and saying nothing left the row looking like a broken note. A dangling link says
+    // `unreadable`, which is what opening it now answers too (`FileError::NotFound`, issue #10).
+    let state = if link {
+        Some(match path.metadata() {
+            Ok(_) => StampState::Refused("symlink".into()),
+            Err(_) => StampState::Refused("unreadable".into()),
+        })
+    } else if kind == EntryKind::Note && !is_under_processed(rel) {
+        // Only notes have a state to show: np's index rows are notes, and an image row would need the
+        // vision feature the released binaries do not carry (§18.7).
+        Some(note_state(path, rel, stamps, cache))
+    } else {
+        None
+    };
     TreeEntry { rel: rel.to_string(), kind, size, mtime, state }
 }
 
