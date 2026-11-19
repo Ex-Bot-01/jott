@@ -40,8 +40,8 @@ fn buffers_dir() -> std::io::Result<PathBuf> {
 fn buffers_dir_in(root: &Path) -> PathBuf {
     let dir = root.join("buffers");
     // A failure here is not this call's to report: the write below will fail with the same cause and name
-    // the file it could not make.
-    let _ = std::fs::create_dir_all(&dir);
+    // the file it could not make. Owner-only, because these files hold the text of a note as it is being typed.
+    let _ = crate::app_paths::create_private_dir_all(&dir);
     dir
 }
 
@@ -77,7 +77,7 @@ fn write_mirror_at(path: &Path, bytes: &[u8], base: Option<SystemTime>) -> std::
     let mut record = header.into_bytes();
     record.extend_from_slice(b"\0");
     record.extend_from_slice(bytes);
-    std::fs::write(path, record)
+    std::fs::write(path, record).inspect(|_| crate::app_paths::make_private(path))
 }
 
 /// A mirrored buffer whose bytes match `text`, if one exists. Used to say "this is what you had typed"

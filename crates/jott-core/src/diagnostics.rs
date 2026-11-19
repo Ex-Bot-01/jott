@@ -211,10 +211,15 @@ impl Journal {
         let path = dir.join("jott.jsonl");
         let written = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
         // The file is created at open, so the path About and the drawer name exists the moment it is named.
-        let state = match std::fs::create_dir_all(&dir)
+        let state = match crate::app_paths::create_private_dir_all(&dir)
             .and_then(|()| std::fs::OpenOptions::new().create(true).append(true).open(&path).map(drop))
         {
-            Ok(()) => Some(Writer { path, written }),
+            Ok(()) => {
+                // The log is the file §19 asks a person to send me, so it should not also be the one another
+                // account can read. Tightened at open, which is when the file is created; `tests/private_files.rs`.
+                crate::app_paths::make_private(&path);
+                Some(Writer { path, written })
+            }
             Err(_) => None,
         };
         Journal { dir, state: Mutex::new(state) }
