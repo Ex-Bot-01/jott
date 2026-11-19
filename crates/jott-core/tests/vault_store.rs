@@ -357,9 +357,12 @@ fn a_write_that_forgot_a_vault_gives_it_back() {
     // the same millisecond are broken by that order, so getting this wrong is visible as a wrong recents list.
     assert_eq!(paths, vec!["/vaults/two", "/vaults/one"], "and the folder just opened is the most recent one");
 
-    let one = &merged[1];
+    // Looked up by path rather than by index. The first version of this test read `merged[1]` for both rows after
+    // I changed the expected order above, and passed on my machine while CI said no — an entry found by name is a
+    // claim about that folder, whatever position the merge put it in.
+    let one = merged.iter().find(|e| e.path.ends_with("one")).expect("`one` is listed");
     assert_eq!(one.last_opened.duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(), 3_000, "and this process's open is what counts as most recent");
-    let two = &merged[1];
+    let two = merged.iter().find(|e| e.path.ends_with("two")).expect("`two` is listed");
     assert_eq!(two.consent, Consent::Granted, "the other window's answers travel untouched");
     assert_eq!(two.last_opened.duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(), 2_000);
 }
