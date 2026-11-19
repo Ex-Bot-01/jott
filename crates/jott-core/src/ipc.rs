@@ -1303,6 +1303,26 @@ impl From<MirroredBuffer> for MirroredText {
     }
 }
 
+/// §11's close-out, in the one shape every door can call it: the `flush_on_close` command, and the shell's event
+/// loop being told to quit (`RunEvent::ExitRequested`).
+///
+/// Both halves take by value because both doors mean *leaving*: the session is closed for good, and whoever held
+/// the warm child has handed it back. Nothing here waits on a model — `VaultSession::close` bounds the pass in
+/// flight by the queue's own cap, and the unclaimed child gets 500 ms of goodbye before it is dropped. The whole
+/// body lives in the core so that a headless suite can prove it happens (`tests/ipc_surface.rs`, `quitting_*`);
+/// what lives in the shell is only the asking (`tests/shell_quit.rs`).
+pub async fn flush_on_quit(session: Option<Arc<VaultSession>>, warm: Option<Arc<crate::np::client::NpClient>>) {
+    if let Some(session) = session {
+        // Drain what is owed, save the stamps, stop watching, and ask this vault's np children politely.
+        session.close().await;
+    }
+    // A warm child nobody claimed — Jott started np for the handshake and never opened a folder. An np left
+    // running after Jott exits holds its index open on Windows, which is §3's lock friction.
+    if let Some(client) = warm {
+        let _ = client.shutdown_within(Duration::from_millis(500)).await;
+    }
+}
+
 /// What the shell asks once at startup: is np there, and what does it say it can do.
 ///
 /// The answer is a value, not a panic or a fatal error. A machine without np gets the same window —

@@ -461,21 +461,51 @@ pub async fn set_consent(granted: bool, app: State<'_, App>) -> Result<ConsentAn
 
 /// Asked when the window closes, so a save that was in the queue gets its pass (§11). Bounded by the
 /// queue's own cap: closing never waits for a model.
+///
+/// This is the webview's door, and since issue #1 it is no longer the only one: `close_for_quit` below runs the
+/// same core body from the event loop, which is what actually happens when somebody closes the window. The two
+/// share one implementation precisely so the copy in this file cannot drift from the one the headless suite covers.
 #[tauri::command]
 pub async fn flush_on_close(app: State<'_, App>) -> Result<(), IpcError> {
     // Taken out of the mutex first: a guard held across an `await` would sit on the whole shell while np
-    // finishes what it was asked to do.
-    let session = { guarded(&app.session).clone() };
-    if let Some(session) = session {
-        session.close().await;
-    }
-    // A warm child nobody claimed — the window opened, and closed, without ever opening a folder. It deserves
-    // the same ask; an np still running after Jott quits holds its index open on Windows.
+    // finishes what it was asked to do. Taken rather than cloned because this means *leaving* — a second
+    // close-out after this one has nothing left to ask.
+    let session = { guarded(&app.session).take() };
     let warm = { guarded(&app.warm).take() };
-    if let Some(client) = warm {
-        let _ = client.shutdown_within(std::time::Duration::from_millis(500)).await;
-    }
+    jott_core::ipc::flush_on_quit(session, warm).await;
     Ok(())
+}
+
+/// The quit path: §11's close-out run from the shell's own event loop, where there is a thread to wait on.
+///
+/// Called from `RunEvent::ExitRequested`, which Tauri emits when the last window is destroyed and then waits for
+/// this callback to return before it leaves the loop (`tauri-runtime-wry-2.12.3/src/lib.rs:4255-4270`). That is
+/// what makes it the only reliable place for this: an `invoke` fired from a webview unload hook may never reach
+/// Rust at all, which is why `Editor.svelte`'s `pagehide` handler saves through `save_note` and nothing ever
+/// promised more than that (§11).
+///
+/// Bounded by what it awaits, not by a timer of its own: the queue's cap for a pass in flight, two seconds on the
+/// pool, 500 ms on an unclaimed child. A stuck np can slow somebody's quit by those few seconds and no further —
+/// pinned by `quitting_never_waits_for_a_model_that_is_still_thinking`.
+pub fn close_for_quit(handle: &AppHandle) {
+    let Some(app) = handle.try_state::<App>() else { return };
+    // Take, don't clone: whatever is left to shut down is shut down once. A second call — a restart, say, which
+    // asks for exit again — finds both slots empty and returns without asking anything of anything.
+    let session = guarded(&app.session).take();
+    let warm = guarded(&app.warm).take();
+    if session.is_none() && warm.is_none() {
+        return;
+    }
+    // Written before the wait, not after: if the machine pulls the plug mid-drain, the log at least says Jott was
+    // asked to leave and what it still held.
+    let _ = app.journal.record_local(
+        &LocalRecord::new("quit").with_detail(format!(
+            "close-out: vault {}, np child {}",
+            if session.is_some() { "open" } else { "none" },
+            if warm.is_some() { "warm" } else { "none" }
+        )),
+    );
+    tauri::async_runtime::block_on(jott_core::ipc::flush_on_quit(session, warm));
 }
 
 // The commands above are the whole surface, and `main.rs` registers them by name. `src/lib/ipc.ts` is the

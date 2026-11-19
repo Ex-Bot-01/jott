@@ -115,5 +115,16 @@ fn main() {
         })
         .build(tauri::generate_context!())
         .expect("error while building Jott")
-        .run(|_app, _event| {});
+        // Quit is handled here rather than in the page. Tauri emits `ExitRequested` when the last window is
+        // destroyed and waits for this callback to return before it leaves the event loop
+        // (`tauri-runtime-wry-2.12.3/src/lib.rs:4255-4270`), so this is the one place §11's close-out — drain the
+        // queue up to its cap, save the stamps, ask both np children politely — can actually be awaited. The
+        // webview cannot do it: an `invoke` fired from an unload hook may never reach Rust, and issue #1 was this
+        // callback ignoring its events, which left a save made seconds before quitting without its pass and np
+        // killed with its index still open.
+        .run(|app, event| {
+            if matches!(event, tauri::RunEvent::ExitRequested { .. }) {
+                ipc::close_for_quit(app);
+            }
+        });
 }

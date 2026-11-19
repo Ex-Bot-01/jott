@@ -2378,3 +2378,82 @@ async fn a_download_in_flight_is_reported_from_nps_own_marker() {
 
     drop(scenario_dir);
 }
+
+// ---- issue #1: §11's close-out, asked at quit ---------------------------------------------------------
+//
+// The close-out existed as a command nothing called, so everything below was unreachable from the shipped app.
+// These pins are about the body itself — that it drains, that it asks np rather than killing it, and that a slow
+// np cannot hold a window open — because the shell's job is now only to make this call (`tests/shell_quit.rs`).
+
+/// Every method the stand-in was asked for, in order, handshake excluded and `shutdown` kept: the whole point of
+/// these three tests is the goodbye, and [`recorded`] filters it out for the tests that do not care about it.
+fn asked_before_exit(dir: &Path) -> Vec<String> {
+    let text = std::fs::read_to_string(dir.join("calls.ndjson")).unwrap_or_default();
+    text.lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter_map(|line| line["method"].as_str().map(str::to_string))
+        .filter(|m| m != "initialize")
+        .collect()
+}
+
+#[tokio::test]
+async fn quitting_gives_the_pending_save_its_pass_and_closes_nps_index() {
+    let _turn = SERIAL.lock().await;
+    let harness = Harness::new();
+    harness.write("a.md", b"# A\n");
+    let dir = scenario(json!({ "replies": { "scan": serde_json::from_str::<Value>(SCAN_REPORT).unwrap() } }));
+    let session = harness.session_with(fake_np());
+
+    // The thing §11 is about: a save made seconds before the window goes away.
+    session.save_note("a.md", "# A, edited\n").expect("save");
+
+    tokio::time::timeout(std::time::Duration::from_secs(20), ipc::flush_on_quit(Some(session), None))
+        .await
+        .expect("the close-out returns on its own");
+
+    let asked = asked_before_exit(dir.path());
+    assert!(asked.iter().any(|m| m == "scan"), "the save still owed a pass got it: {asked:?}");
+    assert!(asked.iter().any(|m| m == "shutdown"), "np was asked to shut down, not killed holding its index open — the Windows lock friction of §3: {asked:?}");
+}
+
+#[tokio::test]
+async fn quitting_asks_the_child_that_was_started_at_startup_and_never_claimed() {
+    let _turn = SERIAL.lock().await;
+    // The window opened and closed without ever opening a folder: the startup handshake's child is still warm,
+    // and an np left running after Jott exits keeps its index open on Windows.
+    let (scenario_dir, client) = common::spawn(json!({})).await;
+    let warm = Arc::new(client);
+    assert!(!warm.is_closed(), "the child is running when the window closes");
+
+    tokio::time::timeout(std::time::Duration::from_secs(20), ipc::flush_on_quit(None, Some(Arc::clone(&warm))))
+        .await
+        .expect("the close-out returns on its own");
+
+    assert!(warm.is_closed(), "a warm child nobody claimed was left running");
+    drop(scenario_dir);
+}
+
+#[tokio::test]
+async fn quitting_never_waits_for_a_model_that_is_still_thinking() {
+    let _turn = SERIAL.lock().await;
+    let harness = Harness::new();
+    harness.write("a.md", b"# A\n");
+    // An np mid-scan for two minutes: closing is stopping, not waiting (§11's cap), and a window that cannot
+    // close is worse than one that closes while np finishes thinking.
+    let _scenario = scenario(json!({
+        "sleep_ms": { "scan": 120_000 },
+        "replies": { "scan": serde_json::from_str::<Value>(SCAN_REPORT).unwrap() },
+    }));
+    let session = harness.session_with(fake_np());
+    session.save_note("a.md", "# A, edited\n").expect("save");
+
+    let started = std::time::Instant::now();
+    tokio::time::timeout(std::time::Duration::from_secs(20), ipc::flush_on_quit(Some(session), None))
+        .await
+        .expect("the close-out bounds itself by the queue's cap rather than by np's");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(15),
+        "quitting waited {:?} for a pass that had two minutes of sleep left in it",
+        started.elapsed()
+    );
+}
