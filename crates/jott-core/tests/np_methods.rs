@@ -59,7 +59,13 @@ async fn a_result_that_is_not_shaped_like_one_is_a_fault_not_a_zero() {
     let (_d, client) = spawn(json!({"replies": {"scan": {"nonsense": true}}})).await;
 
     let fault = scan(&client, &vault()).await.unwrap_err();
-    assert_eq!(fault.code, -32603);
+    // `-32603` used to live here, borrowed from np's internal-error code on the reasoning that the honest reading was
+    // the same. It is not: `IpcError::np_fault` maps that code to `NpGone`, "go install np", so a report we could not
+    // read told someone to install a program that had just answered them (issue #11). Jott's own code now carries
+    // the shape faults, and this pin is what keeps the two from collapsing back together.
+    assert_eq!(fault.code, jott_core::np::SHAPE_FAULT_CODE, "ours, not np's: {fault}");
+    assert_ne!(fault.code, -32603, "that one means nothing came back at all");
+    assert!(jott_core::np::is_shape_fault(&fault));
     assert!(
         fault.message.contains("added"),
         "the message should name what is missing, got: {fault}"
@@ -863,4 +869,30 @@ fn every_mode_is_listed_where_a_refusal_lists_them() {
     for junk in ["", "fuzzy", "HYBRID", "auto"] {
         assert!(Mode::from_label(junk).is_none(), "{junk} is not a mode and must not parse");
     }
+}
+
+/// Issue #11: one renamed counter in a future np's scan answer. The document is present, parseable, and shorter
+/// than expected — which used to be reported under `-32603`, the code that means *no answer came*. That mapping
+/// told a person to install a np that was sitting there answering their requests, while indexing stopped for the
+/// session. `ScanReport` stays strict on purpose (a `{}` must not parse as an all-zero scan and mark every note
+/// indexed on the strength of nothing); what changed is which sentence comes out, and where it points.
+#[tokio::test]
+async fn a_scan_answer_missing_one_counter_says_the_answer_was_unreadable() {
+    let mut short = fixture_result(2);
+    assert!(short.as_object_mut().expect("an object").remove("modified").is_some(), "the fixture carries the key this test removes");
+
+    let (_d, client) = spawn(json!({ "replies": { "scan": short } })).await;
+    let fault = scan(&client, &vault()).await.expect_err("a report missing a counter is not a report");
+
+    assert!(jott_core::np::is_shape_fault(&fault), "this is Jott failing to read an answer: {fault}");
+    assert_ne!(fault.code, -32603, "`-32603` means nothing came back; something did: {fault}");
+    assert!(fault.message.contains("modified"), "the sentence names the key — the whole answer to \"what did np change?\": {fault}");
+
+    // The half that reaches a person. `NpGone` says *go install np*; np is running.
+    let error = jott_core::ipc::IpcError::np_fault(&fault);
+    assert_eq!(error.kind, jott_core::ipc::ErrorKind::NpShape, "an unreadable answer is its own kind: {error:?}");
+
+    // And the case that *is* np being gone keeps its own sentence, so the two cannot collapse back together.
+    let gone = jott_core::ipc::IpcError::np_fault(&jott_core::np::NpFault { code: -32603, message: "np died mid-request".into() });
+    assert_eq!(gone.kind, jott_core::ipc::ErrorKind::NpGone, "\"no answer came\" still means that: {gone:?}");
 }

@@ -55,6 +55,12 @@ pub enum ErrorKind {
     /// np could not be reached, or never answered: not installed, not runnable, killed mid-request, or silent past
     /// its deadline. Nothing about the *content* of a request.
     NpGone,
+    /// np answered, and Jott could not read the answer: a report missing a key it needs. Not `NpGone`, because np
+    /// is running and replying, and telling someone to install a program that is answering their requests is the
+    /// mistake this repo made in v0.0.6 with "np ended before answering"; not `NpRefused` either, because np did not
+    /// refuse anything — Jott's reader did. A future np that renames one counter would otherwise stop all indexing
+    /// behind a sentence telling the person to fix something that is not broken (issue #11).
+    NpShape,
     /// np is running and refused this request — `-32000` "workspace … is not a directory that exists", `-32602`
     /// bad params, anything else it chose to answer with. Its sentence is the message (§4).
     NpRefused,
@@ -134,6 +140,9 @@ impl IpcError {
                 kind: ErrorKind::NpTooOld,
                 message: format!("{message} — Jott needs np {} or newer", version_text()),
             },
+            crate::np::SHAPE_FAULT_CODE => ErrorKind::NpShape,
+            // Ours or np's, `-32603` means no usable answer came — and after issue #11 it can no longer also mean
+            // "an answer came that we could not read", which is what made this arm lie about np being absent.
             -32603 => ErrorKind::NpGone,
             _ => ErrorKind::NpRefused,
         };
