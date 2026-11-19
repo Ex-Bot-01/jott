@@ -20,7 +20,7 @@ use jott_core::vault::walk::EntryKind;
 use jott_core::ingest::consent::AutoFetch;
 use jott_core::ipc::VaultSession;
 use jott_core::vault::stamps::StampState;
-use jott_core::vault::store::Consent;
+use jott_core::vault::store::{Consent, StoreError};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -2456,4 +2456,35 @@ async fn quitting_never_waits_for_a_model_that_is_still_thinking() {
         "quitting waited {:?} for a pass that had two minutes of sleep left in it",
         started.elapsed()
     );
+}
+
+// ---- issue #2: a registry refusal is an answer, not a shrug ------------------------------------------
+//
+// `App::open` used to read `register(path).ok().flatten()`, which turned `NotADirectory` into "no warning" and let
+// the session be replaced by one pointing at a folder that had been deleted. The sentence the registry wrote is
+// the thing the window needs, so it travels intact rather than being dropped on the floor.
+
+#[test]
+fn a_refusal_from_the_registry_arrives_as_the_sentence_it_wrote() {
+    // §4: name the folder, say what is wrong, no wrapping prose from us on top of it. The registry's own lines
+    // already do that, so `From` keeps them byte for byte instead of nesting them in "could not use".
+    let missing: ipc::IpcError = StoreError::NotADirectory { path: "/home/ana/notes".into() }.into();
+    assert_eq!(missing.kind, ErrorKind::Io);
+    assert_eq!(missing.message, "/home/ana/notes is not a folder I can open");
+
+    let unregistered: ipc::IpcError = StoreError::NotRegistered { path: "/tmp/vault".into() }.into();
+    assert!(
+        unregistered.message.ends_with("is not a registered vault, so there is nothing here to record its consent in"),
+        "{}",
+        unregistered.message
+    );
+
+    // An io failure keeps np's/OS's own reason beside the file it failed on.
+    let io: ipc::IpcError = StoreError::Io {
+        path: "/home/ana/.local/share/jott/vaults.json".into(),
+        source: std::io::Error::new(std::io::ErrorKind::PermissionDenied, "permission denied"),
+    }
+    .into();
+    assert_eq!(io.kind, ErrorKind::Io);
+    assert!(io.message.contains("permission denied"), "{}", io.message);
 }

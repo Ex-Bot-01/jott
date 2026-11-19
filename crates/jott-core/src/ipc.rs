@@ -80,6 +80,18 @@ impl From<FileError> for IpcError {
     }
 }
 
+/// The registry's refusals, kept as they were written.
+///
+/// Every arm of [`StoreError`] already names the folder and says what is wrong with it, which is §4's shape, so
+/// nothing is wrapped around it. That matters most for `NotADirectory`: it is what a recents pick answers when the
+/// folder has been deleted or moved since, and the person reading it needs the path they clicked, not
+/// "could use : something" with the path buried in the middle.
+impl From<crate::vault::store::StoreError> for IpcError {
+    fn from(source: crate::vault::store::StoreError) -> IpcError {
+        IpcError { kind: ErrorKind::Io, message: source.to_string() }
+    }
+}
+
 impl IpcError {
     /// The window asked for a search mode Jott cannot ask np for. The message names every label that works, because
     /// the person reading it is the one who has to say which they meant.
