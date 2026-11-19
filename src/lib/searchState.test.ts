@@ -254,3 +254,29 @@ describe('the widening offer needs evidence that words were tried', () => {
     expect(suggestPrefix({ indexed: true, hits: [], keywordUsed: null }, 'grand', false)).toBe(true)
   })
 })
+
+describe('what an empty meanings-only answer says on np 0.6.0', () => {
+  // note-processor#11 was fixed in np 0.6.0 by *saying something*: `mode:"semantic"` with the artifact installed and
+  // nothing embedded now answers a document carrying `reason: "semantic-without-vectors"` and a sentence of its own,
+  // where 0.5.1 answered `"result": null`. Jott already prefers np's sentence when it sends one (that is §4, and
+  // `consentHelp.ts` takes the same posture) — but an empty list used to be exempt, so the upgrade would have traded
+  // a real explanation for "Nothing matched", which is Jott contradicting an answer it was just given.
+  const npSentence =
+    'no vectors in this workspace: a meanings-only search has nothing to rank and no keyword half to fall back on — `np models fetch` or `np embed` adds the semantic half'
+
+  it('prints np’s own sentence instead of guessing when it sent one', () => {
+    expect(emptySearchSentence({ indexed: true, notice: npSentence }, 'kestrel', 0)).toBe(npSentence)
+  })
+
+  it('still keeps its own wording for a folder that was never scanned', () => {
+    // np's sentence for that state is "run `np scan …`", and the person reading this line is holding a window with an
+    // *Index now* button in it. A note must not cost them the instruction they can actually follow.
+    const sentence = emptySearchSentence({ indexed: false, notice: 'index the folder first' }, 'kestrel', 3)
+    expect(sentence).toContain('not indexed yet')
+    expect(sentence).toContain('Index now')
+  })
+
+  it('says nothing matched when np said nothing', () => {
+    expect(emptySearchSentence({ indexed: true }, 'kestrel', 0)).toBe('Nothing matched “kestrel”.')
+  })
+})

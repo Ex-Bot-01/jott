@@ -25,7 +25,16 @@ export type SearchFacts = {
  * this is holding a window with an "Index now" button in it.
  */
 export function emptySearchSentence(facts: SearchFacts, query: string, notesAwaitingIndex: number): string {
+  // An unscanned folder keeps Jott's own sentence even if np sent one. np's is "run `np scan …`", and the person
+  // reading this line is holding a window with an *Index now* button: quoting a terminal command over the instruction
+  // they can actually follow would be the worse service. Checked first, deliberately, so a note cannot displace it.
   if (facts.indexed === false) return notIndexedSentence(notesAwaitingIndex)
+  // np 0.6.0 answered note-processor#11 by saying something: an empty meanings-only search now arrives with
+  // `reason: "semantic-without-vectors"` and a sentence naming the command that would change it, where 0.5.1 answered
+  // `"result": null`. §4 is quote np's words when it sends them — and printing "Nothing matched" over an explanation
+  // Jott was just handed would replace a fact with a guess.
+  const notice = facts.notice?.trim()
+  if (notice) return notice
   if (facts.indexed === true) return `Nothing matched “${query}”.`
   // Nothing said: fall back to what the tree's own markers know rather than guessing from silence.
   return noResultsSentence(query, notesAwaitingIndex)
