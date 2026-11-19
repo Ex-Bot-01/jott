@@ -24,6 +24,14 @@ tauri = { version = "2", features = ["devtools"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-opener = "2"
+# One Jott per user account. Two processes on one vault each believe they own it: both hold their own
+# `BufferedWriter` state and both write the same stamp file, so a note one window marked done can reappear as
+# *waiting* after the other writes, and the registry — rewritten whole — loses whichever recents entry the slower
+# process had never loaded. `App::open` already refuses two sessions inside one process for this reason; the
+# reasoning stopped at the process boundary. Also the honest answer for M1, since `App` holds one session slot and
+# `capabilities/default.json` scopes every permission to a window named `main`: a second window on a second vault
+# is not a thing this app can do yet.
+tauri-plugin-single-instance = "2"
 # Remember the window size and position between runs. The plan asked for the window to come back to the
 # folder it had; coming back to the shape it had is the other half of "it is where I left it".
 tauri-plugin-window-state = "2"
