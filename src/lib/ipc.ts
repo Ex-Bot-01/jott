@@ -198,6 +198,9 @@ export interface IpcError {
     | 'reservedName'
     | 'noVault'
     | 'npGone'
+    /** np answered and Jott could not read the answer — a report missing a key. Its own kind because `npGone` tells
+     *  someone to install a program that is running, which is the v0.0.6 mistake all over again (issue #11). */
+    | 'npShape'
     | 'npRefused'
     | 'npTooOld'
     /** Jott was asked for a search mode it cannot spell to note-processor. Its own verdict, raised at the boundary:

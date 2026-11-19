@@ -1219,3 +1219,31 @@ async fn a_rescan_that_finds_np_busy_is_asked_again() {
         h.calls()
     );
 }
+
+/// Issue #11, the queue's half of it. A scan answer Jott cannot read is not a scan that happened: nothing may be
+/// marked indexed on the strength of it, and the status line has to say what became of the person's notes instead of
+/// quoting serde at them. The walk also stays owed — see the comment in `cycle` — because a deleted note would
+/// otherwise sit in np's index until some unrelated save started another pass.
+#[tokio::test]
+async fn an_unreadable_scan_marks_nothing_and_says_so() {
+    let _turn = SERIAL.lock().await;
+    let mut short = fixture_result(2);
+    assert!(short.as_object_mut().expect("an object").remove("modified").is_some(), "the fixture carries the key this removes");
+    let h = Harness::new(json!({ "replies": { "scan": short } })).await;
+    let queue = h.queue();
+    let mut rx = queue.events();
+
+    queue.note_saved("notes/a.md");
+    let events = collect(&mut rx, Duration::from_millis(900)).await;
+
+    let message = events
+        .iter()
+        .find_map(|e| match e {
+            IngestEvent::Refused { message } => Some(message.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("an unreadable answer must arrive as Refused: {events:?}"));
+    assert!(message.contains("modified"), "the key name survives into the sentence: {message}");
+    assert!(message.contains("nothing was marked indexed"), "and it says what happened to the notes: {message}");
+    assert_eq!(h.state("notes/a.md"), StampState::Waiting, "a report nobody read invents no state (§12)");
+}

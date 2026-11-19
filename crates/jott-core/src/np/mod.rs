@@ -9,6 +9,7 @@ pub mod pool;
 pub mod resolve;
 
 pub use handshake::{check_version, NpFeatures, NpInfo};
+pub use outcomes::{is_shape_fault, SHAPE_FAULT_CODE};
 pub use outcomes::{
     EmbedOutcome, EmbedReport, Hit, ImageRefusal, ModelListing, PinnedModel, ModelRow, ModelState, Mode,
     ScanOutcome, ScanReport, SearchAnswer, Unindexable,

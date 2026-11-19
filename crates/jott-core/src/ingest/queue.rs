@@ -694,7 +694,24 @@ impl Worker {
                 // way tomorrow should not be asked a hundred times today, and the next save or launch
                 // asks again honestly.
                 self.put_back(&owed);
-                self.emit(IngestEvent::Refused { message: fault.message });
+                let unreadable_answer = crate::np::is_shape_fault(&fault);
+                if unreadable_answer {
+                    // The walk stays owed. A scan Jott could not read is a scan that did not happen, and the flag
+                    // was taken at the top of this pass — dropping it here left a deleted note in np's index until
+                    // some unrelated save happened to start another cycle, which on a folder nobody types into is
+                    // never. A refusal does *not* get this: np said no, and asking again on the next empty pass is
+                    // how a disabled embedding setting turns into a loop.
+                    self.state.rescan = true;
+                }
+                let message = if unreadable_answer {
+                    // This sentence reaches a status line, and serde's "missing field `modified`" alone reads like a
+                    // programming error with no consequence stated. The key name stays — it is the whole answer to
+                    // "what did np change?" when somebody sends the log — beside what just happened to their notes.
+                    format!("{} — nothing was marked indexed; Jott will ask again when something changes", fault.message)
+                } else {
+                    fault.message
+                };
+                self.emit(IngestEvent::Refused { message });
                 return;
             }
         };

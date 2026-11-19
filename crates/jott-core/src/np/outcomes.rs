@@ -50,16 +50,33 @@ impl Mode {
     }
 }
 
+/// The code Jott uses for an answer it could not read. See [`shape_fault`].
+pub const SHAPE_FAULT_CODE: i32 = -32099;
+
 /// A result document that is not shaped like the method that sent it.
 ///
-/// `-32603` is np's own internal-error code, borrowed here because the honest reading is the
-/// same: the protocol broke somewhere past our control. The message names the missing key, so
-/// a log line says what to go and look at rather than "unexpected response".
+/// This used to borrow `-32603`, np's own internal-error code, on the reasoning that the honest reading was the
+/// same. It is not, and the consequence was the one this repo has been burned by before: `IpcError::np_fault` maps
+/// `-32603` to `NpGone`, whose whole meaning is "np is not there — go install it", so a future np that renamed one
+/// counter in its scan answer would have every search answered "could not reach np" while np sat there answering
+/// requests, and indexing would stop for the session behind a sentence telling someone to fix something that was
+/// already fixed. `-32099` sits inside JSON-RPC's server-error range and is not a code note-processor sends (see
+/// `tests/np_methods.rs` for the fixture's real answers), so it cannot be mistaken for words from the other side.
 fn shape_fault(method: &str, what: impl std::fmt::Display) -> NpFault {
     NpFault {
-        code: -32603,
+        code: SHAPE_FAULT_CODE,
         message: format!("np's {method} result is not shaped like one: {what}"),
     }
+}
+
+/// True when the fault means *np answered, and the answer was missing something Jott needs to read it*.
+///
+/// Worth a predicate rather than a code comparison at each call site because two places need to know, and they need
+/// to know different things: the IPC boundary turns it into a kind that does not tell the person to install np, and
+/// the ingest queue keeps the walk owed — a scan that could not be read is not a scan that happened, so dropping the
+/// flag would leave a deleted note in np's index until some unrelated save started a cycle.
+pub fn is_shape_fault(fault: &NpFault) -> bool {
+    fault.code == SHAPE_FAULT_CODE
 }
 
 /// `locked` as np writes it: its own three-key document (`command`, `locked`, `waited_ms`) and
