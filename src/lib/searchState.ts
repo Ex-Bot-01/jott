@@ -1,3 +1,5 @@
+import { hitHalfPhrase } from './scoreLabel'
+
 /**
  * What the search box knows that a `search_vault` answer does not: which request an answer belongs to, and what
  * the folder's state means about an empty list.
@@ -97,11 +99,15 @@ export function wideningSentence(facts: { prefixUsed: boolean | null; prefixTerm
   return terms.length === 0 ? 'also matched word beginnings' : `also matched word beginnings (${terms.join(', ')})`
 }
 
-/** The mark beside a row that np reached by a word beginning. Only `false` gets one: `true` is an ordinary match, and
-    `null` is a hit np never word-tested — a meaning-only result has no word to compare against, so marking it would
-    accuse the reader's typing of something nobody checked. */
-export function hitSuffix(matchedExactly: boolean | null): string | null {
-  return matchedExactly === false ? 'from the start of a word' : null
+/** The mark beside a row that says which half of search reached it — `hitHalfPhrase` owns the wording so the visible
+    suffix and the accessible name cannot drift apart (`scoreLabel.ts`).
+
+    All three of np's answers now say something. `null` used to be silent on the reasoning that marking a meaning-only
+    hit would "accuse the reader's typing of something nobody checked", but silence turned out to cost more: the row
+    then looked identical to an exact-word match, and its meaning figure was the only number there to read. Measured in
+    note-processor#19 how badly that misleads — four unrelated notes sit about 0.03 cosine apart for a one-word query. */
+export function hitSuffix(hit: { matchedExactly: boolean | null; cosine: number | null }): string | null {
+  return hitHalfPhrase(hit)
 }
 
 /** Should the empty answer offer word-beginning matching? Only in the one situation where pressing it can change

@@ -855,6 +855,25 @@ exists`. It is upstream (note-processor#18), it happens with 0.5.1 inside as wel
 Filed as jott#23 with the transcripts. My measurement is about one try in eight — if you can make it happen twice in a
 row in a real folder, that is a different finding and I want to hear about it.
 
+## 2b-zf. Since 0.0.30: a result row says which half of search found it
+
+Search results now carry a small mark on the rows that need one: **"from the start of a word"** (np widened your word,
+as before) and **"by meaning only"** (nothing in this note matched your words — np reached it through vectors). Rows
+where the typed words were simply there stay unmarked.
+
+1. **Search for one word that is definitely in one note** — a surname, a project name. That note should be first and
+   carry no mark. Anything below it marked *by meaning only* was reached without your words at all.
+2. **Now the honest test of what meanings are worth.** Search the same word with the engine set to *meanings only*. In
+   my folder of four German notes (a birthday table, a recipe, a shopping list, three lines of chatter) that put a note
+   containing neither word on top: cosine 0.7195 against the calendar's 0.7101 — nine thousandths apart, which is
+   nothing. Two words (`Geburtstag Familie`) separated them by 0.09 and the right note won. So if a meanings-only list
+   looks arbitrary to you for a one-word query, it is not you; that is what this model does, and `note-processor#19`
+   carries the measurements. Hovering a meaning figure now says so in as many words.
+3. **Nothing about your index changed.** No re-index, no re-embed, same np 0.6.0 inside. This is a window change only.
+
+If you think the new mark is noise on your results — for instance because nearly every row gets one and the pane looks
+busy — tell me which kind of folder that is. It is a fair criticism and the wording is not sacred.
+
 ## 4. The question only Windows can answer: write-lock contention
 
 np takes a lock on the workspace while it indexes, and on Windows that lock is a file others cannot open.

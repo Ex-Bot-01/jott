@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { SCORE_TITLE, figuresNote, formatScore, meaningLabel, rowLabel, rowFigures, scoreTitleFor } from './scoreLabel'
+import { hitSuffix } from './searchState'
 
 describe('the note-processor score on a result row', () => {
   it('prints the number note-processor actually sent, at three significant digits', () => {
@@ -47,8 +48,11 @@ describe('the accessible name of a result row', () => {
   })
 
   it('mentions the meaning figure only when there was one', () => {
-    expect(rowLabel({ path: 'a.md', snippet: 'x', score: 0.01, cosine: 0.82 })).toContain('meaning 0.82')
-    expect(rowLabel({ path: 'a.md', snippet: 'x', score: 0.01, cosine: null })).not.toContain('meaning')
+    expect(rowLabel({ path: 'a.md', snippet: 'x', score: 0.01, cosine: 0.82, matchedExactly: true })).toContain('meaning 0.82')
+    // `matchedExactly: true` is what a keyword hit always carries (np sets the flag from its own word test), so this
+    // fixture is the shape np sends. A row with no cosine *and* no word test describes a half that never ran, which is
+    // why the phrase for it — issue #25 — appears in its own test below rather than here.
+    expect(rowLabel({ path: 'a.md', snippet: 'x', score: 0.01, cosine: null, matchedExactly: true })).not.toContain('meaning')
   })
 
   it('strips note-processors own highlight marks rather than reading them as words', () => {
@@ -130,5 +134,37 @@ describe('one measurement, printed once', () => {
     // The rule compares np's numbers, not their printed forms: `0.8274` and `0.8273` both read "0.83" but came from
     // different places, and hiding one would be hiding a measurement.
     expect(rowFigures({ score: 0.8274, cosine: 0.8273 }).rank).toBe('0.827')
+  })
+})
+
+describe('the band a meaning figure sits in (issue #25)', () => {
+  // Recorded from np 0.6.0 with `embeddinggemma-2` over four unrelated German notes: the three-line note scored
+  // cosine 0.7195 against the query `Familie` while the family birthday calendar behind it scored 0.7101. Printed bare,
+  // those two figures read as a ranking. They are not one: see note-processor#19 for the table.
+  const meaningOnly = { score: 0.7195, cosine: 0.7195 }
+
+  it('says what the figures look like in practice wherever one is drawn', () => {
+    const title = scoreTitleFor(meaningOnly)
+    expect(title).toContain('hundredths')
+    expect(title).toContain('0.63')
+    expect(title.toLowerCase()).toContain('one word')
+  })
+
+  it('rides along on a fused row too, because that row draws the meaning figure as well', () => {
+    const hybrid = { score: 0.032522, cosine: 0.7164 } // keyword rank 1 + semantic rank 2, measured
+    expect(scoreTitleFor(hybrid)).toContain('hundredths')
+  })
+
+  it('says nothing about meanings on a row where vectors never ran', () => {
+    expect(scoreTitleFor({ score: 0.93, cosine: null })).not.toContain('hundredths')
+  })
+
+  it('tells the accessible name which half reached the row', () => {
+    // `aria-label` replaces the row's text for a screen reader, so the visible suffix has to travel here too or the
+    // explanation exists only for people with a mouse.
+    const hit = { path: 'Hallo.md', snippet: 'Hi', score: 0.016393, cosine: 0.7195 }
+    expect(rowLabel({ ...hit, matchedExactly: null })).toContain(hitSuffix({ matchedExactly: null, cosine: 0.7195 })!)
+    expect(rowLabel({ ...hit, matchedExactly: false })).toContain(hitSuffix({ matchedExactly: false, cosine: 0.7195 })!)
+    expect(rowLabel({ ...hit, matchedExactly: true })).not.toContain('by meaning only')
   })
 })
