@@ -1300,7 +1300,13 @@
           <li>
             <button
               type="button"
-              aria-label={rowLabel({ path: hit.path, snippet: hit.snippet, score: hit.score, cosine: hit.cosine })}
+              aria-label={rowLabel({
+                path: hit.path,
+                snippet: hit.snippet,
+                score: hit.score,
+                cosine: hit.cosine,
+                matchedExactly: hit.matchedExactly,
+              })}
               onclick={() => void openNote(hit.path, searchQuery.trim())}
             >
               <span class="hit-path">{hit.path}</span>
@@ -1329,10 +1335,13 @@
                   </span>
                 {/if}
               </span>
-              {#if hitSuffix(hit.matchedExactly)}
-                <!-- np reached this note by a word beginning, so the row says which kind of match it is. Only rows np
-                     marked `matched_exactly: false` get one — a meaning-only hit was never word-tested (§4). -->
-                <span class="hit-kind">{hitSuffix(hit.matchedExactly)}</span>
+              {#if hitSuffix(hit) !== null}
+                <!-- Which half of search reached this row. np marks a widened word match (`matched_exactly: false`),
+                     and a row that carries a cosine but no word test came out of the vector list — issue #25 gave that
+                     second case words, because drawn bare it looked like an exact-word match and its `meaning 0.72`
+                     invited a comparison the figures cannot support (note-processor#19). A row where np said neither
+                     stays unmarked: two absences are not a finding. -->
+                <span class="hit-kind">{hitSuffix(hit)}</span>
               {/if}
             </button>
           </li>

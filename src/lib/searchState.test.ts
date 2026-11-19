@@ -136,17 +136,29 @@ describe('what np widened', () => {
 
 describe('a row reached by a word beginning', () => {
   it('is marked when np says it was not an exact match', () => {
-    expect(hitSuffix(false)).toContain('start of a word')
+    expect(hitSuffix({ matchedExactly: false, cosine: null })).toContain('start of a word')
   })
 
   it('is unmarked when it matched what was typed', () => {
-    expect(hitSuffix(true)).toBeNull()
+    expect(hitSuffix({ matchedExactly: true, cosine: null })).toBeNull()
   })
 
-  it('is unmarked when np never word-tested it', () => {
-    // A vector-only hit has no words to compare. Marking it "start of a word" would accuse the reader's typing of
-    // something that was never tested, which is the opposite error from hiding a widened row.
-    expect(hitSuffix(null)).toBeNull()
+  it('says so when np never word-tested it, rather than staying silent', () => {
+    // A vector-only hit has no words to compare, so "start of a word" would accuse the reader's typing of something
+    // nobody tested — that part of the old reasoning stands. What did not stand was drawing no mark at all: the row
+    // then read as an exact-word match, and its `meaning 0.72` was the only figure on it. Measured in
+    // note-processor#19 how far apart those two rows really are (issue #25).
+    const suffix = hitSuffix({ matchedExactly: null, cosine: 0.7195 })
+    expect(suffix).not.toBeNull()
+    expect(suffix).not.toContain('start of a word')
+    expect(suffix).toContain('by meaning')
+  })
+
+  it('claims nothing when np sent neither a word test nor a vector figure', () => {
+    // Two absences are not a finding. A backend without the flag at all answers `matched_exactly: null` for its
+    // keyword rows too, and Jott refuses those builds today — but "by meaning only" would still be a claim about a
+    // measurement nobody reported, so the row stays unmarked.
+    expect(hitSuffix({ matchedExactly: null, cosine: null })).toBeNull()
   })
 })
 
@@ -280,3 +292,4 @@ describe('what an empty meanings-only answer says on np 0.6.0', () => {
     expect(emptySearchSentence({ indexed: true }, 'kestrel', 0)).toBe('Nothing matched “kestrel”.')
   })
 })
+

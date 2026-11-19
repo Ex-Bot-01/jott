@@ -26,6 +26,27 @@ const SIMILARITY_TITLE =
 const KEYWORD_TITLE =
   'how strongly this note matched your words — note-processor’s keyword ranking (SQLite’s bm25, flipped so a larger number sits nearer the top). Not a percentage.'
 
+/** Which half of search reached this row, in words a person can act on.
+ *
+ *  np answers `matched_exactly` three ways and the third one used to print nothing at all: `true` (the typed word is
+ *  in the bytes), `false` (np widened to a word beginning) and `null` (**this row was never word-tested** — it came
+ *  from the meanings list). Drawn without a mark, a meaning-only row looks exactly like an exact-word match, with its
+ *  `meaning 0.72` as the only figure on it, which is how a tester came to compare two rows that were never comparable:
+ *  measured in note-processor#19, four unrelated notes sit within about 0.03 cosine of a one-word query. The row now
+ *  says which half produced it, so the figures stop being asked to settle an argument they cannot (issue #25).
+
+ *  The `null` case is decided from **two** of np's fields rather than one, because "no word test" and "this build has
+ *  no word-test flag" arrive as the same absence; see the body.
+ */
+export function hitHalfPhrase(hit: { matchedExactly: boolean | null; cosine: number | null }): string | null {
+  if (hit.matchedExactly === false) return 'from the start of a word'
+  // The claim needs np's own evidence, not just the missing flag: `matched_exactly: null` *and* a cosine both mean
+  // this row came out of the vector list. Absence alone would speak for a backend that never had the flag at all —
+  // Jott refuses those below 0.5.1, but a window should not be in the business of concluding things from silence (§4).
+  if (hit.matchedExactly === null && hit.cosine !== null && Number.isFinite(hit.cosine)) return 'by meaning only'
+  return null
+}
+
 /** Which measurement np's `score` holds for this row, read off what np itself sent.
  *
  *  Note-processor assigns the field three different ways (`search.rs:1226-1231`): a fused rank in hybrid search, the
@@ -44,16 +65,25 @@ export function scoreMeaning(hit: { score: number; cosine: number | null }): Sco
   return 'fused'
 }
 
+/** What the meaning figures look like in practice, quoted with its provenance rather than as a rule.
+ *
+ *  Recorded here on note-processor 0.6.0 with the pinned `embeddinggemma-2`: four unrelated notes (a birthday table,
+ *  a recipe, a shopping list, three lines of chatter) all sat between 0.63 and 0.78 similar to any query in the same
+ *  language, and a search for one word left about 0.03 between them — the three-line note came back at 0.7195 against
+ *  the family calendar's 0.7101. Two words separated the same notes by more than 0.05. `note-processor#19` carries the
+ *  table. This is one model's measured behaviour, not a threshold Jott applies: it travels in a tooltip, where it can
+ *  inform a reading of np's own figure without becoming a ranking nobody validated.
+ */
+const MEANING_BAND =
+  ' · what these meaning figures look like: measured on note-processor 0.6.0 with embeddinggemma-2 over four unrelated notes, every one sat between about 0.63 and 0.78 similar to any query in the same language, and a search for one word left roughly 0.03 between them — differences in the hundredths are not a ranking to act on.'
+
 /** The tooltip's first sentence for this row: what the number beside it actually measured. */
 export function scoreTitleFor(hit: { score: number; cosine: number | null }): string {
-  switch (scoreMeaning(hit)) {
-    case 'similarity':
-      return SIMILARITY_TITLE
-    case 'keyword':
-      return KEYWORD_TITLE
-    case 'fused':
-      return SCORE_TITLE
-  }
+  const title =
+    scoreMeaning(hit) === 'similarity' ? SIMILARITY_TITLE : scoreMeaning(hit) === 'keyword' ? KEYWORD_TITLE : SCORE_TITLE
+  // Only rows where vectors ran draw a meaning figure, so only those rows explain it. A keyword-only row gets the band
+  // on no account: saying "0.63 to 0.78" beside a figure that is bm25 would be Jott confusing two measurements.
+  return hit.cosine === null || !Number.isFinite(hit.cosine) ? title : title + MEANING_BAND
 }
 
 /** The figures to draw beside a row, with one measurement never drawn twice.
@@ -91,7 +121,13 @@ function stripMarks(snippet: string): string {
  * except a tooltip is a mouse affordance. So the explanation travels in the accessible name too, and the meaning figure
  * appears there only when np sent one.
  */
-export function rowLabel(row: { path: string; snippet: string | null; score: number; cosine: number | null }): string {
+export function rowLabel(row: {
+  path: string
+  snippet: string | null
+  score: number
+  cosine: number | null
+  matchedExactly?: boolean | null
+}): string {
   const parts = [row.path]
   const snippet = row.snippet === null ? '' : stripMarks(row.snippet).trim()
   if (snippet !== '') parts.push(snippet)
@@ -99,6 +135,10 @@ export function rowLabel(row: { path: string; snippet: string | null; score: num
   const figures = rowFigures(row)
   const shown = [figures.rank, figures.meaning].filter((piece): piece is string => piece !== null).join(', ')
   parts.push(shown === '' ? 'no figure' : shown)
+  // `aria-label` replaces the row's own text for a screen reader, so the visible suffix has to be said here as well or
+  // the explanation of which half answered exists only for somebody with a mouse. One wording, from one place.
+  const half = hitHalfPhrase({ matchedExactly: row.matchedExactly ?? null, cosine: row.cosine })
+  if (half !== null) parts.push(half)
   parts.push(
     scoreMeaning(row) === 'similarity'
       ? 'similarity, not a percentage'
