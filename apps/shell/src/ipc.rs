@@ -400,9 +400,13 @@ pub async fn rename_entry(from: String, to: String, app: State<'_, App>) -> Resu
     // The session is taken out here rather than inside the closure: `State` borrows the managed value for the
     // request's lifetime, and a blocking task must own everything it touches. `Arc` is what makes that cheap.
     let session = app.current()?;
+    // Kept for the refusal path: `to` moves into the blocking closure, and a join failure still has to name the
+    // note the person asked about. (CI found this: borrowing `to` after the move is E0382, and nothing on this box
+    // can compile the shell to tell me before push.)
+    let asked_for = to.clone();
     tauri::async_runtime::spawn_blocking(move || session.rename_entry(&from, &to))
         .await
-        .map_err(|e| IpcError::io(to.as_str(), e))?
+        .map_err(|e| IpcError::io(&asked_for, e))?
 }
 
 #[tauri::command]
