@@ -142,7 +142,13 @@ impl App {
     async fn open(&self, handle: &AppHandle, path: &Path) -> Result<VaultListing, IpcError> {
         // Register first, always: it is what notices a folder sitting inside another np vault, and that
         // sentence belongs in the listing a re-pick returns as much as in the first one (§8.2).
-        let warning = self.store.register(path).ok().flatten();
+        //
+        // And refuse here, before anything is switched. This line used to end `.ok().flatten()`, which read
+        // `NotADirectory` as "no warning" and replaced a working session with one aimed at a folder somebody had
+        // already deleted — the window went on drawing the old rows while every command after it answered "is not a
+        // folder I can open", until *Open…* picked a folder that exists (issue #2). A pick that cannot be honoured
+        // now leaves the vault that was working exactly where it was, and answers with the registry's own sentence.
+        let warning = self.store.register(path)?;
         let nested = match warning {
             Some(RegisterWarning::NestedVault { parent }) => Some(format!(
                 "{} is inside another np vault ({}) — indexing here builds a second index",
@@ -455,7 +461,8 @@ pub async fn set_consent(granted: bool, app: State<'_, App>) -> Result<ConsentAn
     let receipt = session.answer_consent(granted).await;
     app.store
         .set_consent(session.vault(), if granted { Consent::Granted } else { Consent::Declined })
-        .map_err(|e| IpcError::io("", e.to_string()))?;
+        // The registry's sentence, unchanged: it already names the folder and what is wrong with it.
+        .map_err(IpcError::from)?;
     Ok(ConsentAnswerDto::from(receipt))
 }
 
