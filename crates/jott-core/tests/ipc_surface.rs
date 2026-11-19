@@ -2429,6 +2429,16 @@ async fn quitting_asks_the_child_that_was_started_at_startup_and_never_claimed()
         .await
         .expect("the close-out returns on its own");
 
+    // Polled, not asserted inline: `shutdown_within` waits for the child to exit, but `closed` is set by the
+    // reader task when stdout reaches EOF, which lands a moment later — and on a loaded runner that moment is
+    // long enough to fail a test about a child that did in fact shut down. Same patience as
+    // `a_session_adopts_the_child_the_app_already_started`, which learned this first.
+    for _ in 0..40 {
+        if warm.is_closed() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
     assert!(warm.is_closed(), "a warm child nobody claimed was left running");
     drop(scenario_dir);
 }

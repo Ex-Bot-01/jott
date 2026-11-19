@@ -317,9 +317,10 @@ impl HashCache {
 
     /// The digest of `path`, from memory when the file has not moved since it was last read.
     pub(crate) fn inspect(&self, rel: &str, path: &Path, size: u64, mtime_ms: Option<i64>) -> Result<Seen, std::io::Error> {
-        // Keyed by the path, never by `rel`: two vaults in one run both have an `a.md`, and a copied note can
-        // match on size *and* timestamp while holding different bytes. The tree row is a name; this is a file.
-        let key = path.display().to_string();
+        // Keyed by the file, never by `rel` — see [`cache_key`], which also settles *which spelling* of the
+        // file: two vaults in one run both have an `a.md`, and a copied note can match on size *and* timestamp
+        // while holding different bytes. The tree row is a name; this is a file.
+        let key = cache_key(path);
         if let Some(seen) = self.reuse(&key, size, mtime_ms) {
             return Ok(seen);
         }
@@ -348,7 +349,7 @@ impl HashCache {
     /// same way as `inspect`: by the file, not by the row it draws in the tree.
     pub fn forget(&self, path: &Path) {
         if let Ok(mut entries) = self.entries.lock() {
-            entries.remove(path.display().to_string().as_str());
+            entries.remove(cache_key(path).as_str());
         }
     }
 
@@ -371,6 +372,47 @@ impl HashCache {
             entries.insert(key, Entry { size, mtime_ms, seen: seen.clone() });
         }
     }
+}
+
+/// The key one file is remembered under, by both code paths that name it: [`HashCache::inspect`] and
+/// [`invalidate`].
+///
+/// Two callers describe one note, and until issue #3 they spelled it differently. `WalkDir` hands over what the
+/// operating system calls it; Jott's write paths invalidate with `root.join(rel)`, and a `rel` is `/`-joined on
+/// every platform because `rel_of` keeps "the same spelling np uses". On Windows that is two strings for one
+/// file — `D:\notes\a/b.md` beside the `D:\notes\a\b.md` the walk remembered — so `forget` removed nothing and
+/// every note *below* the vault root kept the digest of the bytes a save had just replaced. A marker then reads
+/// `indexed` or `embedded` for content np never saw, resting on exactly the timestamp's resolution that
+/// `write_note_with` says it refuses to trust. Notes at the root were unaffected, which is why a shallow test
+/// vault never noticed.
+///
+/// Built from [`Path::components`] rather than by replacing `\` with `/`, because components are platform-aware:
+/// Windows splits on both separators, so the two spellings arrive here as one key, while Linux treats a backslash
+/// as an ordinary character in a name and leaves it inside its component — where a file called `a\b.md` cannot be
+/// mistaken for `a/b.md` and answer with the wrong note's digest. Redundant separators and `.` segments collapse
+/// on every platform, which is the same class of miss: one file, two spellings, one entry nobody removes.
+pub fn cache_key(path: &Path) -> String {
+    let mut key = String::new();
+    for part in path.components() {
+        if matches!(part, std::path::Component::RootDir) {
+            // "/" on unix, and the same root marker behind a `C:` prefix on Windows.
+            if !key.ends_with('/') {
+                key.push('/');
+            }
+            continue;
+        }
+        // A prefix arrives as `C:\` and a root as `\` on Windows; neither should double up against the join below.
+        let text = part.as_os_str().to_string_lossy();
+        let text = text.trim_end_matches(std::path::is_separator);
+        if text.is_empty() {
+            continue;
+        }
+        if !key.is_empty() && !key.ends_with('/') {
+            key.push('/');
+        }
+        key.push_str(text);
+    }
+    key
 }
 
 /// Forget everything this run remembered. A moved folder is the case: every note inside it changed name and
