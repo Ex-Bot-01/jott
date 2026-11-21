@@ -11,8 +11,8 @@
 //!
 //! Why this file exists beside `np_serve_args.rs`: that gate shakes hands and stops. Every np release so far was
 //! accepted on the handshake — which is exactly why it proves too little: 0.6.0 changed nothing in `initialize` and
-//! two things in what `scan` answers afterwards, and 0.5.1's headline change (#6, prefix widening) lived only in a
-//! `search` document. A release note says what np intends; this file asks whether a note Jott wrote actually comes
+//! two things in what `scan` answers afterwards, 0.6.1 changed neither, and 0.5.1's headline change (#6, prefix
+//! widening) lived only in a `search` document. A release note says what np intends; this file asks whether a note Jott wrote actually comes
 //! back.
 
 use jott_core::ipc::{self, VaultSession};
@@ -38,6 +38,10 @@ fn real_np() -> Option<PathBuf> {
 /// typing in the search box while a folder indexes for the first time can hit it, so this file used to be an
 /// occasional witness. It waits now, because a release gate that fails one run in eight teaches nobody anything; the
 /// race itself is tracked as jott#23 and deliberately not papered over here.
+///
+/// Re-checked for 0.6.1 with two children scanning ten brand-new vaults at once: no refusal on either build, so the
+/// race did not reproduce. That is "did not see it today", not "fixed" — it came up about once in eight inside Jott's
+/// real flow, and #18 stays open until np says schema creation is serialised.
 async fn await_indexed(session: &std::sync::Arc<VaultSession>, rel: &str) {
     for _ in 0..120 {
         let listing = session.listing().expect("the tree lists");
@@ -94,9 +98,10 @@ async fn a_real_np_indexes_a_note_jott_just_wrote_and_finds_it_again() {
         None => panic!("no hit for a word written into the note seconds ago: {:?}", answers),
     };
     assert_eq!(rel, "grandmother.md", "np indexes against the vault-relative name (§18.6)");
-    // `Option<bool>`, because "did not say" and "said no" are different sentences (§4). np 0.6.0 still answers it,
-    // and says yes: the word is in the bytes verbatim, so this is an exact match rather than a widened one.
-    assert_eq!(exact, Some(true), "an exact hit stays exact on np 0.6.0");
+    // `Option<bool>`, because "did not say" and "said no" are different sentences (§4). np answers it on both shipped
+    // candidates, and says yes: the word is in the bytes verbatim, so this is an exact match rather than a widened one
+    // — the distinction every result row's mark is built on.
+    assert_eq!(exact, Some(true), "an exact hit stays exact on the np being shipped");
 
     // Closing is part of the gate: §11's close-out asks np to shut down rather than killing it holding its index
     // open, which on Windows is the difference between a clean next launch and lock friction.
@@ -105,9 +110,10 @@ async fn a_real_np_indexes_a_note_jott_just_wrote_and_finds_it_again() {
         .expect("the close-out returns on its own");
 }
 
-/// 0.6.0 added `attachments` and `attachment_examples` to the same document Jott parses strictly. Here the point is
-/// not that the keys exist — `np_methods.rs` pins that against recorded bytes — but that a vault holding them still
-/// indexes and searches end to end, so a strict reader cannot turn a new key into stopped indexing (issue #11).
+/// 0.6.0 added `attachments` and `attachment_examples` to the same document Jott parses strictly, and 0.6.1 answers
+/// with them too. Here the point is not that the keys exist — `np_methods.rs` pins that against recorded bytes — but
+/// that a vault holding them still indexes and searches end to end, so a strict reader cannot turn a new key into
+/// stopped indexing (issue #11).
 #[tokio::test]
 async fn a_vault_full_of_attachments_still_indexes_and_searches() {
     let _turn = SERIAL.lock().await;

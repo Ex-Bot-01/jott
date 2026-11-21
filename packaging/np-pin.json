@@ -1,18 +1,18 @@
 {
   "_comment": "The np binary Jott ships inside its installer. Pinned by version AND hash: `scripts/fetch-np` refuses an asset whose sha256 differs, so a tampered or half-downloaded release fails the build instead of becoming somebody's note index. Bump all fields together; the hashes are the ones in that release's own SHA256SUMS.txt (verified here with `sha256sum -c` against the downloaded asset, not copied from a page).",
-  "version": "0.6.0",
-  "release": "https://github.com/Ex-Bot-01/note-processor/releases/download/v0.6.0",
-  "sums": "https://github.com/Ex-Bot-01/note-processor/releases/download/v0.6.0/SHA256SUMS.txt",
+  "version": "0.6.1",
+  "release": "https://github.com/Ex-Bot-01/note-processor/releases/download/v0.6.1",
+  "sums": "https://github.com/Ex-Bot-01/note-processor/releases/download/v0.6.1/SHA256SUMS.txt",
   "assets": {
     "x86_64-pc-windows-msvc": {
-      "archive": "np-0.6.0-x86_64-pc-windows-gnu-cross.zip",
+      "archive": "np-0.6.1-x86_64-pc-windows-gnu-cross.zip",
       "binary": "np.exe",
-      "sha256": "c776fc8f8f1bb71a0ca07d8c2cb9521fc6d0dc8ac3642f642a288b630b8c9d4b"
+      "sha256": "cc54b917a3f80ab4b9829236805b873bc098570f77d62984868daf379b23164a"
     },
     "x86_64-unknown-linux-gnu": {
-      "archive": "np-0.6.0-x86_64-unknown-linux-gnu.tar.gz",
+      "archive": "np-0.6.1-x86_64-unknown-linux-gnu.tar.gz",
       "binary": "np",
-      "sha256": "7e7b8acf292625ea2274bf6f2dfc43a263fa3b1d6fcba25f791bf2d6fa937e8a"
+      "sha256": "f3fc23f784756630a2b521fd74bce0f849d40f022bcd4a6b2eb31ac2e8acbd76"
     }
   }
 }

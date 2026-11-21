@@ -67,12 +67,16 @@ export function scoreMeaning(hit: { score: number; cosine: number | null }): Sco
 
 /** What the meaning figures look like in practice, quoted with its provenance rather than as a rule.
  *
- *  Recorded here on note-processor 0.6.0 with the pinned `embeddinggemma-2`: four unrelated notes (a birthday table,
- *  a recipe, a shopping list, three lines of chatter) all sat between 0.63 and 0.78 similar to any query in the same
- *  language, and a search for one word left about 0.03 between them — the three-line note came back at 0.7195 against
- *  the family calendar's 0.7101. Two words separated the same notes by more than 0.05. `note-processor#19` carries the
- *  table. This is one model's measured behaviour, not a threshold Jott applies: it travels in a tooltip, where it can
- *  inform a reading of np's own figure without becoming a ranking nobody validated.
+ *  Recorded here on note-processor 0.6.0 and re-measured byte for byte on 0.6.1 with the pinned `embeddinggemma-2`:
+ *  four unrelated notes (a birthday table, a recipe, a shopping list, three lines of chatter) all sat between 0.63 and
+ *  0.78 similar to any query in the same language, and a search for one word left about 0.03 between them — the
+ *  three-line note came back at 0.7195 against the family calendar's 0.7140. Two words separated the same notes by more
+ *  than 0.05. `note-processor#19` carries the table. This is one model's measured behaviour, not a threshold Jott
+ *  applies: it travels in a tooltip, where it can inform a reading of np's own figure without becoming a ranking
+ *  nobody validated.
+ *
+ *  The pair is quoted from one index, and a second index of nearly the same notes put the calendar four thousandths
+ *  elsewhere. That drift is not a reason to drop the sentence — it is a second example of the thing the sentence says.
  */
 const MEANING_BAND =
   ' · what these meaning figures look like: measured on note-processor 0.6.0 with embeddinggemma-2 over four unrelated notes, every one sat between about 0.63 and 0.78 similar to any query in the same language, and a search for one word left roughly 0.03 between them — differences in the hundredths are not a ranking to act on.'
