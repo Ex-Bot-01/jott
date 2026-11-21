@@ -163,3 +163,62 @@ async fn a_vault_full_of_attachments_still_indexes_and_searches() {
 }
 
 static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Issue #29's promise against the binary that actually ships, not a stand-in: a note changed **outside** Jott has
+/// to reach np by itself. Before the fix this test spent its whole budget waiting — the editor reloaded the text,
+/// the watcher reported the path, and nothing downstream ever asked np to look, which left a green marker and an
+/// `up to date` status line describing bytes np had never read.
+#[tokio::test]
+async fn a_real_np_notices_a_note_changed_outside_jott() {
+    let _turn = SERIAL.lock().await;
+    let Some(path) = real_np() else {
+        eprintln!("JOTT_REAL_NP unset: skipping the real-session check");
+        return;
+    };
+
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let vault = tmp.path().join("vault");
+    std::fs::create_dir_all(&vault).expect("vault folder");
+
+    let source = NpSource::Bundled(path);
+    let (warm, info) = ipc::read_np_info_warm(&source).await.expect("the real np answers the handshake");
+    let session = VaultSession::open_in_with(
+        source,
+        info,
+        Some(warm),
+        &vault,
+        Consent::Declined,
+        None,
+        tmp.path().join("appdata"),
+    );
+
+    session.save_note("shelf.md", "# Shelf\n\nNothing on it yet.\n").expect("the note saves");
+    session.ingest_all();
+    await_indexed(&session, "shelf.md").await;
+
+    // Wait out Jott's own-write window first — §14 keeps a path Jott itself wrote quiet for 200 ms so the watcher
+    // does not report our save back as somebody else's change. Measured while writing this gate: with one small
+    // note, np indexes fast enough that `await_indexed` comes back ~30 ms after the save, and an edit made in the
+    // next breath lands inside that window and is swallowed — correctly, but it measures the suppression instead of
+    // the wiring. A second editor does not write in Jott's own 200 ms; neither does this test.
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
+    // Somebody else edits the file: no save inside Jott, no manual "Index now", nothing typed in the window.
+    std::fs::write(vault.join("shelf.md"), "# Shelf\n\nThe quarkkessel stands where the jug was.\n")
+        .expect("outside edit");
+
+    // The marker has to come back on its own — `state_of` reads the digest on disk, so this waits for the *new*
+    // bytes rather than accepting the old stamp.
+    await_indexed(&session, "shelf.md").await;
+
+    let answers = session.search("quarkkessel", 8, false, "keyword").await.expect("search answers");
+    assert!(
+        answers.hits.iter().any(|hit| hit.path == "shelf.md"),
+        "words written outside Jott never reached np: {:?}",
+        answers.hits.iter().map(|hit| (&hit.path, hit.matched_exactly)).collect::<Vec<_>>()
+    );
+
+    tokio::time::timeout(Duration::from_secs(20), session.close())
+        .await
+        .expect("the close-out returns on its own");
+}

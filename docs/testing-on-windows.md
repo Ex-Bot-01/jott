@@ -916,6 +916,33 @@ index can race on schema creation) and `note-processor#19` (one-word queries lea
 cosine). #18 did not reproduce for me in ten two-child rounds on either build, which is not the same as fixed — it came
 up about once in eight inside Jott's real flow before.
 
+## 2b-zh. An edit made **outside** Jott now reaches the index (issue #29)
+
+This one was found by testing 0.0.31, and it is older than that release: change a note in Notepad, VS Code, Syncthing
+or `sed`, and Jott reloaded the text on screen but never told note-processor. The row stayed green, the status line said
+**up to date**, and searching for a word you had just typed into the file returned other notes marked *by meaning only*
+— because np was still answering from bytes that no longer existed. Measured before the fix: a stamp recording
+`ea76570b…` for a file reading `c0766e69…`.
+
+What to check, in a folder that is already indexed:
+
+1. **Edit a note somewhere else and save it there.** Within about two seconds the note should be re-indexed: search
+   for a word you just typed and the note comes back with **no mark** on its row — an exact word match — instead of
+   being missing.
+2. **Then look at the marker.** If your folder has embeddings on, the dot goes green again once the new bytes are
+   embedded; while it is waiting it is blue, not green. A green dot beside bytes np never read was the bug.
+3. **Touch a file without changing it** — open it and save with no edit, or run a formatter that changes nothing.
+   Nothing should be sent to np at all: identical bytes are not a debt. If your status line shows an indexing pass on
+   every Ctrl+S even when you typed nothing, tell me.
+4. **A note in a subfolder counts too**, and so does a file Jott cannot index: dropping a photo into the folder must
+   not start an indexing pass, and neither should note-processor rewriting its own `INDEX.md`.
+
+The last two are the fences that keep this from becoming the loop a tester logged once — 6,885 scans in 142 seconds,
+because np renames a temporary into place on every pass and that used to read as "somebody deleted a note". If your
+vault has a sync client that rewrites files constantly (Syncthing, Dropbox, OneDrive on a busy folder), this is the
+change worth watching: coalescing happens in the queue, so a sweep of forty notes should look like one indexing pass,
+not forty.
+
 ## 4. The question only Windows can answer: write-lock contention
 
 np takes a lock on the workspace while it indexes, and on Windows that lock is a file others cannot open.
