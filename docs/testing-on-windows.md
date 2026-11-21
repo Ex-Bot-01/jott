@@ -139,7 +139,7 @@ Two more things to report on:
 
 ## 2b-iii. Since 0.0.13: the np inside is 0.4.0, and search stopped guessing
 
-*(Historic: Jott ships np 0.6.0 since 0.0.29, so read every `0.4.0` and `0.5.1` below as `0.6.0`. The behaviours asked for in §2b-v still apply; §2b-ze adds what 0.6.0 changes on top.)*
+*(Historic: Jott ships np 0.6.1 since 0.0.31 — 0.6.0 from 0.0.29 — so read every `0.4.0` and `0.5.1` below as the shipped build. The behaviours asked for in §2b-v still apply; §2b-ze adds what 0.6.0 changed, and §2b-zg is what 0.6.1 adds on top: nothing you can see, which is exactly what to check.)*
 
 Four things to check, all of them about what the window claims:
 
@@ -865,14 +865,56 @@ where the typed words were simply there stay unmarked.
    carry no mark. Anything below it marked *by meaning only* was reached without your words at all.
 2. **Now the honest test of what meanings are worth.** Search the same word with the engine set to *meanings only*. In
    my folder of four German notes (a birthday table, a recipe, a shopping list, three lines of chatter) that put a note
-   containing neither word on top: cosine 0.7195 against the calendar's 0.7101 — nine thousandths apart, which is
-   nothing. Two words (`Geburtstag Familie`) separated them by 0.09 and the right note won. So if a meanings-only list
-   looks arbitrary to you for a one-word query, it is not you; that is what this model does, and `note-processor#19`
-   carries the measurements. Hovering a meaning figure now says so in as many words.
+   containing neither word on top: cosine 0.7195 against the calendar's 0.7140 — five thousandths apart, which is
+   nothing. Two words (`Geburtstag Familie`) separated them by more than 0.05 and the right note won. So if a
+   meanings-only list looks arbitrary to you for a one-word query, it is not you; that is what this model does, and
+   `note-processor#19` carries the measurements. Hovering a meaning figure now says so in as many words.
+
+   *(Those two figures are from the folder's own index, re-measured on both np 0.6.0 and np 0.6.1 with bit-identical
+   results; an earlier draft of this line quoted 0.7101 for the calendar, which came from a differently built index of
+   a near-identical folder. The gap moved by four thousandths between two indexes of nearly the same notes — which is
+   the whole point of the sentence above.)*
 3. **Nothing about your index changed.** No re-index, no re-embed, same np 0.6.0 inside. This is a window change only.
 
 If you think the new mark is noise on your results — for instance because nearly every row gets one and the pane looks
 busy — tell me which kind of folder that is. It is a fair criticism and the wording is not sacred.
+
+## 2b-zg. Since 0.0.31: the backend is np 0.6.1, and the test is that you notice nothing
+
+The np inside Jott went from **0.6.0** to **0.6.1**. Upstream spent that release splitting files and deleting comment
+citations — `crates/np-cli/src/main.rs` went 3,234 lines to 328 — and says nothing a client can see moved. Here is what
+I measured against the published binaries before shipping it, so you know what "nothing" was checked against:
+
+- the handshake names the same **ten methods** at **protocol 1** with the same features;
+- `scan`, `search`, `links.list`, `models.list`, `status.get` and `shutdown` answer documents that diff clean apart
+  from the version string, on a fixture vault holding wikilinks, an aliased link, a dead target, a subfolder link, two
+  attachments and a file named `deep%weird [x].md`;
+- `INDEX.md` comes out at the **same bytes** (`sha256 e11a2c01b67dd647…`) — including how it percent-encodes that name;
+- a prefix search still marks widened hits `matched_exactly: false`, which is what *"from the start of a word"* is keyed
+  to, and exact ones `true`;
+- **a folder indexed and embedded by 0.6.0 opens with every note `unchanged`** — no re-scan, no re-embed — and answers
+  the same queries with the same cosines to the last digit (`0.7195178188075159`, `0.7139600217985886`);
+- the download strip's feed is intact: a second child watching a fetch sees `fetching` with `bytes_done` climbing toward
+  `bytes_total 309855456`.
+
+What to look for, which is mostly absence:
+
+1. **The About line reads `note-processor (np) 0.6.1`.** If it still says 0.6.0 after installing 0.0.31, the installer
+   did not carry the pinned asset and I want the `logs/jott.jsonl` line that names `np_path`.
+2. **Your folder does not re-index.** Open a vault you indexed under 0.0.29 or 0.0.30: the tree should keep its green
+   dots immediately, with no "indexing" pass and no re-embed of the model. A full re-embed here would mean np decided
+   your stored vectors were stale, and that is a bug worth a report.
+3. **Search behaves exactly as it did** — same order, same figures, same *by meaning only* marks. If a number moves at
+   all, note it: the maths is supposed to be bit-identical, and "the ranking changed after a backend bump" is one of
+   the few findings I would treat as serious here.
+4. **The download bar still works if you have a machine that has never fetched the model** (delete nothing — just a
+   second Windows account or a fresh vault with embeddings on). Bold sentence, moving bar, and it should read
+   `downloading embeddinggemma-2 · N of 295 MiB`.
+
+Two things I did **not** pretend were fixed, because they are not: `note-processor#18` (two children creating a brand-new
+index can race on schema creation) and `note-processor#19` (one-word queries leave the whole folder inside ~0.03 of
+cosine). #18 did not reproduce for me in ten two-child rounds on either build, which is not the same as fixed — it came
+up about once in eight inside Jott's real flow before.
 
 ## 4. The question only Windows can answer: write-lock contention
 

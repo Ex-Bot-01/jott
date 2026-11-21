@@ -26,13 +26,24 @@ pub const MIN_NP_VERSION: (u64, u64, u64) = (0, 5, 1);
 /// named in `packaging/np-pin.json`; `the_hint_names_the_np_the_installer_ships` fails if the two disagree, because
 /// a hint that sends someone to fetch a build Jott then refuses is worse than no hint.
 ///
-/// 0.6.0 (note-processor#12, #13, #14, #15), checked against the published Linux binary rather than against its
-/// release page: protocol still `1`, the same ten methods in the handshake, and an existing `.np/index.db` opened by
-/// the new build with every note `unchanged` — no re-scan, no re-embed. Two keys appear on a `scan` answer
-/// (`attachments`, `attachment_examples`) and Jott ignores both: `ScanReport` has no `deny_unknown_fields`, so an
-/// added key is silence rather than a fault, which is the direction of tolerance issue #11 wanted kept. The floor
-/// stays 0.5.1 on purpose — nothing here needs 0.6.0, and raising it would refuse a person whose np is fine.
-pub const NP_RELEASE_VERSION: &str = "0.6.0";
+/// 0.6.1, checked against the published Linux binary rather than against its release page. It replaces 0.6.0
+/// (note-processor#12, #13, #14, #15), which was checked the same way.
+///
+/// What "checked" produced for 0.6.1, measured against 0.6.0's own published asset on two identical fixture vaults:
+/// the handshake names the same ten methods at protocol `1` with the same features; `scan`, `search`, `links.list`,
+/// `models.list`, `status.get` and `shutdown` answer documents that diff clean apart from the version string;
+/// `INDEX.md` comes out at the same bytes (`sha256 e11a2c01b67dd647…`); a prefix search still marks widened hits
+/// `matched_exactly: false`, which is what a result row's "from the start of a word" is keyed to; and a vault
+/// indexed *and embedded* by 0.6.0 opens with every note `unchanged` — no re-scan, no re-embed — answering the same
+/// queries with the same cosines to the last digit (`0.7195178188075159`, `0.7139600217985886`). The download strip's
+/// feed is intact too: a second child watching a fetch sees `fetching` with `bytes_done` climbing toward
+/// `bytes_total 309855456`.
+///
+/// Two keys appeared on a `scan` answer back in 0.6.0 (`attachments`, `attachment_examples`) and Jott still ignores
+/// both: `ScanReport` has no `deny_unknown_fields`, so an added key is silence rather than a fault, which is the
+/// direction of tolerance issue #11 wanted kept. The floor stays 0.5.1 on purpose — nothing here needs 0.6.x, and
+/// raising it would refuse a person whose np works.
+pub const NP_RELEASE_VERSION: &str = "0.6.1";
 
 /// The floor as a sentence fragment: `0.5.1`. Spelled once so a refusal and an install hint cannot quote different
 /// numbers at the same person.
