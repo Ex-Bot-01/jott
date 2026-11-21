@@ -753,6 +753,22 @@ impl VaultSession {
                             .clone()
                             .record_local(&LocalRecord::new("rescan").with_rel(&rel).with_detail("gone from disk"));
                         queue.paths_changed();
+                    } else if vault.join(&rel).exists() && watch::could_be_indexed(&rel) {
+                        // Somebody edited a note we did not write. Before this branch existed the news stopped one
+                        // line later — at the window's `vault://changed` broadcast — so the editor showed the new
+                        // text while np went on answering from bytes that were no longer on disk. Measured in the
+                        // packaged v0.0.31: stamps still claiming `ea76570b…` for a file reading `c0766e69…`, every
+                        // marker green, the status line reading `up to date`, and a search for a word typed verbatim
+                        // into the note returning six rows all marked *by meaning only* (issue #29).
+                        //
+                        // `note_saved` rather than `paths_changed`: it queues one path and decides at batch time,
+                        // from bytes against stamp, whether anything is owed — so an editor that rewrites identical
+                        // bytes on focus costs no round trip, and a sync client's sweep of forty notes coalesces in
+                        // the queue's debounce instead of buying forty scans. `SelfWrites` already swallowed our own
+                        // saves before they got here (§14), and `could_be_indexed` keeps np's `INDEX.md.tmp` churn
+                        // and everything non-markdown out, which is the same pair of fences that ended the
+                        // 6,885-scans-in-142-seconds loop above.
+                        queue.note_saved(&rel);
                     }
                     let _ = sink.send(rel);
                 }
