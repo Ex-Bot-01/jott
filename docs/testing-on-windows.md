@@ -972,7 +972,7 @@ result reordered** (≈3.4 s at 5). That is why it is a second step — what to 
 
 np keeps the model **per folder**, like everything else it stores: a second vault downloads its own copy.
 
-## 2b-zj. Not released yet: versions and sync, through the git you install
+## 2b-zj. Since 0.0.33: versions and sync, through the git you install
 
 Jott ships no git. **Settings → Versions & sync** finds the one on the machine, or says where to get it
 (<https://git-scm.com/downloads>, or `winget install --id Git.Git -e --source winget`). Design:
