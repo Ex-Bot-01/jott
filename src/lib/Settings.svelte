@@ -10,6 +10,9 @@
   import { meaningsNotice } from './searchState'
   import { manualSteps, rerankerSummary, topNAccepted, topNValue } from './rerankStatus'
   import type { RerankerStatus } from './ipc'
+  import type { HistoryStatus } from './ipc'
+  import type { HistoryAction } from './history'
+  import HistorySection from './HistorySection.svelte'
   import { openUrl } from '@tauri-apps/plugin-opener'
 
   let {
@@ -32,6 +35,11 @@
     onrerankinstall,
     ontopn,
     onconsent,
+    history = null,
+    vaultOpen = true,
+    historyBusy = false,
+    historyError = null,
+    onhistory = () => {},
     onClose,
   }: {
     mode: SearchMode
@@ -55,6 +63,12 @@
     onrerankinstall: () => void
     ontopn: (n: number) => void
     onconsent: (granted: boolean) => void
+    /** Versions and sync for the open folder; `null` until core has answered. */
+    history?: HistoryStatus | null
+    vaultOpen?: boolean
+    historyBusy?: boolean
+    historyError?: string | null
+    onhistory?: (action: HistoryAction) => void
     onClose: () => void
   } = $props()
 
@@ -250,6 +264,8 @@
       </button>
     </div>
   </fieldset>
+
+  <HistorySection status={history} {vaultOpen} busy={historyBusy} error={historyError} {onhistory} />
 </div>
 
 <style>

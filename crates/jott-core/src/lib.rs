@@ -9,6 +9,7 @@ pub mod app_config;
 pub mod app_paths;
 pub mod diagnostics;
 pub mod hashes;
+pub mod history;
 pub mod ipc;
 pub mod ingest;
 pub mod np;

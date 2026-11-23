@@ -198,6 +198,12 @@ const noLog = vi.hoisted(() => ({ current: false }))
 /** The window's event listeners, so a test can be the backend: fire `ingest://event` and watch what the tree
  *  does about it. */
 const handlers = vi.hoisted(() => new Map<string, (payload: unknown) => void>())
+/** What core says about versions. `null` answers like a core without the command (rejects), so every older test runs
+ *  exactly as before; the history tests set a status, and record what the window asked to restore. */
+const historyStub = vi.hoisted(() => ({
+  status: null as Record<string, unknown> | null,
+  restored: [] as Record<string, unknown>[],
+}))
 
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: (cmd: string, args?: Record<string, unknown>) => {
@@ -528,6 +534,20 @@ vi.mock('@tauri-apps/api/core', () => ({
         return Promise.resolve({ moved: [], linkReport: null })
       case 'save_note':
         return Promise.resolve({ hash: 'b'.repeat(64), mtimeMs: 1_700_000_000_500 })
+      case 'history_status':
+      case 'history_enable':
+        if (historyStub.status === null) return Promise.reject({ kind: 'noVault', message: 'no vault is open' })
+        if (cmd === 'history_enable') historyStub.status = { ...historyStub.status, enabled: true }
+        return Promise.resolve(historyStub.status)
+      case 'history_versions':
+        return Promise.resolve([
+          { id: 'a'.repeat(40), at: 1_700_000_000, message: 'Jott: saved inbox.md', rel: 'inbox.md' },
+        ])
+      case 'history_version_text':
+        return Promise.resolve('an older line\n')
+      case 'history_restore':
+        historyStub.restored.push({ ...(args ?? {}) })
+        return Promise.resolve({ hash: 'd'.repeat(64), mtimeMs: 1_700_000_001_000 })
       case 'list_vault':
         if (session.current === null) {
           // With no session open, core refuses rather than inventing an empty listing (`app.current()?` in the shell).
@@ -672,6 +692,37 @@ function rule(source: string, selector: string): string {
   return source.slice(at, source.indexOf('}', at))
 }
 
+/** A whole `HistoryStatus`, as core sends it: git found, history off, nothing in the folder yet. */
+function historyFixture(over: Record<string, unknown> = {}): Record<string, unknown> & { git: Record<string, unknown> } {
+  return {
+    git: {
+      found: true,
+      path: 'C:\\Program Files\\Git\\cmd\\git.exe',
+      version: '2.56.0.windows.2',
+      source: 'usual',
+      configured: null,
+      problem: null,
+      install: { url: 'https://git-scm.com/downloads', commands: ['winget install --id Git.Git -e --source winget'] },
+    },
+    enabled: false,
+    existing: 'nothing',
+    insideTop: null,
+    layout: null,
+    cloud: null,
+    identity: { name: 'Test Person', email: 'test@example.com' },
+    remote: null,
+    syncOffered: true,
+    quietSecs: 60,
+    syncOnOpenClose: false,
+    tooLarge: [],
+    lastVersionAtMs: null,
+    pending: false,
+    lastSync: null,
+    problem: null,
+    ...over,
+  } as Record<string, unknown> & { git: Record<string, unknown> }
+}
+
 async function start(): Promise<{ errors: unknown[]; app: Component }> {
   document.body.innerHTML = '<div id="app"></div><div id="boot"><p>Jott is starting…</p></div>'
   const errors: unknown[] = []
@@ -728,6 +779,8 @@ describe('the window mounts', () => {
     // one's first window asks for — and it would look like the feature working.
     localStorage.clear()
     handlers.clear()
+    historyStub.status = null
+    historyStub.restored.length = 0
     // The window asks the desktop for its colour scheme; jsdom has no `matchMedia`, so an unstubbed call is an
     // unhandled error after the test finished — which Vitest counts as a failed run over passing tests.
     media.reset()
@@ -3309,6 +3362,104 @@ describe('the window mounts', () => {
     const stillOpen = document.querySelector('#rel') as HTMLInputElement | null
     expect(stillOpen, 'a refused rename keeps its dialog').not.toBeNull()
     expect(stillOpen!.value, 'and the name that was typed').toBe('taken.md')
+    expect(errors).toEqual([])
+  })
+
+  it('offers versions once, and says where to get git when there is none', async () => {
+    scenario.current = 'vault'
+    historyStub.status = historyFixture({
+      git: { ...historyFixture().git, found: false, path: null, version: null, source: null, problem: 'git is not installed on this computer, or Jott cannot find it' },
+      existing: 'unknown',
+    })
+    const { errors, app } = await start()
+
+    const hint = await vi.waitFor(() => {
+      const el = document.querySelector('[data-testid="history-hint"]')
+      expect(el, 'a folder without versions hears about them once').not.toBeNull()
+      return el!
+    }, { timeout: 2000 })
+    expect(hint.textContent).toContain('once git is installed')
+    ;(document.querySelector('[data-testid="history-hint-open"]') as HTMLButtonElement).click()
+
+    const section = await vi.waitFor(() => {
+      const el = document.querySelector('[data-testid="history-offer"]')
+      expect(el, 'Settings says what git would add').not.toBeNull()
+      return el!.closest('fieldset')!
+    }, { timeout: 2000 })
+    expect(section.textContent).toContain('https://git-scm.com/downloads')
+    expect(section.textContent).toContain('winget install --id Git.Git')
+    expect(section.querySelector('[data-testid="git-check"]'), 'and finds it again without a restart').not.toBeNull()
+    expect(document.querySelector('[data-testid="history-hint"]')).toBeNull()
+
+    // Said once: a new window over the same storage does not say it again.
+    unmount(app)
+    await start()
+    await vi.waitFor(() => expect(commands).toContain('history_status'), { timeout: 2000 })
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    expect(document.querySelector('[data-testid="history-hint"]')).toBeNull()
+    expect(errors).toEqual([])
+  })
+
+  it('restores an earlier version of the open note through core and reloads it', async () => {
+    scenario.current = 'vault'
+    historyStub.status = historyFixture({ enabled: true, layout: 'inVault', lastVersionAtMs: 1_700_000_000_000 })
+    const { errors } = await start()
+
+    let row!: HTMLElement
+    await vi.waitFor(() => {
+      row = document.querySelector('.tree button[data-kind="Note"]') as HTMLElement
+      expect(row, 'the fixture has a note').not.toBeNull()
+    }, { timeout: 2000 })
+    row.click()
+    const versions = await vi.waitFor(() => {
+      const el = document.querySelector('[data-testid="editor-versions"]') as HTMLButtonElement | null
+      expect(el, 'a folder with history offers the note’s versions beside it').not.toBeNull()
+      return el!
+    }, { timeout: 2000 })
+    versions.click()
+
+    const version = await vi.waitFor(() => {
+      const el = document.querySelector('[data-testid="version-row"]') as HTMLButtonElement | null
+      expect(el).not.toBeNull()
+      return el!
+    }, { timeout: 2000 })
+    version.click()
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="versions-diff"]')?.textContent).toContain('an older line'), {
+      timeout: 2000,
+    })
+    const reads = commands.filter((c) => c === 'read_note').length
+    ;(document.querySelector('[data-testid="version-restore"]') as HTMLButtonElement).click()
+
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="versions"]'), 'the panel closes once it is done').toBeNull(), {
+      timeout: 2000,
+    })
+    expect(historyStub.restored).toHaveLength(1)
+    expect(historyStub.restored[0]).toMatchObject({ id: 'a'.repeat(40), versionRel: 'inbox.md' })
+    expect(commands.filter((c) => c === 'read_note').length, 'the editor re-reads what core wrote').toBeGreaterThan(reads)
+    expect(errors).toEqual([])
+  })
+
+  it('closes the versions panel on Escape and leaves the note open behind it', async () => {
+    scenario.current = 'vault'
+    historyStub.status = historyFixture({ enabled: true, layout: 'inVault' })
+    const { errors } = await start()
+    await vi.waitFor(() => expect(document.querySelector('.tree button[data-kind="Note"]')).not.toBeNull(), { timeout: 2000 })
+    ;(document.querySelector('.tree button[data-kind="Note"]') as HTMLElement).click()
+    const versions = await vi.waitFor(() => {
+      const el = document.querySelector('[data-testid="editor-versions"]') as HTMLButtonElement | null
+      expect(el).not.toBeNull()
+      return el!
+    }, { timeout: 2000 })
+    versions.click()
+    const panel = await vi.waitFor(() => {
+      const el = document.querySelector('[data-testid="versions"]') as HTMLElement | null
+      expect(el).not.toBeNull()
+      return el!
+    }, { timeout: 2000 })
+
+    panel.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    await vi.waitFor(() => expect(document.querySelector('[data-testid="versions"]')).toBeNull(), { timeout: 2000 })
+    expect(document.querySelector('[data-testid="editor-close"]'), 'one press, one thing: the note stays').not.toBeNull()
     expect(errors).toEqual([])
   })
 

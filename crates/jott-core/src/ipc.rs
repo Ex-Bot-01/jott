@@ -12,6 +12,7 @@
 
 use crate::sync::guarded;
 use crate::diagnostics::{now_ms, Journal, LocalRecord, RequestRecord, Trace, TraceEvent, TraceKind};
+use crate::history::{History, HistoryFault, HistoryStatus};
 use crate::ingest::queue::{IngestEvent, IngestQueue};
 use crate::np::handshake::NpInfo;
 use crate::np::pool::NpPool;
@@ -71,6 +72,12 @@ pub enum ErrorKind {
     /// compiler between them, so an unknown label has to arrive as a sentence naming what is accepted, not as a
     /// silent `hybrid`.
     BadMode,
+    /// No git Jott can use: none installed, the one chosen in Settings does not run, or it is older than the floor.
+    /// The sentence names which, and the Settings panel carries the install route.
+    GitMissing,
+    /// A versions or sync step did not happen: git's own sentence, or Jott's reason (a login in a remote address, a
+    /// vault inside somebody else's repository, a remote whose history is unrelated).
+    History,
     Io,
 }
 
@@ -99,6 +106,16 @@ impl From<FileError> for IpcError {
 impl From<crate::vault::store::StoreError> for IpcError {
     fn from(source: crate::vault::store::StoreError) -> IpcError {
         IpcError { kind: ErrorKind::Io, message: source.to_string() }
+    }
+}
+
+impl From<HistoryFault> for IpcError {
+    fn from(fault: HistoryFault) -> IpcError {
+        let kind = match fault {
+            HistoryFault::GitMissing(_) => ErrorKind::GitMissing,
+            HistoryFault::History(_) => ErrorKind::History,
+        };
+        IpcError { kind, message: fault.to_string() }
     }
 }
 
@@ -476,6 +493,9 @@ pub struct VaultSession {
     stop: Arc<std::sync::atomic::AtomicBool>,
     /// The ranking model's download or install, when Jott started one for this vault. One at a time.
     reranker_job: Arc<Mutex<RerankerJob>>,
+    /// Versions and sync. Idle — no git run at all — until history is turned on or the Settings panel asks.
+    history: Arc<History>,
+    history_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 /// What Jott itself is doing about the reranker's bytes. np's marker says what np is doing; this says which child
@@ -593,8 +613,11 @@ impl VaultSession {
             watch_task: Mutex::new(None),
             stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             reranker_job: Arc::new(Mutex::new(RerankerJob::default())),
+            history: Arc::new(History::new(&crate::vault::store::to_abs(vault), &data)),
+            history_task: Mutex::new(None),
         });
         session.start_watching();
+        session.start_history();
         session
     }
 
@@ -746,6 +769,7 @@ impl VaultSession {
         let vault = self.vault.clone();
         let queue = self.queue.clone();
         let journal = self.journal.clone();
+        let history = self.history.clone();
         // `next_change` waits on an OS channel with a deadline, so it belongs on a blocking thread: an
         // async task that slept a second at a time would hold a worker hostage. One second is also the
         // longest the pump can be told to stop — a task aborted mid-wait loses that one event, which the
@@ -763,6 +787,8 @@ impl VaultSession {
                 // window hears about an outside edit. Task 8's watcher coalesces at a longer interval than
                 // this anyway, so it never adds a visible lag of its own.
                 if let Some(rel) = watch.next_change(Duration::from_millis(100)) {
+                    // Any change, ours or anybody's, is owed a version once things are quiet. Cheap: a timestamp.
+                    history.touch();
                     // A file deleted or moved outside Jott leaves the same ghost as one deleted inside it:
                     // the tree re-walks when the window re-lists, but np's index does not, and its own rule
                     // is to mark a gone path stale rather than retire it. Checked rather than assumed — the
@@ -892,6 +918,7 @@ impl VaultSession {
         self.local(LocalRecord::new("save").with_rel(rel).with_bytes(text.len() as u64));
         let _ = buffers::clear_mirror_in(&self.data, &self.vault, rel);
         self.queue.note_saved(rel);
+        self.history.touch();
         self.write_result(rel)
     }
 
@@ -900,6 +927,7 @@ impl VaultSession {
         files::create_note(&self.vault, rel).map_err(IpcError::from)?;
         self.local(LocalRecord::new("created").with_rel(rel));
         self.queue.note_saved(rel);
+        self.history.touch();
         self.write_result(rel)
     }
 
@@ -942,6 +970,7 @@ impl VaultSession {
         // The new name is owed an embed; the *old* one needs the folder walked, or np keeps answering for a
         // path that is no longer there. A move is not a deletion — np reports `moved` and relinks the row.
         self.queue.paths_changed();
+        self.history.touch();
         Ok(RenameOutcome { incoming_links: report.incoming_links.into_iter().map(LinkRefDto::from).collect() })
     }
 
@@ -952,6 +981,7 @@ impl VaultSession {
         self.local(LocalRecord::new("moved").with_rel(to).with_detail(format!("from {from}")));
         self.queue.note_saved(to);
         self.queue.paths_changed();
+        self.history.touch();
         Ok(())
     }
 
@@ -966,6 +996,7 @@ impl VaultSession {
         // is running. Without this the note stays in search results until some later save walks the folder —
         // which is the "I deleted it and it is still in my list of found files" report.
         self.queue.paths_changed();
+        self.history.touch();
         Ok(where_it_went)
     }
 
@@ -1457,6 +1488,10 @@ impl VaultSession {
         if let Some(task) = guarded(&self.watch_task).take() {
             task.abort();
         }
+        if let Some(task) = guarded(&self.history_task).take() {
+            task.abort();
+        }
+        self.close_history().await;
         // The queue drains its own in-flight pass and closes the pool, at its cap (§11). Bounded here too,
         // because a window that cannot close is worse than one that closes while np finishes thinking.
         let queue = self.queue.clone();
@@ -1561,6 +1596,259 @@ impl VaultSession {
     }
 }
 
+/// Versions and sync (design: `docs/superpowers/specs/2026-11-23-git-versions-and-sync-design.md`). Every git call
+/// runs on a blocking thread: a push waiting on a login prompt must not hold up the window.
+impl VaultSession {
+    /// How often the timer asks whether a version is owed. The quiet period itself is the person's setting.
+    const HISTORY_TICK: Duration = Duration::from_secs(5);
+    /// Closing waits this long for a last version (and a sync, when chosen) — within the same quit budget as the
+    /// queue's drain. A push that takes longer carries on in git's own process after Jott has gone.
+    const HISTORY_CLOSE_CAP: Duration = Duration::from_secs(4);
+
+    pub fn history(&self) -> &Arc<History> {
+        &self.history
+    }
+
+    /// The timer that makes versions once the vault has been quiet, and the sync on open when somebody chose it.
+    /// Holds the session weakly, so a session nobody holds is not kept alive by its own timer.
+    fn start_history(self: &Arc<Self>) {
+        let weak = Arc::downgrade(self);
+        let handle = tokio::spawn(async move {
+            if let Some(session) = weak.upgrade() {
+                let settings = session.history.settings();
+                if settings.enabled && settings.sync_on_open_close {
+                    session.sync_in_background().await;
+                }
+            }
+            loop {
+                tokio::time::sleep(Self::HISTORY_TICK).await;
+                let Some(session) = weak.upgrade() else { break };
+                if session.stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
+                if session.history.due() {
+                    session.version_in_background().await;
+                }
+            }
+        });
+        *guarded(&self.history_task) = Some(handle);
+    }
+
+    async fn on_history<T: Send + 'static>(
+        &self,
+        work: impl FnOnce(&History) -> T + Send + 'static,
+    ) -> Result<T, IpcError> {
+        let history = self.history.clone();
+        tokio::task::spawn_blocking(move || work(&history))
+            .await
+            .map_err(|e| IpcError { kind: ErrorKind::History, message: format!("the versions task stopped: {e}") })
+    }
+
+    async fn version_in_background(&self) {
+        let Ok(result) = self.on_history(|h| h.version_now(None)).await else { return };
+        self.record_version(&result);
+    }
+
+    async fn sync_in_background(&self) {
+        let Ok(result) = self.on_history(|h| h.has_remote().then(|| h.sync())).await else { return };
+        if let Some(result) = result {
+            self.record_sync(&result);
+        }
+    }
+
+    /// One journal line per version: how many paths, never which words.
+    fn record_version(&self, result: &Result<jott_history::CommitOutcome, HistoryFault>) {
+        match result {
+            Ok(outcome) if outcome.version.is_some() => {
+                self.local(LocalRecord::new("version").with_detail(format!("{} paths", outcome.paths.len())));
+            }
+            Ok(_) => {}
+            Err(fault) => self.local(LocalRecord::new("version-failed").with_detail(fault.to_string())),
+        }
+    }
+
+    fn record_sync(&self, result: &Result<jott_history::SyncOutcome, HistoryFault>) {
+        use jott_history::SyncOutcome;
+        match result {
+            Ok(outcome) => {
+                let detail = match outcome {
+                    SyncOutcome::UpToDate => "up to date".to_string(),
+                    SyncOutcome::Pushed { commits } => format!("pushed {commits}"),
+                    SyncOutcome::Pulled { commits, paths } => format!("pulled {commits}, {} paths", paths.len()),
+                    SyncOutcome::Merged { pulled, pushed, paths, kept_both } => format!(
+                        "pulled {pulled}, pushed {pushed}, {} paths, {} kept both",
+                        paths.len(),
+                        kept_both.len()
+                    ),
+                };
+                self.local(LocalRecord::new("sync").with_detail(detail));
+                // Notes changed on disk: the watcher reports them to the window, and np is told to look again.
+                if matches!(outcome, SyncOutcome::Pulled { .. } | SyncOutcome::Merged { .. }) {
+                    self.queue.paths_changed();
+                }
+            }
+            Err(fault) => self.local(LocalRecord::new("sync-failed").with_detail(fault.to_string())),
+        }
+    }
+
+    async fn close_history(&self) {
+        let settings = self.history.settings();
+        if !settings.enabled {
+            return;
+        }
+        let history = self.history.clone();
+        let sync = settings.sync_on_open_close;
+        let work = tokio::task::spawn_blocking(move || {
+            let version = history.version_now(None);
+            let synced = (sync && history.has_remote()).then(|| history.sync());
+            (version, synced)
+        });
+        if let Ok(Ok((version, synced))) = tokio::time::timeout(Self::HISTORY_CLOSE_CAP, work).await {
+            self.record_version(&version);
+            if let Some(synced) = synced {
+                self.record_sync(&synced);
+            }
+        }
+    }
+
+    pub async fn history_status(&self) -> Result<HistoryStatus, IpcError> {
+        self.on_history(|h| h.status()).await
+    }
+
+    /// Look for git again — the "Check again" button, after somebody installed it.
+    pub async fn history_check_git(&self) -> Result<HistoryStatus, IpcError> {
+        self.on_history(|h| {
+            h.check_git();
+            h.status()
+        })
+        .await
+    }
+
+    /// Use the git at `path`, or search again when `None`.
+    pub async fn history_set_git_path(&self, path: Option<String>) -> Result<HistoryStatus, IpcError> {
+        self.on_history(move |h| h.set_git_path(path.as_deref()).map(|()| h.status()))
+            .await?
+            .map_err(|e| IpcError::io("git.json", e))
+    }
+
+    pub async fn history_enable(&self) -> Result<HistoryStatus, IpcError> {
+        let (result, status) = self.on_history(|h| (h.enable(), h.status())).await?;
+        let first = result?;
+        self.local(LocalRecord::new("history-on").with_detail(match status.layout {
+            Some(jott_history::Layout::AppData) => "repository in app data",
+            _ => "repository in the folder",
+        }));
+        if let Some(outcome) = first {
+            self.record_version(&Ok(outcome));
+        }
+        Ok(status)
+    }
+
+    pub async fn history_disable(&self) -> Result<HistoryStatus, IpcError> {
+        let status = self.on_history(|h| {
+            h.disable();
+            h.status()
+        })
+        .await?;
+        self.local(LocalRecord::new("history-off"));
+        Ok(status)
+    }
+
+    pub async fn history_set_identity(&self, name: String, email: String) -> Result<HistoryStatus, IpcError> {
+        let (result, status) = self.on_history(move |h| (h.set_identity(&name, &email), h.status())).await?;
+        self.record_version(&result);
+        result?;
+        Ok(status)
+    }
+
+    pub async fn history_set_options(&self, quiet_secs: u64, sync_on_open_close: bool) -> Result<HistoryStatus, IpcError> {
+        self.on_history(move |h| {
+            h.set_options(quiet_secs, sync_on_open_close);
+            h.status()
+        })
+        .await
+    }
+
+    /// "Save a version now". A failure lands in the status's `problem`, where the panel already shows it.
+    pub async fn history_version_now(&self) -> Result<HistoryStatus, IpcError> {
+        let (result, status) = self.on_history(|h| (h.version_now(None), h.status())).await?;
+        self.record_version(&result);
+        Ok(status)
+    }
+
+    /// The versions of one note, newest first, across renames.
+    pub async fn history_versions(&self, rel: String) -> Result<Vec<jott_history::Version>, IpcError> {
+        files::PathGuard::new(&self.vault).resolve(&rel).map_err(IpcError::from)?;
+        Ok(self.on_history(move |h| h.versions(&rel)).await??)
+    }
+
+    /// A version's text, for the preview. `rel` is the note's path in that version.
+    pub async fn history_version_text(&self, id: String, rel: String) -> Result<String, IpcError> {
+        files::PathGuard::new(&self.vault).resolve(&rel).map_err(IpcError::from)?;
+        let shown = rel.clone();
+        let bytes = self.on_history(move |h| h.bytes_at(&id, &rel)).await??;
+        String::from_utf8(bytes)
+            .map_err(|_| IpcError { kind: ErrorKind::NotUtf8, message: format!("that version of {shown} is not text Jott can show") })
+    }
+
+    /// Put an old version back as a new one. What is on disk now is saved as a version first, so the restore itself
+    /// can be undone; then the old bytes go through `save_note` — the same atomic write as typing.
+    pub async fn history_restore(&self, rel: String, id: String, version_rel: String) -> Result<WriteResult, IpcError> {
+        let guard = files::PathGuard::new(&self.vault);
+        guard.resolve(&rel).map_err(IpcError::from)?;
+        guard.resolve(&version_rel).map_err(IpcError::from)?;
+        let short: String = id.chars().take(7).collect();
+        let (before, bytes) = self
+            .on_history(move |h| {
+                let before = h.version_now(None);
+                let bytes = before.as_ref().ok().map(|_| h.bytes_at(&id, &version_rel));
+                (before, bytes)
+            })
+            .await?;
+        self.record_version(&before);
+        before?;
+        let bytes = bytes.expect("read when the version before succeeded")?;
+        let text = String::from_utf8(bytes)
+            .map_err(|_| IpcError { kind: ErrorKind::NotUtf8, message: format!("that version of {rel} is not text Jott can edit") })?;
+        let written = self.save_note(&rel, &text)?;
+        let message = format!("Jott: restored {rel} to version {short}");
+        let after = self.on_history(move |h| h.version_now(Some(&message))).await?;
+        self.record_version(&after);
+        self.local(LocalRecord::new("restored").with_rel(&rel).with_detail(format!("version {short}")));
+        Ok(written)
+    }
+
+    pub async fn history_connect(&self, url: String) -> Result<HistoryStatus, IpcError> {
+        let (result, status) = self.on_history(move |h| (h.connect(&url), h.status())).await?;
+        result?;
+        // The host only: an address can carry a path somebody considers private, and the log is sent to others.
+        let host = status.remote.as_deref().map(remote_host).unwrap_or_default();
+        self.local(LocalRecord::new("remote-connected").with_detail(host));
+        Ok(status)
+    }
+
+    pub async fn history_disconnect(&self) -> Result<HistoryStatus, IpcError> {
+        let (result, status) = self.on_history(|h| (h.disconnect(), h.status())).await?;
+        result?;
+        self.local(LocalRecord::new("remote-disconnected"));
+        Ok(status)
+    }
+
+    /// "Sync now". The outcome — or git's sentence — is the status's `lastSync`.
+    pub async fn history_sync(&self) -> Result<HistoryStatus, IpcError> {
+        let (result, status) = self.on_history(|h| (h.sync(), h.status())).await?;
+        self.record_sync(&result);
+        Ok(status)
+    }
+}
+
+/// `https://github.com/ana/notes.git` → `github.com`; `git@gitlab.com:ana/notes.git` → `gitlab.com`.
+fn remote_host(url: &str) -> String {
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let authority = rest.split(['/', ':']).next().unwrap_or_default();
+    authority.rsplit_once('@').map_or(authority, |(_, host)| host).to_string()
+}
+
 impl Drop for VaultSession {
     fn drop(&mut self) {
         // The last handle went, so the vault is closed whether or not `close` was called. A dropped
@@ -1569,6 +1857,9 @@ impl Drop for VaultSession {
         self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
         self.stop_reranker_job();
         if let Some(task) = guarded(&self.watch_task).take() {
+            task.abort();
+        }
+        if let Some(task) = guarded(&self.history_task).take() {
             task.abort();
         }
     }

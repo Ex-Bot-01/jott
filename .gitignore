@@ -17,3 +17,5 @@ apps/shell/np/*
 .superpowers/
 .tmp/
 *.log
+
+github_credetials.md

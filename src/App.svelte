@@ -6,6 +6,8 @@
   import { onDestroy, onMount } from 'svelte'
   import About from './lib/About.svelte'
   import Settings from './lib/Settings.svelte'
+  import VersionsPanel from './lib/VersionsPanel.svelte'
+  import { canRestore, type HistoryAction } from './lib/history'
   import Diagnostics from './lib/Diagnostics.svelte'
   import Tree from './lib/Tree.svelte'
   import Editor from './lib/Editor.svelte'
@@ -276,6 +278,30 @@
   let searchMode = $state<SearchMode>(storedSettings.mode)
   /** The settings panel: the tester's "a settings menu to show this, so it isn't hidden". */
   let showSettings = $state(false)
+  /** Versions and sync for the open folder, as core last answered; `null` until asked or with no folder open. */
+  let historyState = $state<ipc.HistoryStatus | null>(null)
+  /** A git call is running. One at a time: a second press would queue a second commit or push behind the first. */
+  let historyBusy = $state(false)
+  let historyError = $state<string | null>(null)
+  /** The versions panel for the open note. */
+  let showVersions = $state(false)
+  let versionList = $state<ipc.Version[] | null>(null)
+  /** What the note says on disk when the panel opened — what a restore would replace. */
+  let versionsCurrent = $state('')
+  let versionsError = $state<string | null>(null)
+  let restoring = $state(false)
+  const HISTORY_HINT_KEY = 'jott.historyHint'
+  /** The one-time "Jott can keep versions" line. Seen once — dismissed, followed, or the panel opened — and it is gone. */
+  let historyHintSeen = $state(typeof localStorage !== 'undefined' && localStorage.getItem(HISTORY_HINT_KEY) === 'seen')
+  const historyHintShown = $derived(!historyHintSeen && !showSettings && historyState !== null && !historyState.enabled)
+  function dismissHistoryHint() {
+    historyHintSeen = true
+    try {
+      localStorage.setItem(HISTORY_HINT_KEY, 'seen')
+    } catch {
+      // No storage: the hint goes for this run and may come back once next time.
+    }
+  }
   /** While an answer to the embeddings question is in flight, both of its buttons are down. Two presses, two
    *  `embeddings.enable` calls, and np answers them in whichever order it likes. */
   let consentBusy = $state(false)
@@ -709,7 +735,7 @@
           settingsOpen: showSettings,
           aboutOpen: showAbout,
           // Both kinds of asking count: a rename dialog and the trash confirmation are dismissed the same way.
-          dialogOpen: dialog !== null || confirmDelete !== null,
+          dialogOpen: dialog !== null || confirmDelete !== null || showVersions,
           drawerOpen: showDiagnostics,
           noteOpen: selected !== null,
           typing: isTypingTarget(event.target),
@@ -722,6 +748,7 @@
           dialog = null
           confirmDelete = null
           dialogSaid = null
+          showVersions = false
         } else if (step === 'drawer') showDiagnostics = false
         else if (step === 'note') closeNote()
         return
@@ -1001,6 +1028,132 @@
     void readConsentHelp()
     const vault = listing?.vault ?? null
     if (vault) void readReranker(vault)
+  }
+
+  function errorText(error: unknown): string {
+    return typeof error === 'object' && error !== null && 'message' in error ? String((error as { message: unknown }).message) : String(error)
+  }
+
+  /** Versions and sync, as core sees them now. Quiet on failure: the section says "looking for git" until it knows. */
+  async function readHistory() {
+    const vault = listing?.vault ?? null
+    if (!vault) {
+      historyState = null
+      return
+    }
+    try {
+      const answer = await ipc.historyStatus()
+      // A late answer about the previous folder must not land on this one.
+      if (listing?.vault === vault) historyState = answer
+    } catch {
+      // No session yet, or core refused; the next open of the panel asks again.
+    }
+  }
+
+  // Asked when a folder opens (the editor's Versions button depends on it) and whenever the panel opens.
+  $effect(() => {
+    void listing?.vault
+    historyState = null
+    historyError = null
+    void readHistory()
+  })
+  $effect(() => {
+    if (showSettings) {
+      void readHistory()
+      // The section is right there now; the hint has done its job.
+      if (!historyHintSeen) dismissHistoryHint()
+    }
+  })
+
+  function runHistory(action: HistoryAction): Promise<ipc.HistoryStatus> {
+    switch (action.kind) {
+      case 'checkGit':
+        return ipc.historyCheckGit()
+      case 'setGitPath':
+        return ipc.historySetGitPath(action.path)
+      case 'enable':
+        return ipc.historyEnable()
+      case 'disable':
+        return ipc.historyDisable()
+      case 'identity':
+        return ipc.historySetIdentity(action.name, action.email)
+      case 'options':
+        return ipc.historySetOptions(action.quietSecs, action.syncOnOpenClose)
+      case 'versionNow':
+        return ipc.historyVersionNow()
+      case 'connect':
+        return ipc.historyConnect(action.url)
+      case 'disconnect':
+        return ipc.historyDisconnect()
+      case 'sync':
+        return ipc.historySync()
+    }
+  }
+
+  async function historyAction(action: HistoryAction) {
+    const vault = listing?.vault ?? null
+    if (!vault || historyBusy) return
+    historyBusy = true
+    historyError = null
+    try {
+      const answer = await runHistory(action)
+      if (listing?.vault === vault) historyState = answer
+    } catch (error) {
+      historyError = errorText(error)
+      void readHistory()
+    } finally {
+      historyBusy = false
+    }
+  }
+
+  async function openVersions() {
+    if (!selected) return
+    const rel = selected
+    showVersions = true
+    versionList = null
+    versionsError = null
+    const fresh = await call(() => ipc.readNote(rel))
+    versionsCurrent = fresh?.text ?? note?.text ?? ''
+    try {
+      const list = await ipc.historyVersions(rel)
+      if (selected === rel) versionList = list
+    } catch (error) {
+      versionsError = errorText(error)
+      versionList = []
+    }
+  }
+
+  async function versionText(version: ipc.Version): Promise<string | null> {
+    try {
+      return await ipc.historyVersionText(version.id, version.rel)
+    } catch (error) {
+      versionsError = errorText(error)
+      return null
+    }
+  }
+
+  /** Core saves what is on disk as a version first, then writes the old text through the ordinary save — so the
+   *  restore can itself be undone, and the editor reloads exactly like after a "reload from disk". */
+  async function restoreVersion(version: ipc.Version) {
+    if (!selected || restoring || !canRestore(editorPhase)) return
+    const rel = selected
+    restoring = true
+    versionsError = null
+    try {
+      await ipc.historyRestore(rel, version.id, version.rel)
+      const fresh = await ipc.readNote(rel)
+      if (selected === rel) {
+        note = fresh
+        external = { text: fresh.text, token: ++externalToken }
+        keptRel = null
+      }
+      showVersions = false
+      void readHistory()
+    } catch (error) {
+      versionsError = errorText(error)
+    } finally {
+      restoring = false
+    }
   }
 
   /** The panel's two permission buttons. The same code path as the consent card's own button — one answer, one
@@ -1651,6 +1804,20 @@
         {/if}
       </div>
     {/if}
+    {#if historyHintShown}
+      <!-- Said once, then only in Settings: versions are an offer, not a nag. -->
+      <div class="ask" role="note" data-testid="history-hint">
+        <span>
+          {historyState?.git.found
+            ? 'Jott can keep versions of your notes and bring back an earlier one.'
+            : 'Jott can keep versions of your notes, restore earlier ones and back them up — once git is installed.'}
+        </span>
+        <span>
+          <button type="button" data-testid="history-hint-open" onclick={() => { dismissHistoryHint(); void openSettings() }}>Show me</button>
+          <button type="button" data-testid="history-hint-dismiss" onclick={dismissHistoryHint}>Not now</button>
+        </span>
+      </div>
+    {/if}
     {#if dialog}
       <form
         class="ask"
@@ -1745,6 +1912,11 @@
         {#if note?.readonly}
           <span class="quiet">read-only</span>
         {/if}
+        {#if historyState?.enabled && !note?.readonly}
+          <button type="button" data-testid="editor-versions" title="Earlier versions of this note" onclick={() => void openVersions()}>
+            versions
+          </button>
+        {/if}
         <button type="button" data-testid="editor-close" title="Close this note (Escape)" onclick={closeNote}>
           close
         </button>
@@ -1827,7 +1999,26 @@
       onrerankinstall={() => void installRerankerFile()}
       ontopn={(n) => void chooseTopN(n)}
       onconsent={(granted) => void setEmbeddings(granted)}
+      history={historyState}
+      vaultOpen={listing !== null}
+      historyBusy={historyBusy}
+      historyError={historyError}
+      onhistory={(action) => void historyAction(action)}
       onClose={() => (showSettings = false)}
+    />
+  {/if}
+
+  {#if showVersions && selected !== null}
+    <VersionsPanel
+      rel={selected}
+      versions={versionList}
+      current={versionsCurrent}
+      restorable={canRestore(editorPhase)}
+      busy={restoring}
+      error={versionsError}
+      loadText={versionText}
+      onrestore={(version) => void restoreVersion(version)}
+      onClose={() => (showVersions = false)}
     />
   {/if}
 

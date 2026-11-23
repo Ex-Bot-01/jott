@@ -1911,6 +1911,7 @@ dependencies = [
 name = "jott-core"
 version = "0.0.0"
 dependencies = [
+ "jott-history",
  "notify",
  "serde",
  "serde_json",
@@ -1923,10 +1924,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "jott-history"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "jott-shell"
-version = "0.0.28"
+version = "0.0.32"
 dependencies = [
  "jott-core",
+ "jott-history",
  "serde_json",
  "tauri",
  "tauri-build",

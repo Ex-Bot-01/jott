@@ -10,6 +10,7 @@ use jott_core::about::AboutInfo;
 use jott_core::app_paths::app_data_dir;
 use jott_core::sync::guarded;
 use jott_core::diagnostics::{Journal, LocalRecord, RunRecord};
+use jott_core::history::HistoryStatus;
 use jott_core::ingest::consent::np_config_path;
 use jott_core::ingest::queue::ConsentOffer;
 use jott_core::ipc::{
@@ -20,6 +21,7 @@ use jott_core::np::client::NpClient;
 use jott_core::np::resolve::{current_os, resolve_np, NpSource};
 use jott_core::np::NpInfo;
 use jott_core::vault::store::{to_abs, Consent, RegisterWarning, VaultStore};
+use jott_history::Version;
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -351,6 +353,87 @@ pub async fn app_info(app: State<'_, App>) -> Result<AboutInfo, IpcError> {
 #[tauri::command]
 pub async fn diagnostics(app: State<'_, App>) -> Result<Diagnostics, IpcError> {
     Ok(app.current()?.diagnostics().await)
+}
+
+// ---- versions and sync: each one call into `VaultSession`, which runs git on a blocking thread ----
+
+#[tauri::command]
+pub async fn history_status(app: State<'_, App>) -> Result<HistoryStatus, IpcError> {
+    app.current()?.history_status().await
+}
+
+#[tauri::command]
+pub async fn history_check_git(app: State<'_, App>) -> Result<HistoryStatus, IpcError> {
+    app.current()?.history_check_git().await
+}
+
+#[tauri::command]
+pub async fn history_set_git_path(path: Option<String>, app: State<'_, App>) -> Result<HistoryStatus, IpcError> {
+    app.current()?.history_set_git_path(path).await
+}
+
+#[tauri::command]
+pub async fn history_enable(app: State<'_, App>) -> Result<HistoryStatus, IpcError> {
+    app.current()?.history_enable().await
+}
+
+#[tauri::command]
+pub async fn history_disable(app: State<'_, App>) -> Result<HistoryStatus, IpcError> {
+    app.current()?.history_disable().await
+}
+
+#[tauri::command]
+pub async fn history_set_identity(name: String, email: String, app: State<'_, App>) -> Result<HistoryStatus, IpcError> {
+    app.current()?.history_set_identity(name, email).await
+}
+
+#[tauri::command]
+pub async fn history_set_options(
+    quiet_secs: u64,
+    sync_on_open_close: bool,
+    app: State<'_, App>,
+) -> Result<HistoryStatus, IpcError> {
+    app.current()?.history_set_options(quiet_secs, sync_on_open_close).await
+}
+
+#[tauri::command]
+pub async fn history_version_now(app: State<'_, App>) -> Result<HistoryStatus, IpcError> {
+    app.current()?.history_version_now().await
+}
+
+#[tauri::command]
+pub async fn history_versions(rel: String, app: State<'_, App>) -> Result<Vec<Version>, IpcError> {
+    app.current()?.history_versions(rel).await
+}
+
+#[tauri::command]
+pub async fn history_version_text(id: String, rel: String, app: State<'_, App>) -> Result<String, IpcError> {
+    app.current()?.history_version_text(id, rel).await
+}
+
+#[tauri::command]
+pub async fn history_restore(
+    rel: String,
+    id: String,
+    version_rel: String,
+    app: State<'_, App>,
+) -> Result<WriteResult, IpcError> {
+    app.current()?.history_restore(rel, id, version_rel).await
+}
+
+#[tauri::command]
+pub async fn history_connect(url: String, app: State<'_, App>) -> Result<HistoryStatus, IpcError> {
+    app.current()?.history_connect(url).await
+}
+
+#[tauri::command]
+pub async fn history_disconnect(app: State<'_, App>) -> Result<HistoryStatus, IpcError> {
+    app.current()?.history_disconnect().await
+}
+
+#[tauri::command]
+pub async fn history_sync(app: State<'_, App>) -> Result<HistoryStatus, IpcError> {
+    app.current()?.history_sync().await
 }
 
 #[tauri::command]

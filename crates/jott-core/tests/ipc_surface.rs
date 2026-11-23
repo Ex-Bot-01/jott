@@ -1518,6 +1518,8 @@ fn every_error_kind_the_window_can_receive() {
         ErrorKind::NpGone,
         ErrorKind::NpRefused,
         ErrorKind::NpTooOld,
+        ErrorKind::GitMissing,
+        ErrorKind::History,
         ErrorKind::Io,
     ];
     let spellings: Vec<String> = kinds
@@ -1528,7 +1530,7 @@ fn every_error_kind_the_window_can_receive() {
         spellings,
         vec![
             "escapesRoot", "notFound", "alreadyExists", "intoItself", "tooLarge", "notUtf8", "npGenerated",
-            "reservedName", "noVault", "npGone", "npRefused", "npTooOld", "io"
+            "reservedName", "noVault", "npGone", "npRefused", "npTooOld", "gitMissing", "history", "io"
         ]
     );
 }

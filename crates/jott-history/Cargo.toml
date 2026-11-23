@@ -1,0 +1,14 @@
+[package]
+name = "jott-history"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Versions and sync for a vault, through the git someone already has installed. Every git call lives here."
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"

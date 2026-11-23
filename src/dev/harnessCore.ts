@@ -9,6 +9,7 @@ import type {
   ConsentOffer,
   ConsentOutcome,
   EmbedReport,
+  HistoryStatus,
   ModelStatus,
   NodeEntry,
   NoteContent,
@@ -19,6 +20,7 @@ import type {
   SearchHit,
   SearchResults,
   VaultListing,
+  Version,
   WriteResult,
 } from '../lib/ipc'
 import { bus, fixtureVault, listing, scenarioFrom, vault, type Scenario } from './harnessState'
@@ -249,6 +251,45 @@ function opened(): VaultListing {
   return listing()
 }
 
+/** Versions, faked in memory: `?scenario=no-git` shows the offer; otherwise git is found and history starts off. */
+const fakeHistory = { enabled: false, remote: null as string | null, versions: [] as { id: string; at: number; message: string; rel: string; text: string }[] }
+
+function historyStatus(): HistoryStatus {
+  const found = scenario !== 'no-git'
+  return {
+    git: {
+      found,
+      path: found ? '/usr/bin/git' : null,
+      version: found ? '2.53.0' : null,
+      source: found ? 'path' : null,
+      configured: null,
+      problem: found ? null : 'git is not installed on this computer, or Jott cannot find it',
+      install: { url: 'https://git-scm.com/downloads', commands: ['sudo apt install git'] },
+    },
+    enabled: fakeHistory.enabled,
+    existing: found ? 'nothing' : 'unknown',
+    insideTop: null,
+    layout: fakeHistory.enabled ? 'inVault' : null,
+    cloud: null,
+    identity: { name: 'Example Person', email: 'person@example.com' },
+    remote: fakeHistory.remote,
+    syncOffered: true,
+    quietSecs: 60,
+    syncOnOpenClose: false,
+    tooLarge: [],
+    lastVersionAtMs: fakeHistory.versions.length ? fakeHistory.versions[0].at * 1000 : null,
+    pending: false,
+    lastSync: null,
+    problem: null,
+  }
+}
+
+function fakeVersion(message: string) {
+  for (const file of vault.files.filter((f) => f.kind === 'Note')) {
+    fakeHistory.versions.unshift({ id: Math.random().toString(16).slice(2, 12).padEnd(10, '0'), at: Math.floor(Date.now() / 1000), message, rel: file.rel, text: file.text })
+  }
+}
+
 /** Commands the window may call. An unknown name throws the way a missing command would, rather than answering null:
  *  a harness that quietly succeeds where core refuses is how a UI bug hides until somebody's real folder. */
 export async function invoke<T>(cmd: string, args: Record<string, unknown> = {}): Promise<T> {
@@ -389,6 +430,41 @@ export async function invoke<T>(cmd: string, args: Record<string, unknown> = {})
         return diagnostics()
       case 'flush_on_close':
         return undefined
+      case 'history_status':
+      case 'history_check_git':
+      case 'history_set_git_path':
+      case 'history_set_identity':
+      case 'history_set_options':
+        return historyStatus()
+      case 'history_enable':
+        fakeHistory.enabled = true
+        fakeVersion('Jott: saved the folder as it was')
+        return historyStatus()
+      case 'history_disable':
+        fakeHistory.enabled = false
+        return historyStatus()
+      case 'history_version_now':
+        fakeVersion('Jott: saved a version')
+        return historyStatus()
+      case 'history_versions':
+        return fakeHistory.versions.filter((v) => v.rel === rel).map(({ id, at, message, rel }): Version => ({ id, at, message, rel }))
+      case 'history_version_text':
+        return fakeHistory.versions.find((v) => v.id === String(args.id))?.text ?? ''
+      case 'history_restore': {
+        const version = fakeHistory.versions.find((v) => v.id === String(args.id))
+        const file = vault.find(rel)
+        if (version && file) vault.touch(file, version.text)
+        fakeVersion(`Jott: restored ${rel}`)
+        return { hash: 'h0', mtimeMs: Date.now() } satisfies WriteResult
+      }
+      case 'history_connect':
+        fakeHistory.remote = String(args.url ?? '')
+        return historyStatus()
+      case 'history_disconnect':
+        fakeHistory.remote = null
+        return historyStatus()
+      case 'history_sync':
+        return { ...historyStatus(), lastSync: { atMs: Date.now(), outcome: { kind: 'upToDate' }, error: null } } satisfies HistoryStatus
       default:
         throw { kind: 'npRefused', message: `the harness has no command named ${cmd}` }
     }

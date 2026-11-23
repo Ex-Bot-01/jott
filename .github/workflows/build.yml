@@ -54,6 +54,13 @@ jobs:
       - name: clippy
         working-directory: crates/jott-core
         run: cargo clippy --all-targets -- -D warnings
+      # Versions and sync run real git in temp folders; the runner's git is the one under test.
+      - name: history suites
+        working-directory: crates/jott-history
+        run: |
+          git --version
+          cargo test
+          cargo clippy --all-targets -- -D warnings
 
   app:
     needs: test

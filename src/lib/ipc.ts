@@ -224,6 +224,10 @@ export interface IpcError {
      *  the two sides are different languages with no compiler between them, so an unknown label has to come back as a
      *  sentence naming what is accepted rather than as a quiet `hybrid`. */
     | 'badMode'
+    /** No git Jott can use — none installed, the one chosen in Settings does not run, or it is too old. */
+    | 'gitMissing'
+    /** A versions or sync step did not happen; the message is git's sentence or Jott's reason. */
+    | 'history'
     | 'io'
   message: string
 }
@@ -410,6 +414,97 @@ export async function pickRerankerFile(): Promise<string | null> {
 
 /** A question with two answers, asked outside the status line. False when nobody answered. */
 export const askConfirm = (message: string, title: string) => confirm(message, { title })
+
+// ---- versions and sync (`crates/jott-core/src/history.rs`; `ipc.test.ts` pins these against it) ----
+
+export interface InstallHint {
+  url: string
+  commands: string[]
+}
+
+export interface GitReport {
+  found: boolean
+  path: string | null
+  version: string | null
+  /** `configured` (chosen in Settings), `path` (the program search path) or `usual` (a standard install folder). */
+  source: 'configured' | 'path' | 'usual' | null
+  configured: string | null
+  problem: string | null
+  install: InstallHint
+}
+
+export interface LargeFile {
+  rel: string
+  bytes: number
+}
+
+export interface KeptBoth {
+  rel: string
+  remoteCopy: string
+}
+
+export type SyncOutcome =
+  | { kind: 'upToDate' }
+  | { kind: 'pushed'; commits: number }
+  | { kind: 'pulled'; commits: number; paths: string[] }
+  | { kind: 'merged'; pulled: number; pushed: number; paths: string[]; keptBoth: KeptBoth[] }
+
+export interface SyncReport {
+  atMs: number
+  outcome: SyncOutcome | null
+  error: string | null
+}
+
+export interface Identity {
+  name: string
+  email: string
+}
+
+export interface HistoryStatus {
+  git: GitReport
+  enabled: boolean
+  existing: 'unknown' | 'nothing' | 'atRoot' | 'inside' | 'appData'
+  insideTop: string | null
+  layout: 'inVault' | 'appData' | null
+  cloud: string | null
+  identity: Identity | null
+  remote: string | null
+  syncOffered: boolean
+  quietSecs: number
+  syncOnOpenClose: boolean
+  tooLarge: LargeFile[]
+  lastVersionAtMs: number | null
+  pending: boolean
+  lastSync: SyncReport | null
+  problem: string | null
+}
+
+export interface Version {
+  id: string
+  /** Seconds since the epoch. */
+  at: number
+  message: string
+  /** The note's path in that version, which differs from today's after a rename. */
+  rel: string
+}
+
+export const historyStatus = () => invoke<HistoryStatus>('history_status')
+export const historyCheckGit = () => invoke<HistoryStatus>('history_check_git')
+export const historySetGitPath = (path: string | null) => invoke<HistoryStatus>('history_set_git_path', { path })
+export const historyEnable = () => invoke<HistoryStatus>('history_enable')
+export const historyDisable = () => invoke<HistoryStatus>('history_disable')
+export const historySetIdentity = (name: string, email: string) => invoke<HistoryStatus>('history_set_identity', { name, email })
+export const historySetOptions = (quietSecs: number, syncOnOpenClose: boolean) =>
+  invoke<HistoryStatus>('history_set_options', { quietSecs, syncOnOpenClose })
+export const historyVersionNow = () => invoke<HistoryStatus>('history_version_now')
+export const historyVersions = (rel: string) => invoke<Version[]>('history_versions', { rel })
+export const historyVersionText = (id: string, rel: string) => invoke<string>('history_version_text', { id, rel })
+/** Put `versionRel` as recorded in version `id` back into `rel`, as a new version. */
+export const historyRestore = (rel: string, id: string, versionRel: string) =>
+  invoke<WriteResult>('history_restore', { rel, id, versionRel })
+export const historyConnect = (url: string) => invoke<HistoryStatus>('history_connect', { url })
+export const historyDisconnect = () => invoke<HistoryStatus>('history_disconnect')
+export const historySync = () => invoke<HistoryStatus>('history_sync')
 // §14's two answers are not one command: *reload* re-reads the file (`readNote`), and *keep* is a
 // decision the window makes locally — it changes nothing on disk until the next save.
 

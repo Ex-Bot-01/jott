@@ -15,6 +15,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io
 notify = "8.2.2"
 trash = "5.3.0"
 toml_edit = "0.25.19"
+jott-history = { path = "../jott-history" }
 
 
 [dev-dependencies]

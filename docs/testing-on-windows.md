@@ -972,6 +972,31 @@ result reordered** (≈3.4 s at 5). That is why it is a second step — what to 
 
 np keeps the model **per folder**, like everything else it stores: a second vault downloads its own copy.
 
+## 2b-zj. Not released yet: versions and sync, through the git you install
+
+Jott ships no git. **Settings → Versions & sync** finds the one on the machine, or says where to get it
+(<https://git-scm.com/downloads>, or `winget install --id Git.Git -e --source winget`). Design:
+[`docs/superpowers/specs/2026-11-23-git-versions-and-sync-design.md`](superpowers/specs/2026-11-23-git-versions-and-sync-design.md).
+
+1. **Without git:** open a folder. A line says once that Jott can keep versions; **Show me** opens Settings with the
+   download link. Install git **while Jott stays open**, then press **Check again** — it must find git without a restart.
+2. **Turn on version history** in a test folder. A `.git` folder appears inside it (hidden in Jott's tree) and the
+   panel says *Last version saved just now*. If git asks for a name, enter one: it is written into that folder's
+   repository only, never your global git settings.
+3. **Edit a note, stop typing for a minute.** The panel's line moves to *Last version saved …*. Then **versions** beside
+   the note's name: pick an older version, read the preview, **Restore this version**. The note shows the old text, and
+   the list now has a *restored* version on top — so a restore can be undone the same way.
+4. **A folder inside OneDrive** (or Dropbox): turning history on must leave **no** `.git` in the folder — the history
+   lives in Jott's own data folder — and the Sync part says OneDrive already syncs it.
+5. **Sync:** create an *empty* repository on GitHub, Gitea or GitLab, paste its `https://` address, **Connect**,
+   **Sync now**. Windows' Git Credential Manager asks for the login in its own window; Jott never sees it. An address
+   with a token in it (`https://ghp_…@github.com/…`) must be refused before anything is sent.
+6. **Two computers, same note changed on both:** sync both. The second one keeps its own text and puts the other's
+   beside it as `name (from github.com, <date>).md`; nothing is overwritten.
+
+The log (`jott.jsonl`) gets `version`, `restored`, `sync` and `remote-connected` lines — path counts and host names
+only, never note text and never an address's path.
+
 ## 4. The question only Windows can answer: write-lock contention
 
 np takes a lock on the workspace while it indexes, and on Windows that lock is a file others cannot open.

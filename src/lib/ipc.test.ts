@@ -139,3 +139,21 @@ describe('the ranking model', () => {
     expect(interfaceKeys(ipcTs, 'ManualDownload').sort()).toEqual(rustFields(ipcRust, 'ManualDownloadDto').sort())
   })
 })
+const historyRust = readFileSync(fileURLToPath(new URL('../../crates/jott-core/src/history.rs', import.meta.url)), 'utf8')
+
+describe('versions and sync', () => {
+  it('carries every key Rust sends about history, git and the last sync', () => {
+    // `problem` and `lastSync.error` are where git's sentence arrives; a key dropped on this side becomes `undefined`,
+    // and a push that failed would read as a sync that never ran.
+    expect(interfaceKeys(ipcTs, 'HistoryStatus').sort()).toEqual(rustFields(historyRust, 'HistoryStatus').sort())
+    expect(interfaceKeys(ipcTs, 'GitReport').sort()).toEqual(rustFields(historyRust, 'GitReport').sort())
+    expect(interfaceKeys(ipcTs, 'SyncReport').sort()).toEqual(rustFields(historyRust, 'SyncReport').sort())
+    expect(interfaceKeys(ipcTs, 'Identity').sort()).toEqual(rustFields(historyRust, 'Identity').sort())
+  })
+
+  it('names every state of the folder Rust can report', () => {
+    expect(camelVariants(historyRust, 'Existing').sort()).toEqual(['appData', 'atRoot', 'inside', 'nothing', 'unknown'])
+    const block = ipcTs.slice(ipcTs.indexOf('export interface HistoryStatus'), ipcTs.indexOf('\n}', ipcTs.indexOf('export interface HistoryStatus')))
+    for (const state of camelVariants(historyRust, 'Existing')) expect(block).toContain(`'${state}'`)
+  })
+})

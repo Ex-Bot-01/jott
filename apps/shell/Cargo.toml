@@ -13,6 +13,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 jott-core = { path = "../../crates/jott-core" }
+jott-history = { path = "../../crates/jott-history" }
 serde_json = "1"
 # `devtools`, because a release build without it has no console at all: wry defaults devtools to off outside debug
 # builds (wry-0.57.2/src/lib.rs:873-875) and tauri only forwards its own setting under

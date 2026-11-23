@@ -75,6 +75,20 @@ fn main() {
             ipc::install_reranker,
             ipc::set_rerank_top_n,
             ipc::diagnostics,
+            ipc::history_status,
+            ipc::history_check_git,
+            ipc::history_set_git_path,
+            ipc::history_enable,
+            ipc::history_disable,
+            ipc::history_set_identity,
+            ipc::history_set_options,
+            ipc::history_version_now,
+            ipc::history_versions,
+            ipc::history_version_text,
+            ipc::history_restore,
+            ipc::history_connect,
+            ipc::history_disconnect,
+            ipc::history_sync,
             ipc::flush_on_close
         ])
         .setup(|app| {
