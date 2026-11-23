@@ -5,7 +5,7 @@
 // holding a value this version never wrote.
 
 import { describe, expect, it } from 'vitest'
-import { DEFAULTS, MODE_KEY, MODE_WORD, PREFIX_KEY, loadSettings, modeSentence, saveMode, savePrefix } from './searchSettings'
+import { DEFAULTS, MODE_KEY, MODE_WORD, PREFIX_KEY, RERANK_KEY, loadSettings, modeSentence, saveMode, savePrefix, saveRerank } from './searchSettings'
 
 /** A stand-in for `Storage` with exactly the methods these two modules are allowed to use. */
 function store(initial: Record<string, string> = {}) {
@@ -30,8 +30,8 @@ const hostile = {
 describe('loading the settings', () => {
   it('starts at both engines and whole words, which is what note-processor does by default', () => {
     // Absent means "never asked". The only honest reading of that is the backend's own default, not an opinion.
-    expect(loadSettings(store())).toEqual({ mode: 'hybrid', prefix: false })
-    expect(DEFAULTS).toEqual({ mode: 'hybrid', prefix: false })
+    expect(loadSettings(store())).toEqual({ mode: 'hybrid', prefix: false, rerank: true })
+    expect(DEFAULTS).toEqual({ mode: 'hybrid', prefix: false, rerank: true })
   })
 
   it('keeps each mode this build can ask for', () => {
@@ -113,7 +113,7 @@ describe('saving the settings', () => {
     const s = store()
     saveMode(s, 'semantic')
     savePrefix(s, true)
-    expect(loadSettings(s)).toEqual({ mode: 'semantic', prefix: true })
+    expect(loadSettings(s)).toEqual({ mode: 'semantic', prefix: true, rerank: true })
   })
 })
 
@@ -158,5 +158,23 @@ describe('the mode’s name, said once', () => {
     for (const mode of modes) {
       expect(MODE_WORD[mode].toLowerCase()).not.toMatch(/matched|found|result/)
     }
+  })
+})
+
+describe('reranking', () => {
+  it('is on until somebody says no, and only the exact no this module writes turns it off', () => {
+    // Asked for on by default. A value this version did not write must not switch it off by accident.
+    expect(loadSettings(store()).rerank).toBe(true)
+    for (const kept of ['1', 'true', 'off', '']) expect(loadSettings(store({ [RERANK_KEY]: kept })).rerank).toBe(true)
+    expect(loadSettings(store({ [RERANK_KEY]: '0' })).rerank).toBe(false)
+  })
+
+  it('round-trips, under its own namespaced key, without touching the other two', () => {
+    const s = store({ [MODE_KEY]: 'keyword', [PREFIX_KEY]: '1' })
+    saveRerank(s, false)
+    expect(RERANK_KEY).toBe('jott.search.rerank')
+    expect(s.data.get(RERANK_KEY)).toBe('0')
+    expect(loadSettings(s)).toEqual({ mode: 'keyword', prefix: true, rerank: false })
+    expect(() => saveRerank(hostile, true)).not.toThrow()
   })
 })

@@ -8,6 +8,8 @@ import {
   hitSuffix,
   meaningsNotice,
   noResultsSentence,
+  rerankSentence,
+  rerankMove,
   resultsHeadline,
   searchCaveat,
   searchIsCurrent,
@@ -293,3 +295,34 @@ describe('what an empty meanings-only answer says on np 0.6.0', () => {
   })
 })
 
+describe('what the window says about the ranking step', () => {
+  const ran = { ran: true, reason: null, notice: null, candidates: 5 }
+
+  it('says nothing when reranking was not asked for, or the np has no stage', () => {
+    expect(rerankSentence(ran, false, false)).toBeNull()
+    expect(rerankSentence(null, true, false)).toBeNull()
+  })
+
+  it('says it is working while the second step runs, and how many results it reordered after', () => {
+    expect(rerankSentence(null, true, true)?.text).toBe('reranking the top results…')
+    expect(rerankSentence(ran, true, false)?.text).toBe('top 5 reordered by the ranking model')
+  })
+
+  it('points at Settings when the model is not ready, keeping np’s own sentence in the tooltip', () => {
+    const declined = { ran: false, reason: 'unavailable', notice: 'rerank was requested and could not run: …', candidates: 0 }
+    const said = rerankSentence(declined, true, false)
+    expect(said?.text).toContain('see Settings')
+    expect(said?.title).toBe('rerank was requested and could not run: …')
+  })
+
+  it('stays quiet when there was simply nothing to reorder', () => {
+    expect(rerankSentence({ ran: false, reason: 'no-candidates', notice: null, candidates: 0 }, true, false)).toBeNull()
+  })
+
+  it('marks a row the model moved, and only such a row', () => {
+    expect(rerankMove({ rerankRankBefore: 3, rerankRankAfter: 1 })).toBe('moved up from #3')
+    expect(rerankMove({ rerankRankBefore: 1, rerankRankAfter: 2 })).toBe('moved down from #1')
+    expect(rerankMove({ rerankRankBefore: 2, rerankRankAfter: 2 })).toBeNull()
+    expect(rerankMove({ rerankRankBefore: null, rerankRankAfter: null })).toBeNull()
+  })
+})

@@ -5,7 +5,8 @@
 
 use jott_core::ingest::consent::{
     answer_consent, auto_fetch_allowed, builtin_default_model, consent_file_is_unreadable, embedding_model_named,
-    gap_lines, np_config_path, settings_gap, set_auto_fetch, AutoFetch, ConsentError, SettingsGap,
+    gap_lines, np_config_path, rerank_top_n, settings_gap, set_auto_fetch, set_rerank_top_n, AutoFetch, ConsentError,
+    SettingsGap,
 };
 
 mod common;
@@ -95,6 +96,32 @@ fn a_file_that_is_not_there_becomes_the_smallest_one_that_says_no() {
     assert_eq!(text.lines().filter(|l| !l.trim().is_empty() && !l.starts_with('#')).count(), 2, "no invented keys: {text}");
     assert!(text.contains("[models]"));
     assert!(text.contains("auto_fetch = false"));
+}
+
+/// The reranker's depth is np's `[search] rerank_top_n`. Writing it adds one key and keeps everything else; a value
+/// np would refuse (outside 1..=64) is refused before the file is touched, because np would answer every reranked
+/// search with that refusal.
+#[test]
+fn rerank_top_n_is_one_key_in_nps_file_and_nonsense_never_reaches_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    assert_eq!(rerank_top_n(&path), None, "no file: np's own default applies");
+    let before = rich_config();
+    std::fs::write(&path, &before).unwrap();
+
+    set_rerank_top_n(&path, 12).unwrap();
+    assert_eq!(rerank_top_n(&path), Some(12));
+    let after = std::fs::read_to_string(&path).unwrap();
+    for line in before.lines() {
+        assert!(after.lines().any(|a| a == line), "lost a line: {line}\n{after}");
+    }
+    assert!(after.contains("[search]\nrerank_top_n = 12"), "{after}");
+
+    for nonsense in [0, 65, -3] {
+        let error = set_rerank_top_n(&path, nonsense).expect_err("outside np's range");
+        assert!(error.to_string().contains("rerank_top_n"), "{error}");
+    }
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), after, "a refused value writes nothing");
 }
 
 #[test]
@@ -490,7 +517,7 @@ async fn a_failed_write_of_our_own_key_is_not_reported_as_written() {
 #[test]
 fn a_consent_error_names_the_file_it_failed_on() {
     // The card quotes these sentences, so they have to name a path rather than say "io error".
-    let err = ConsentError::NotATable { path: "/home/you/.config/note-processor/config.toml".into() };
+    let err = ConsentError::NotATable { path: "/home/you/.config/note-processor/config.toml".into(), table: "models" };
     let said = err.to_string();
     assert!(said.contains("note-processor/config.toml"), "{said}");
     assert!(said.contains("[models]"), "{said}");

@@ -6,6 +6,7 @@ pub mod handshake;
 pub mod methods;
 pub mod outcomes;
 pub mod pool;
+pub mod rerank;
 pub mod resolve;
 
 pub use handshake::{check_version, NpFeatures, NpInfo};

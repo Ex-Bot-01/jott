@@ -185,7 +185,7 @@ async fn a_search_through_the_session_writes_exactly_one_line() {
 
     // Asked with word-beginning matching on purpose: whether np widened a search is a fact about one **answer**, and
     // the journal's key set stays closed (§18.13). A widened request logs the same shape as any other.
-    session.search("A", 8, true, "hybrid").await.expect("the reader answers");
+    session.search("A", 8, true, "hybrid", false).await.expect("the reader answers");
 
     let lines = journal.read_lines().expect("log reads back");
     assert_eq!(lines.len(), 1, "one request, one line: {lines:?}");
@@ -218,7 +218,7 @@ async fn a_refused_search_is_recorded_as_a_fault_with_np_words() {
     )
     .with_journal(journal.clone());
 
-    session.search("anything", 8, false, "hybrid").await.expect_err("no np here");
+    session.search("anything", 8, false, "hybrid", false).await.expect_err("no np here");
     let lines = journal.read_lines().expect("log");
     assert_eq!(lines.len(), 1);
     assert_eq!(lines[0]["outcome"], "fault");

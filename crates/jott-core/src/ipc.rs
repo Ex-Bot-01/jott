@@ -248,6 +248,23 @@ pub struct SearchResults {
     pub prefix_used: Option<bool>,
     /// Which words np widened, in its own words. The header may name these and nothing else.
     pub prefix_terms: Vec<String>,
+    /// What the rerank stage did with this list. `None` from an np that has no stage (before 0.7.0).
+    pub rerank: Option<RerankDto>,
+}
+
+/// The rerank stage's account of one answer (np 0.7.0, F51), in the shape the window reads.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RerankDto {
+    /// Did the ranking model reorder the top of this list?
+    pub ran: bool,
+    /// np's token for why it did not (`disabled`, `no-candidates`, …), or Jott's own `unavailable` when np refused
+    /// the explicit request and Jott answered without the stage rather than failing the search.
+    pub reason: Option<String>,
+    /// np's sentence about a decline, verbatim.
+    pub notice: Option<String>,
+    /// How many hits the model scored.
+    pub candidates: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -266,6 +283,11 @@ pub struct HitDto {
     /// Did this row match a word that was typed? `false` means np reached it by a **word beginning** and the row says
     /// so. `null` means np never word-tested it — a meaning-only hit — which is not the same as a yes.
     pub matched_exactly: Option<bool>,
+    /// The ranking model's raw score for this hit, and where it sat before and after the reorder (1-based). All
+    /// three `null` when the stage did not score this hit — beyond the top N, a figure, or no stage at all.
+    pub rerank_score: Option<f64>,
+    pub rerank_rank_before: Option<u32>,
+    pub rerank_rank_after: Option<u32>,
 }
 
 /// The receipt a consent button got back, in the shape the window can render (0.5.x, note-processor#7).
@@ -452,6 +474,19 @@ pub struct VaultSession {
     /// Nothing waits for it on purpose — but a runtime being dropped does wait for its threads, and a
     /// session nobody holds must not hold one open forever.
     stop: Arc<std::sync::atomic::AtomicBool>,
+    /// The ranking model's download or install, when Jott started one for this vault. One at a time.
+    reranker_job: Arc<Mutex<RerankerJob>>,
+}
+
+/// What Jott itself is doing about the reranker's bytes. np's marker says what np is doing; this says which child
+/// is ours, so closing the folder can stop it and the next open knows the marker it left is stale.
+#[derive(Default)]
+struct RerankerJob {
+    task: Option<tokio::task::JoinHandle<()>>,
+    /// `fetching` or `installing` while a child runs.
+    busy: Option<&'static str>,
+    /// The last attempt's failure, in np's words. Cleared when the next attempt starts.
+    error: Option<String>,
 }
 
 impl VaultSession {
@@ -557,6 +592,7 @@ impl VaultSession {
             state_fallback: std::sync::atomic::AtomicBool::new(false),
             watch_task: Mutex::new(None),
             stop: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            reranker_job: Arc::new(Mutex::new(RerankerJob::default())),
         });
         session.start_watching();
         session
@@ -945,16 +981,51 @@ impl VaultSession {
     /// and so an unknown one is refused before anything reaches np instead of becoming a hybrid search nobody asked
     /// for. note-processor#11 is why `semantic` needs care on the way back: with no vectors it answers `result: null`,
     /// which is why the panel only offers that mode where vectors are known to exist.
-    pub async fn search(&self, query: &str, limit: u8, prefix: bool, mode: &str) -> Result<SearchResults, IpcError> {
+    ///
+    /// `rerank` asks np 0.7.0's ranking model to reorder the top of the list (F51). np refuses an explicit request it
+    /// cannot honour — the model not downloaded yet, or bytes that fail their check — and that refusal is not a
+    /// reason to show no results: the search is asked again without the stage, and the answer says why it was not
+    /// reranked in np's own sentence.
+    pub async fn search(
+        &self,
+        query: &str,
+        limit: u8,
+        prefix: bool,
+        mode: &str,
+        rerank: bool,
+    ) -> Result<SearchResults, IpcError> {
         let mode = crate::np::Mode::from_label(mode).ok_or_else(|| IpcError::bad_mode(mode))?;
         let started = std::time::Instant::now();
-        let answer = self.pool.search(&self.vault, query, limit, prefix, mode).await.map_err(|fault| {
+        let mut declined: Option<String> = None;
+        let mut answer = self.pool.search(&self.vault, query, limit, prefix, mode, rerank).await;
+        if let Err(fault) = &answer {
+            if rerank && crate::np::rerank::is_rerank_refusal(fault.code, &fault.message) {
+                self.record_fault("search", started.elapsed(), fault.code, &fault.message);
+                declined = Some(fault.message.clone());
+                answer = self.pool.search(&self.vault, query, limit, prefix, mode, false).await;
+            }
+        }
+        let answer = answer.map_err(|fault| {
             self.record_fault("search", started.elapsed(), fault.code, &fault.message);
             IpcError::np_fault(&fault)
         })?;
         // `offline` is its own outcome here: §4 wants a degraded answer visible, and a log that calls a
         // keyword-only search "applied" hides the one thing worth knowing about it.
         self.record("search", started.elapsed(), if answer.offline { "offline" } else { "applied" });
+        let rerank = match declined {
+            Some(sentence) => Some(RerankDto {
+                ran: false,
+                reason: Some("unavailable".to_string()),
+                notice: Some(sentence),
+                candidates: 0,
+            }),
+            None => answer.rerank.map(|report| RerankDto {
+                ran: report.ran,
+                reason: report.reason,
+                notice: report.note,
+                candidates: report.candidates,
+            }),
+        };
         Ok(SearchResults {
             hits: answer.hits.into_iter().map(HitDto::from).collect(),
             // np's own word for which half answered (§18.11), not a translation of it.
@@ -968,6 +1039,7 @@ impl VaultSession {
             notice: answer.note,
             prefix_used: answer.prefix_used,
             prefix_terms: answer.prefix_terms,
+            rerank,
         })
     }
 
@@ -1128,6 +1200,193 @@ impl VaultSession {
         }
     }
 
+    /// The ranking model's standing for this folder (np 0.7.0, F51): whether this np can rerank at all, whether the
+    /// bytes are on disk, what Jott is doing about them, and what a person needs to fetch them by hand.
+    ///
+    /// Asked of `models.list` on the reader, like the model dot — never by trying a reranked search.
+    pub async fn reranker_status(&self) -> RerankerStatus {
+        let info = self.pool.info();
+        let supported = crate::np::rerank::supports_rerank(info);
+        let (busy, error) = {
+            let job = guarded(&self.reranker_job);
+            (job.busy.map(str::to_string), job.error.clone())
+        };
+        let mut status = RerankerStatus {
+            supported,
+            np_version: info.version.clone(),
+            model_id: crate::np::rerank::RERANKER_ID.to_string(),
+            present: None,
+            state: None,
+            downloading: None,
+            busy,
+            error,
+            manual: ManualDownloadDto::pinned(),
+            top_n: self.np_config.as_deref().and_then(crate::ingest::consent::rerank_top_n),
+            top_n_default: RERANK_TOP_N_DEFAULT,
+            config_path: self.np_config.clone(),
+        };
+        if !supported {
+            return status;
+        }
+        let started = std::time::Instant::now();
+        match self.pool.models_list(&self.vault).await {
+            Ok(listing) => {
+                if let Some(reranker) = &listing.reranker {
+                    status.present = Some(reranker.present());
+                    status.state = Some(reranker.state.clone());
+                }
+                status.downloading = listing.reranker_download().map(|f| Downloading {
+                    model_id: f.id,
+                    bytes_done: f.bytes_done,
+                    bytes_total: f.bytes_total,
+                });
+            }
+            Err(fault) => self.record_fault("models.list", started.elapsed(), fault.code, &fault.message),
+        }
+        status
+    }
+
+    /// Make sure the ranking model is on disk: start `np models fetch` when np says it is not, and do nothing when it
+    /// is, when this np cannot rerank, or when a download is already running. The window calls this when a folder
+    /// opens with reranking on, and again from its *Try again* button; it answers at once and the download runs on.
+    pub async fn prepare_reranker(self: &Arc<Self>) -> RerankerStatus {
+        let status = self.reranker_status().await;
+        // A marker this vault's own interrupted fetch left behind is not a download in progress — and it is the one
+        // marker Jott may discard, because it knows the process that wrote it is gone.
+        let ours_stale = self.reranker_interrupted_flag().exists();
+        let someone_fetching = status.downloading.is_some() && !ours_stale;
+        if !status.supported || status.busy.is_some() || status.present != Some(false) || someone_fetching {
+            return status;
+        }
+        self.start_reranker_fetch(ours_stale);
+        self.reranker_status().await
+    }
+
+    fn start_reranker_fetch(self: &Arc<Self>, discard_marker: bool) {
+        let mut job = guarded(&self.reranker_job);
+        if job.busy.is_some() {
+            return;
+        }
+        job.busy = Some("fetching");
+        job.error = None;
+        self.local(LocalRecord::new("reranker-fetch").with_detail(if discard_marker {
+            "started, discarding the marker Jott's interrupted fetch left"
+        } else {
+            "started"
+        }));
+        let np = self.pool.binary().to_path_buf();
+        let vault = self.vault.clone();
+        let flag = self.reranker_interrupted_flag();
+        let slot = self.reranker_job.clone();
+        let session = Arc::downgrade(self);
+        job.task = Some(tokio::spawn(async move {
+            let started = std::time::Instant::now();
+            let outcome = crate::np::rerank::fetch(&np, &vault, discard_marker).await;
+            // np removes its own marker on every way out of a fetch that ran to an end, so there is nothing stale left.
+            let _ = std::fs::remove_file(&flag);
+            {
+                let mut job = guarded(&slot);
+                job.busy = None;
+                job.task = None;
+                job.error = outcome.clone().err();
+            }
+            if let Some(session) = session.upgrade() {
+                let detail = match &outcome {
+                    Ok(()) => format!("finished in {} s", started.elapsed().as_secs()),
+                    Err(_) => "failed".to_string(),
+                };
+                session.local_record(LocalRecord::new("reranker-fetch").with_detail(detail), outcome.err());
+            }
+        }));
+    }
+
+    /// Install a ranking model the person downloaded themselves. np copies the file and refuses it unless it hashes
+    /// to the pinned digest, so a wrong or truncated download is np's to reject, in its own words.
+    pub async fn install_reranker(self: &Arc<Self>, file: &Path) -> RerankerStatus {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let started = {
+            let mut job = guarded(&self.reranker_job);
+            if job.busy.is_some() {
+                false
+            } else {
+                job.busy = Some("installing");
+                job.error = None;
+                let np = self.pool.binary().to_path_buf();
+                let vault = self.vault.clone();
+                let file = file.to_path_buf();
+                let slot = self.reranker_job.clone();
+                // A task of its own rather than inline: a window that stops waiting must not leave the job marked busy.
+                job.task = Some(tokio::spawn(async move {
+                    let outcome = crate::np::rerank::install(&np, &vault, &file).await;
+                    {
+                        let mut job = guarded(&slot);
+                        job.busy = None;
+                        job.task = None;
+                        job.error = outcome.clone().err();
+                    }
+                    let _ = tx.send(outcome);
+                }));
+                true
+            }
+        };
+        if !started {
+            return self.reranker_status().await;
+        }
+        let outcome = rx.await.unwrap_or_else(|_| Err("the install was stopped before it finished".to_string()));
+        let detail = if outcome.is_ok() { "installed from a file the person chose" } else { "refused" };
+        self.local_record(LocalRecord::new("reranker-install").with_detail(detail), outcome.err());
+        if guarded(&self.reranker_job).error.is_none() {
+            // A finished install makes any marker an earlier interrupted fetch left behind irrelevant to Jott.
+            let _ = std::fs::remove_file(self.reranker_interrupted_flag());
+        }
+        self.reranker_status().await
+    }
+
+    /// How many top results the ranking model reorders: np's `[search] rerank_top_n`, written into np's own config,
+    /// which np re-reads per request — the next search uses it, no restart.
+    pub fn set_rerank_top_n(&self, n: i64) -> Result<(), IpcError> {
+        let Some(path) = self.np_config.as_deref() else {
+            return Err(IpcError {
+                kind: ErrorKind::Io,
+                message: "Jott could not work out where note-processor keeps its settings, so it has nowhere to write rerank_top_n".into(),
+            });
+        };
+        crate::ingest::consent::set_rerank_top_n(path, n)
+            .map_err(|why| IpcError { kind: ErrorKind::Io, message: why.to_string() })?;
+        self.local(LocalRecord::new("settings").with_detail(format!("writes search.rerank_top_n = {n} → {}", path.display())));
+        Ok(())
+    }
+
+    /// Where Jott notes that it stopped its own reranker download, so the next open can discard np's stale marker.
+    fn reranker_interrupted_flag(&self) -> PathBuf {
+        self.data
+            .join("state")
+            .join(crate::vault::stamps::workspace_key(&self.vault))
+            .join("reranker-fetch-interrupted")
+    }
+
+    /// Stop Jott's own reranker download, if one runs. Killing np mid-fetch leaves its marker behind (np never
+    /// expires one by clock), so Jott writes down that it was the one who stopped it.
+    fn stop_reranker_job(&self) {
+        let mut job = guarded(&self.reranker_job);
+        let Some(task) = job.task.take() else { return };
+        let fetching = job.busy == Some("fetching");
+        job.busy = None;
+        drop(job);
+        if task.is_finished() {
+            return;
+        }
+        task.abort();
+        if fetching {
+            let flag = self.reranker_interrupted_flag();
+            if let Some(parent) = flag.parent() {
+                let _ = crate::app_paths::create_private_dir_all(parent);
+            }
+            let _ = std::fs::write(&flag, b"");
+            self.local(LocalRecord::new("reranker-fetch").with_detail("stopped by closing the folder; resumes from the start next time"));
+        }
+    }
+
     /// The consent prompt's two buttons, taken to np over the pipe.
     ///
     /// np opens and closes its own door (`embeddings.enable` / `embeddings.disable`, note-processor#7); Jott writes
@@ -1194,6 +1453,7 @@ impl VaultSession {
     /// model (§11).
     pub async fn close(&self) {
         self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.stop_reranker_job();
         if let Some(task) = guarded(&self.watch_task).take() {
             task.abort();
         }
@@ -1307,6 +1567,7 @@ impl Drop for VaultSession {
         // session that kept a thread alive would make every test — and every quit — hang in exactly the
         // way this one did the first time.
         self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.stop_reranker_job();
         if let Some(task) = guarded(&self.watch_task).take() {
             task.abort();
         }
@@ -1341,6 +1602,9 @@ impl From<crate::np::outcomes::Hit> for HitDto {
             bm25: hit.bm25,
             cosine: hit.cosine,
             matched_exactly: hit.matched_exactly,
+            rerank_score: hit.rerank_score,
+            rerank_rank_before: hit.rerank_rank_before,
+            rerank_rank_after: hit.rerank_rank_after,
         }
     }
 }
@@ -1590,5 +1854,56 @@ pub struct Downloading {
     pub model_id: String,
     pub bytes_done: u64,
     pub bytes_total: Option<u64>,
+}
+
+/// np's own default for `[search] rerank_top_n`, which applies while the config file does not name one.
+pub const RERANK_TOP_N_DEFAULT: i64 = 5;
+
+/// The ranking model's standing, for the settings panel (np 0.7.0, F51). Every `None` is "nobody said".
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RerankerStatus {
+    /// This np has the rerank stage and the runtime to run it (0.7.0+, built with `local_model`).
+    pub supported: bool,
+    pub np_version: String,
+    pub model_id: String,
+    /// The bytes are on disk at the size the pin expects. `None`: np was not asked, or did not answer.
+    pub present: Option<bool>,
+    /// np's own words for the file (`absent`, `present, size matches the pin`, …).
+    pub state: Option<String>,
+    /// np's fetch marker for the reranker, when one exists.
+    pub downloading: Option<Downloading>,
+    /// `fetching` or `installing` while a child Jott started is running.
+    pub busy: Option<String>,
+    /// The last fetch or install that failed, in np's words.
+    pub error: Option<String>,
+    pub manual: ManualDownloadDto,
+    /// `[search] rerank_top_n` as np's config states it; `None` means np's default applies.
+    pub top_n: Option<i64>,
+    pub top_n_default: i64,
+    /// The np config file that setting lives in — named so a person can find it.
+    pub config_path: Option<PathBuf>,
+}
+
+/// Where to download the ranking model by hand, and what np will check it against.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ManualDownloadDto {
+    pub url: String,
+    pub file_name: String,
+    pub sha256: String,
+    pub bytes: u64,
+}
+
+impl ManualDownloadDto {
+    pub fn pinned() -> ManualDownloadDto {
+        let pin = &crate::np::rerank::MANUAL_DOWNLOAD;
+        ManualDownloadDto {
+            url: pin.url.to_string(),
+            file_name: pin.file_name.to_string(),
+            sha256: pin.sha256.to_string(),
+            bytes: pin.bytes,
+        }
+    }
 }
 

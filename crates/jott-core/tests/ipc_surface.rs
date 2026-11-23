@@ -176,7 +176,7 @@ async fn the_tree_and_editor_work_with_no_np_anywhere_to_be_found() {
 
     session.save_note("b.md", "# B\n").expect("saving needs no np either");
     // Search does need it, and says so in one line the window can show.
-    let error = session.search("anything", 8, false, "hybrid").await.expect_err("np is not installed here");
+    let error = session.search("anything", 8, false, "hybrid", false).await.expect_err("np is not installed here");
     assert_eq!(error.kind, ErrorKind::NpGone);
 }
 
@@ -236,7 +236,7 @@ async fn the_search_mode_that_was_chosen_is_the_mode_note_processor_is_asked_for
     let harness = Harness::new();
     let session = harness.session_with(fake_np());
     for label in ["keyword", "hybrid", "semantic"] {
-        session.search("grandmother", 8, false, label).await.expect("the reader answers");
+        session.search("grandmother", 8, false, label, false).await.expect("the reader answers");
     }
 
     let lines = std::fs::read_to_string(scenario_dir.path().join("calls.ndjson")).expect("the stand-in recorded its calls");
@@ -263,7 +263,7 @@ async fn an_unknown_search_mode_is_refused_by_name_and_never_guessed() {
     let harness = Harness::new();
     let session = harness.session_with(fake_np());
 
-    let error = session.search("grandmother", 8, false, "fuzzy").await.expect_err("nobody can search 'fuzzy'");
+    let error = session.search("grandmother", 8, false, "fuzzy", false).await.expect_err("nobody can search 'fuzzy'");
     assert_eq!(error.kind, ErrorKind::BadMode);
     for label in ["keyword", "hybrid", "semantic"] {
         assert!(error.message.contains(label), "the sentence should name what it accepts: {:?}", error.message);
@@ -284,7 +284,7 @@ async fn a_search_that_answered_with_nothing_arrives_as_a_refusal_not_an_absence
     let harness = Harness::new();
     let session = harness.session_with(fake_np());
 
-    let error = session.search("grandmother", 8, false, "semantic").await.expect_err("nothing is not an answer");
+    let error = session.search("grandmother", 8, false, "semantic", false).await.expect_err("nothing is not an answer");
     assert_eq!(error.kind, ErrorKind::NpRefused, "np answered this, so it is not absent: {error:?}");
     assert!(error.message.contains("note-processor#11"), "the window has to be able to say why: {:?}", error.message);
 }
@@ -372,7 +372,7 @@ async fn a_search_answers_while_an_embed_is_still_running() {
     assert!(recorded(scenario_dir.path()).contains(&"embed".to_string()), "no embed was running: {:?}", recorded(scenario_dir.path()));
 
     let started = std::time::Instant::now();
-    let answer = session.search("A", 8, false, "hybrid").await.expect("the reader answers");
+    let answer = session.search("A", 8, false, "hybrid", false).await.expect("the reader answers");
     let waited = started.elapsed();
     assert!(waited < std::time::Duration::from_millis(400), "the search queued behind the embed: {waited:?}");
     assert_eq!(answer.mode, "keyword", "np's own word for which half answered (§18.11)");
@@ -670,7 +670,8 @@ async fn what_the_window_receives_is_named_exactly_as_ipc_ts_says() {
     // `undefined` where no test would ever notice.
     let search = serde_json::to_value(SearchResults {
         hits: vec![HitDto { path: "a.md".into(), snippet: None, kind: "note".into(), score: 1.0, bm25: None,
-                            cosine: None, matched_exactly: None }],
+                            cosine: None, matched_exactly: None, rerank_score: None, rerank_rank_before: None,
+                            rerank_rank_after: None }],
         mode: "keyword".into(),
         vectors: false,
         offline: false,
@@ -681,18 +682,21 @@ async fn what_the_window_receives_is_named_exactly_as_ipc_ts_says() {
         notice: None,
         prefix_used: None,
         prefix_terms: vec![],
+        rerank: None,
     })
     .expect("search");
     assert_eq!(search, json!({ "hits": [{"path": "a.md", "snippet": null, "kind": "note", "score": 1.0, "bm25": null,
-                                         "cosine": null, "matchedExactly": null}],
+                                         "cosine": null, "matchedExactly": null, "rerankScore": null,
+                                         "rerankRankBefore": null, "rerankRankAfter": null}],
                                  "mode": "keyword", "vectors": false, "offline": false, "reason": null,
                                  "indexed": null, "keywordUsed": null, "semanticUsed": null, "notice": null,
-                                 "prefixUsed": null, "prefixTerms": [] }));
+                                 "prefixUsed": null, "prefixTerms": [], "rerank": null }));
 
     // …then 0.5.1's widened answer: np says it widened, names the word, and marks the row as not an exact match.
     let widened = serde_json::to_value(SearchResults {
         hits: vec![HitDto { path: "a.md".into(), snippet: Some("my [grandmother] kept".into()), kind: "note".into(),
-                            score: 1.1, bm25: None, cosine: Some(0.82), matched_exactly: Some(false) }],
+                            score: 1.1, bm25: None, cosine: Some(0.82), matched_exactly: Some(false),
+                            rerank_score: Some(5.4), rerank_rank_before: Some(3), rerank_rank_after: Some(1) }],
         mode: "hybrid".into(),
         vectors: true,
         offline: false,
@@ -703,11 +707,14 @@ async fn what_the_window_receives_is_named_exactly_as_ipc_ts_says() {
         notice: None,
         prefix_used: Some(true),
         prefix_terms: vec!["grand".into()],
+        rerank: Some(ipc::RerankDto { ran: true, reason: None, notice: None, candidates: 5 }),
     })
     .expect("widened search");
     assert_eq!(widened["hits"][0]["matchedExactly"], json!(false), "a word-beginning row is not an exact match");
     assert_eq!(widened["prefixUsed"], json!(true));
     assert_eq!(widened["prefixTerms"], json!(["grand"]), "the header may name these words and no others");
+    assert_eq!(widened["hits"][0]["rerankRankBefore"], json!(3));
+    assert_eq!(widened["rerank"], json!({ "ran": true, "reason": null, "notice": null, "candidates": 5 }));
 
     let note = serde_json::to_value(NoteContent {
         rel: "a.md".into(),
@@ -901,7 +908,7 @@ async fn a_vault_still_opens_when_np_cannot_be_asked_anything() {
 
     assert_eq!(session.listing().expect("the tree needs no np").nodes.len(), 1);
     session.save_note("b.md", "# B\n").expect("neither does a save");
-    assert_eq!(session.search("anything", 8, false, "hybrid").await.expect_err("np is not here").kind, ErrorKind::NpGone);
+    assert_eq!(session.search("anything", 8, false, "hybrid", false).await.expect_err("np is not here").kind, ErrorKind::NpGone);
 
     // And the `[embed]` button's queue does not spin: it fails its batch and moves on.
     session.ingest_all();
@@ -1184,7 +1191,7 @@ async fn the_trace_shows_what_the_session_asked_np() {
         harness.data.path().to_path_buf(),
     );
 
-    session.search("kumquat", 8, false, "hybrid").await.expect("the stand-in answers");
+    session.search("kumquat", 8, false, "hybrid", false).await.expect("the stand-in answers");
 
     let rows = session.trace().recent();
     let search = rows
@@ -1228,7 +1235,7 @@ async fn a_child_that_could_not_be_started_is_a_row_of_its_own() {
         harness.data.path().to_path_buf(),
     );
 
-    let err = session.search("anything", 8, false, "hybrid").await.expect_err("np is not here");
+    let err = session.search("anything", 8, false, "hybrid", false).await.expect_err("np is not here");
     assert_eq!(err.kind, ErrorKind::NpGone);
 
     let rows = session.trace().recent();
@@ -1276,7 +1283,7 @@ async fn the_snapshot_shows_the_run_so_far() {
         harness.data.path().to_path_buf(),
     );
 
-    session.search("kumquat", 8, false, "hybrid").await.expect("the stand-in answers");
+    session.search("kumquat", 8, false, "hybrid", false).await.expect("the stand-in answers");
     let snapshot = session.diagnostics().await;
 
     assert!(snapshot.recent.iter().any(|row| row.method.as_deref() == Some("search")));
@@ -1451,7 +1458,7 @@ async fn a_refusal_from_np_is_not_reported_as_np_being_gone() {
         harness.data.path().to_path_buf(),
     );
 
-    let err = session.search("anything", 8, false, "hybrid").await.expect_err("np refused");
+    let err = session.search("anything", 8, false, "hybrid", false).await.expect_err("np refused");
     assert_eq!(err.kind, ErrorKind::NpRefused, "np answered; nothing is missing");
     assert_eq!(err.message, sentence, "and np's own sentence is the message (§4)");
 
@@ -1482,7 +1489,7 @@ async fn a_method_this_np_does_not_answer_says_which_floor_jott_needs() {
         harness.data.path().to_path_buf(),
     );
 
-    let err = session.search("anything", 8, false, "hybrid").await.expect_err("too old");
+    let err = session.search("anything", 8, false, "hybrid", false).await.expect_err("too old");
     assert_eq!(err.kind, ErrorKind::NpTooOld);
     assert!(
         err.message.contains(&jott_core::np::resolve::min_version_text()),
@@ -1557,7 +1564,7 @@ async fn np_is_asked_about_the_folder_and_not_one_spelling_of_it() {
         harness.data.path().to_path_buf(),
     );
 
-    session.search("kumquat", 8, false, "hybrid").await.expect("the stand-in answers");
+    session.search("kumquat", 8, false, "hybrid", false).await.expect("the stand-in answers");
     session.close().await;
 
     let lines = std::fs::read_to_string(&recorded).expect("the stand-in recorded what it was asked");
@@ -1723,7 +1730,7 @@ async fn the_window_is_told_what_ran_and_whether_there_was_an_index() {
         harness.data.path().to_path_buf(),
     );
 
-    let answer = session.search("kumquat", 8, false, "hybrid").await.expect("the stand-in answered");
+    let answer = session.search("kumquat", 8, false, "hybrid", false).await.expect("the stand-in answered");
     assert_eq!(answer.indexed, Some(false));
     assert_eq!(answer.keyword_used, Some(true));
     assert_eq!(answer.semantic_used, Some(false), "whatever `mode` claims, the vector half did not run");
@@ -2568,4 +2575,191 @@ async fn a_note_named_after_a_windows_device_is_refused_over_ipc() {
     session.save_note("null.md", "# a real note\n").expect("null.md is a note");
     let listing = session.listing().expect("listing");
     assert_eq!(listing.nodes.len(), 1, "and it is the only thing in the vault: {:?}", listing.nodes.iter().map(|n| n.rel.clone()).collect::<Vec<_>>());
+}
+
+// ---- np 0.7.0: the rerank stage (F51) ---------------------------------------------------------------------------
+
+fn info_070() -> NpInfo {
+    NpInfo { version: "0.7.0".into(), ..info() }
+}
+
+fn models_listing(reranker_state: &str, fetching: Value) -> Value {
+    json!({ "models": [], "models_dir_error": null, "pinned": [], "fetching": fetching,
+            "reranker": { "id": "bge-reranker-v2-m3", "file": "bge-reranker-v2-m3", "pinned_bytes": 635674432,
+                          "role": "rerank", "state": reranker_state } })
+}
+
+/// The `params` of every recorded call to `method`, in order.
+fn calls_to(dir: &Path, method: &str) -> Vec<Value> {
+    let Ok(text) = std::fs::read_to_string(dir.join("calls.ndjson")) else { return Vec::new() };
+    text.lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|call| call["method"] == json!(method))
+        .map(|call| call["params"].clone())
+        .collect()
+}
+
+async fn until_settled(session: &Arc<VaultSession>) -> ipc::RerankerStatus {
+    for _ in 0..100 {
+        let status = session.reranker_status().await;
+        if status.busy.is_none() {
+            return status;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("the reranker job never finished");
+}
+
+/// np refuses an explicit rerank it cannot honour (model not downloaded yet) with `-32000`. That is not a reason to
+/// show the person no results: the same search is asked again without the stage, and the answer says why.
+#[tokio::test]
+async fn a_rerank_np_cannot_honour_still_answers_and_says_why() {
+    let _turn = SERIAL.lock().await;
+    let refusal = "rerank was requested and could not run: the reranker `bge-reranker-v2-m3` is not installed";
+    let scenario_dir = scenario(json!({ "sequence": { "search": [
+        { "fault": { "code": -32000, "message": refusal } },
+        { "reply": serde_json::from_str::<Value>(SEARCH_REPLY).unwrap() },
+    ] } }));
+    let harness = Harness::new();
+    let session = harness.session_with(fake_np());
+
+    let answer = session.search("kaffee", 8, false, "keyword", true).await.expect("answered without the stage");
+
+    assert_eq!(answer.hits.len(), 1, "retrieval's answer arrives: {answer:?}");
+    let rerank = answer.rerank.expect("the window is told the stage did not run");
+    assert!(!rerank.ran);
+    assert_eq!(rerank.reason.as_deref(), Some("unavailable"));
+    assert_eq!(rerank.notice.as_deref(), Some(refusal), "np's own sentence, verbatim");
+    let asked: Vec<Value> = calls_to(scenario_dir.path(), "search").iter().map(|p| p["rerank"].clone()).collect();
+    assert_eq!(asked, vec![json!(true), json!(false)], "asked with the stage, then without it");
+}
+
+/// Any other refusal is still a refusal: the retry is for the rerank stage only.
+#[tokio::test]
+async fn only_the_rerank_refusal_is_retried() {
+    let _turn = SERIAL.lock().await;
+    let scenario_dir = scenario(json!({ "faults": { "search": { "code": -32000, "message": "workspace /x is not a directory that exists" } } }));
+    let harness = Harness::new();
+    let session = harness.session_with(fake_np());
+
+    let error = session.search("kaffee", 8, false, "keyword", true).await.expect_err("np refused the search itself");
+    assert_eq!(error.kind, ErrorKind::NpRefused);
+    assert_eq!(calls_to(scenario_dir.path(), "search").len(), 1, "no second attempt");
+}
+
+/// A folder opening with the model missing gets np's own fetch, for np's pinned id, once.
+#[tokio::test]
+async fn a_missing_ranking_model_is_fetched_by_np_once() {
+    let _turn = SERIAL.lock().await;
+    let scenario_dir = scenario(json!({ "replies": { "models.list": models_listing("absent", json!([])) },
+                                        "cli_sleep_ms": { "models fetch": 300 } }));
+    let harness = Harness::new();
+    let session = VaultSession::open_in(fake_np(), info_070(), harness.vault.path(), Consent::Undecided, None, harness.data.path().to_path_buf());
+
+    let status = session.prepare_reranker().await;
+    assert!(status.supported);
+    assert_eq!(status.present, Some(false));
+    assert_eq!(status.busy.as_deref(), Some("fetching"), "the download is under way: {status:?}");
+    let again = session.prepare_reranker().await;
+    assert_eq!(again.busy.as_deref(), Some("fetching"));
+    let settled = until_settled(&session).await;
+    assert_eq!(settled.error, None, "{settled:?}");
+
+    let fetches = calls_to(scenario_dir.path(), "models fetch");
+    assert_eq!(fetches.len(), 1, "asking twice while it runs starts one download: {fetches:?}");
+    let argv: Vec<String> = serde_json::from_value(fetches[0]["argv"].clone()).unwrap();
+    assert_eq!(argv[..2], ["models", "fetch"]);
+    assert!(argv.windows(2).any(|w| w == ["--id", "bge-reranker-v2-m3"]), "{argv:?}");
+    assert!(!argv.iter().any(|a| a == "--discard-marker"), "nobody's marker is discarded unasked: {argv:?}");
+}
+
+/// When np cannot fetch — behind a TLS-inspecting proxy, say — its sentence reaches the window, beside what a person
+/// needs to download the file themselves.
+#[tokio::test]
+async fn a_failed_fetch_says_np_s_words_and_how_to_do_it_by_hand() {
+    let _turn = SERIAL.lock().await;
+    let said = "could not open main for bge-reranker-v2-m3: could not resolve the configured host";
+    let _scenario = scenario(json!({ "replies": { "models.list": models_listing("absent", json!([])) },
+                                     "cli_fail": { "models fetch": said } }));
+    let harness = Harness::new();
+    let session = VaultSession::open_in(fake_np(), info_070(), harness.vault.path(), Consent::Undecided, None, harness.data.path().to_path_buf());
+
+    session.prepare_reranker().await;
+    let status = until_settled(&session).await;
+    assert_eq!(status.error.as_deref(), Some(said), "np's sentence, without its `np: ` prefix");
+    assert_eq!(status.manual.sha256, "d32a877b7266f5275172458616824ce6728502416672052c2da795da3389201e");
+    assert_eq!(status.manual.bytes, 635_674_432);
+}
+
+/// A file somebody downloaded by hand goes to `np models install` with the pinned digest, so np does the checking.
+#[tokio::test]
+async fn a_hand_downloaded_model_is_installed_against_the_pinned_digest() {
+    let _turn = SERIAL.lock().await;
+    let scenario_dir = scenario(json!({ "replies": { "models.list": models_listing("present, size matches the pin", json!([])) } }));
+    let harness = Harness::new();
+    let session = VaultSession::open_in(fake_np(), info_070(), harness.vault.path(), Consent::Undecided, None, harness.data.path().to_path_buf());
+
+    let status = session.install_reranker(Path::new("/downloads/bge-reranker-v2-m3-Q8_0.gguf")).await;
+    assert_eq!(status.error, None);
+    assert_eq!(status.present, Some(true));
+    let installs = calls_to(scenario_dir.path(), "models install");
+    let argv: Vec<String> = serde_json::from_value(installs[0]["argv"].clone()).unwrap();
+    assert!(argv.windows(2).any(|w| w == ["--path", "/downloads/bge-reranker-v2-m3-Q8_0.gguf"]), "{argv:?}");
+    assert!(argv.windows(2).any(|w| w[0] == "--sha256" && w[1] == status.manual.sha256), "{argv:?}");
+}
+
+/// Closing a folder stops Jott's download. np never expires the marker that leaves behind, so Jott remembers it was
+/// its own, and the next open discards it — while a marker Jott did not leave is never touched.
+#[tokio::test]
+async fn a_download_stopped_by_closing_is_resumed_and_only_its_own_marker_discarded() {
+    let _turn = SERIAL.lock().await;
+    let harness = Harness::new();
+    let marker = json!([{ "id": "bge-reranker-v2-m3", "bytes_done": 8388608, "bytes_total": 635674432 }]);
+
+    // Someone else's marker: left alone, no fetch.
+    {
+        let scenario_dir = scenario(json!({ "replies": { "models.list": models_listing("absent", marker.clone()) } }));
+        let session = VaultSession::open_in(fake_np(), info_070(), harness.vault.path(), Consent::Undecided, None, harness.data.path().to_path_buf());
+        let status = session.prepare_reranker().await;
+        assert!(status.downloading.is_some() && status.busy.is_none(), "{status:?}");
+        assert!(calls_to(scenario_dir.path(), "models fetch").is_empty());
+        session.close().await;
+    }
+
+    // Jott's own fetch, stopped by closing the folder mid-download.
+    {
+        let scenario_dir = scenario(json!({ "replies": { "models.list": models_listing("absent", json!([])) },
+                                            "cli_sleep_ms": { "models fetch": 30000 } }));
+        let session = VaultSession::open_in(fake_np(), info_070(), harness.vault.path(), Consent::Undecided, None, harness.data.path().to_path_buf());
+        session.prepare_reranker().await;
+        for _ in 0..100 {
+            if !calls_to(scenario_dir.path(), "models fetch").is_empty() { break }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        session.close().await;
+        assert_eq!(session.reranker_status().await.busy, None);
+    }
+
+    // The marker it left is now Jott's to discard.
+    let scenario_dir = scenario(json!({ "replies": { "models.list": models_listing("absent", marker) } }));
+    let session = VaultSession::open_in(fake_np(), info_070(), harness.vault.path(), Consent::Undecided, None, harness.data.path().to_path_buf());
+    session.prepare_reranker().await;
+    until_settled(&session).await;
+    let fetches = calls_to(scenario_dir.path(), "models fetch");
+    let argv: Vec<String> = serde_json::from_value(fetches[0]["argv"].clone()).unwrap();
+    assert!(argv.iter().any(|a| a == "--discard-marker"), "{argv:?}");
+}
+
+/// An np without the stage is never asked to fetch a reranker it does not pin.
+#[tokio::test]
+async fn an_np_without_the_stage_is_not_asked_for_a_reranker() {
+    let _turn = SERIAL.lock().await;
+    let scenario_dir = scenario(json!({}));
+    let harness = Harness::new();
+    let session = harness.session_with(fake_np());
+
+    let status = session.prepare_reranker().await;
+    assert!(!status.supported);
+    assert_eq!(status.present, None, "nobody was asked");
+    assert!(recorded(scenario_dir.path()).is_empty(), "{:?}", recorded(scenario_dir.path()));
 }

@@ -40,8 +40,17 @@ pub struct NpClient {
 const SERVE_ARGS: [&str; 1] = ["serve"];
 
 fn command_for(np: &Path) -> Command {
+    let mut c = np_command(np);
+    c.args(SERVE_ARGS);
+    c
+}
+
+/// np, ready for arguments: the stand-in script or the real binary, never with a console window of its own.
+pub(crate) fn np_command(np: &Path) -> Command {
     // The test stand-in is a script; the real thing is a binary. Decided by name so the
     // tests never need an executable bit that Windows has no notion of.
+    // `mut` is only exercised on Windows, by `creation_flags` below.
+    #[cfg_attr(not(windows), allow(unused_mut))]
     let mut c = if np.extension().map(|e| e == "py").unwrap_or(false) {
         let mut c = Command::new("python3");
         c.arg(np);
@@ -49,7 +58,6 @@ fn command_for(np: &Path) -> Command {
     } else {
         Command::new(np)
     };
-    c.args(SERVE_ARGS);
     // np is a console program, and on Windows starting one from a GUI process gives it a console of its own:
     // a black window titled `...\np\np.exe`, one per connection, open for as long as Jott runs. Nothing about
     // that is an error — it is our background helper making the user wonder whether they just opened a terminal.

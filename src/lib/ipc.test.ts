@@ -126,3 +126,16 @@ describe('the consent card payload', () => {
     }
   })
 })
+
+describe('the ranking model', () => {
+  it('carries every key Rust sends about what the stage did with a list', () => {
+    // `reason: "unavailable"` with np's sentence is how a search that asked for reranking and got retrieval's order
+    // says so. Dropped here, the window would show an unreranked list as if it had been reordered.
+    expect(interfaceKeys(ipcTs, 'RerankInfo').sort()).toEqual(rustFields(ipcRust, 'RerankDto').sort())
+  })
+
+  it('carries every key Rust sends about the model on disk and how to get it by hand', () => {
+    expect(interfaceKeys(ipcTs, 'RerankerStatus').sort()).toEqual(rustFields(ipcRust, 'RerankerStatus').sort())
+    expect(interfaceKeys(ipcTs, 'ManualDownload').sort()).toEqual(rustFields(ipcRust, 'ManualDownloadDto').sort())
+  })
+})

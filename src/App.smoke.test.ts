@@ -38,6 +38,9 @@ const confirmed = vi.hoisted(() => ({ current: false }))
 const commands = vi.hoisted(() => [] as string[])
 /** Every argument set the window sent to `search_vault`, so a test can see what actually crossed the wire. */
 const searchCalls = vi.hoisted(() => [] as Record<string, unknown>[])
+/** Two hits for `kaffee`, which the ranking model (np 0.7.0) swaps when the window asks it to — the one query in this
+    stub with enough results for the second step to run. */
+const rerankStub = vi.hoisted(() => ({ on: false }))
 /** The backend version every stub reports. One place, because the About assertions below check that this exact
     string travels from `app_info` through the panel to the screen — a second copy of it would pass either way. */
 // The build this release ships with (§12). An older number here once hid a test that only passed against a backend
@@ -257,6 +260,39 @@ vi.mock('@tauri-apps/api/core', () => ({
       case 'search_vault': {
         searchCalls.push({ ...(args ?? {}) })
         const query = String((args as { query?: string } | undefined)?.query ?? '')
+        if (rerankStub.on && query === 'kaffee') {
+          const reranked = Boolean((args as { rerank?: boolean } | undefined)?.rerank)
+          const row = (path: string, before: number | null, after: number | null, score: number | null) => ({
+            path,
+            snippet: `${path} mentions Kaffee`,
+            kind: 'note',
+            score: 0.016,
+            bm25: 1.4,
+            cosine: null,
+            matchedExactly: true,
+            rerankScore: score,
+            rerankRankBefore: before,
+            rerankRankAfter: after,
+          })
+          return Promise.resolve({
+            hits: reranked
+              ? [row('bills.md', 2, 1, 4.2), row('coffee.md', 1, 2, -0.6)]
+              : [row('coffee.md', null, null, null), row('bills.md', null, null, null)],
+            mode: 'keyword',
+            vectors: false,
+            offline: false,
+            reason: null,
+            indexed: true,
+            keywordUsed: true,
+            semanticUsed: false,
+            notice: null,
+            prefixUsed: false,
+            prefixTerms: [],
+            rerank: reranked
+              ? { ran: true, reason: null, notice: null, candidates: 2 }
+              : { ran: false, reason: 'disabled', notice: null, candidates: 0 },
+          })
+        }
         if (widening.on) {
           return Promise.resolve({
             hits: [
@@ -500,6 +536,23 @@ vi.mock('@tauri-apps/api/core', () => ({
           return Promise.reject({ kind: 'noVault', message: 'no vault is open' })
         }
         return Promise.resolve(listingFor(scenario.current, session.current))
+      case 'prepare_reranker':
+      case 'reranker_status':
+        if (session.current === null) return Promise.reject({ kind: 'noVault', message: 'no vault is open' })
+        return Promise.resolve({
+          supported: true,
+          npVersion: '0.7.0',
+          modelId: 'bge-reranker-v2-m3',
+          present: true,
+          state: 'present, size matches the pin',
+          downloading: null,
+          busy: null,
+          error: null,
+          manual: { url: 'https://example.invalid/m.gguf', fileName: 'm.gguf', sha256: 'd'.repeat(64), bytes: 635674432 },
+          topN: null,
+          topNDefault: 5,
+          configPath: null,
+        })
       default:
         return Promise.reject(new Error(`the window asked for a command nobody stubbed: ${cmd}`))
     }
@@ -638,6 +691,7 @@ describe('the window mounts', () => {
   beforeEach(() => {
     commands.length = 0
     searchCalls.length = 0
+    rerankStub.on = false
     widening.on = false
     // Every switch gets reset here — including the model-status ones, which three tests set and would otherwise hand to
     // whatever is declared after them.
@@ -3497,6 +3551,48 @@ describe('the window mounts', () => {
     box.dispatchEvent(new Event('input', { bubbles: true }))
     await new Promise((resolve) => setTimeout(resolve, 300))
     expect(asked(), 'the second np child should not be asked about on every keystroke').toBe(2)
+    expect(errors).toEqual([])
+  })
+
+  it('shows retrieval’s answer at once, then lets the ranking model reorder it', async () => {
+    // Reranking is on by default and is a *second* step: np loads its ranking model per request (~2–3 s measured on
+    // 0.7.0), so the list must not wait for it. And opening the folder is when the model gets fetched, not the first
+    // search — np's search never fetches it.
+    scenario.current = 'vault'
+    rerankStub.on = true
+    const { errors } = await start()
+    await vi.waitFor(() => expect(commands).toContain('prepare_reranker'), { timeout: 2000 })
+
+    const box = document.querySelector('input[type="search"]') as HTMLInputElement
+    box.value = 'kaffee'
+    box.dispatchEvent(new Event('input', { bubbles: true }))
+    await vi.waitFor(
+      () => expect(document.querySelector('[data-testid="rerank-line"]')?.textContent).toContain('top 2 reordered'),
+      { timeout: 2000 },
+    )
+
+    expect(searchCalls.map((call) => call.rerank), 'retrieval first, then the ranking step').toEqual([false, true])
+    const paths = [...document.querySelectorAll('.hit-path')].map((el) => el.textContent)
+    expect(paths, 'the reordered list replaces the first one').toEqual(['bills.md', 'coffee.md'])
+    expect(document.querySelector('[data-testid="hit-rerank"]')?.textContent).toContain('moved up from #2')
+    expect(errors).toEqual([])
+  })
+
+  it('neither reranks nor fetches the model once reranking is switched off', async () => {
+    localStorage.setItem('jott.search.rerank', '0')
+    scenario.current = 'vault'
+    rerankStub.on = true
+    const { errors } = await start()
+
+    const box = document.querySelector('input[type="search"]') as HTMLInputElement
+    box.value = 'kaffee'
+    box.dispatchEvent(new Event('input', { bubbles: true }))
+    await vi.waitFor(() => expect(document.querySelectorAll('.hit-path').length).toBe(2), { timeout: 2000 })
+    await new Promise((resolve) => setTimeout(resolve, 300))
+
+    expect(searchCalls.map((call) => call.rerank)).toEqual([false])
+    expect(commands, 'a model nobody wants is not downloaded').not.toContain('prepare_reranker')
+    expect(document.querySelector('[data-testid="rerank-line"]')).toBeNull()
     expect(errors).toEqual([])
   })
 

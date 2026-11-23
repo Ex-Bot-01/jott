@@ -20,6 +20,12 @@ FAKE_NP_SCENARIO (JSON):
                         Two connections append to it, so a test can read what np was asked for and
                         in what order.
   require_mode          refuse a `search` whose mode is not this one, naming what arrived
+  cli_fail              {"models fetch" | "models install": sentence} — the one-shot command prints `np: <sentence>`
+                        on stderr and exits 1, as np 0.7.0 does when a fetch cannot reach its origin
+  cli_sleep_ms          {"models fetch" | "models install": ms} — how long the one-shot command runs first
+
+Run as `np models …` it is a one-shot command instead (np 0.7.0's reranker fetch and install): it records
+`{"method": "models fetch", "params": {"argv": [...]}}` and exits 0 unless `cli_fail` names it.
 
 Anything unlisted gets np's own -32601 sentence. Exits 0 at EOF, the way np does.
 Deliberately dumb: it exists to be wrong in specific ways on request.
@@ -92,6 +98,18 @@ def note(req_id, command, phase, extra=None):
     if extra:
         params.update(extra)
     write({"jsonrpc": "2.0", "method": "np/progress", "params": params})
+
+
+if sys.argv[1:2] == ["models"]:
+    command = " ".join(sys.argv[1:3])
+    record(command, {"argv": sys.argv[1:]})
+    if pause := SCENARIO.get("cli_sleep_ms", {}).get(command):
+        time.sleep(pause / 1000.0)
+    if sentence := SCENARIO.get("cli_fail", {}).get(command):
+        sys.stderr.write(f"np: {sentence}\n")
+        sys.exit(1)
+    sys.stdout.write("{}\n")
+    sys.exit(0)
 
 
 # Real np is `np serve`. With no subcommand it prints its usage on stderr and exits 2 without reading a

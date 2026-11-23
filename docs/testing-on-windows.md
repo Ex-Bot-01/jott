@@ -139,7 +139,7 @@ Two more things to report on:
 
 ## 2b-iii. Since 0.0.13: the np inside is 0.4.0, and search stopped guessing
 
-*(Historic: Jott ships np 0.6.1 since 0.0.31 — 0.6.0 from 0.0.29 — so read every `0.4.0` and `0.5.1` below as the shipped build. The behaviours asked for in §2b-v still apply; §2b-ze adds what 0.6.0 changed, and §2b-zg is what 0.6.1 adds on top: nothing you can see, which is exactly what to check.)*
+*(Historic: Jott ships np 0.7.0 since the reranking change (§2b-zi) — 0.6.1 from 0.0.31, 0.6.0 from 0.0.29 — so read every `0.4.0` and `0.5.1` below as the shipped build. The behaviours asked for in §2b-v still apply; §2b-ze adds what 0.6.0 changed, §2b-zg is what 0.6.1 adds on top: nothing you can see, which is exactly what to check, and §2b-zi is 0.7.0's ranking model.)*
 
 Four things to check, all of them about what the window claims:
 
@@ -942,6 +942,35 @@ because np renames a temporary into place on every pass and that used to read as
 vault has a sync client that rewrites files constantly (Syncthing, Dropbox, OneDrive on a busy folder), this is the
 change worth watching: coalescing happens in the queue, so a sweep of forty notes should look like one indexing pass,
 not forty.
+
+## 2b-zi. np 0.7.0's ranking model reorders the top of every search
+
+The np inside Jott is now **0.7.0**, and Jott uses what it adds: a cross-encoder (`bge-reranker-v2-m3`, 636 MB) that
+reads your query beside each of the top results and reorders them. It changes **only the order** — which notes match is
+still decided by words, meanings or both, exactly as before. It is **on by default** and switched in
+**Settings → Reranking**; **Advanced** there sets how many top results it reorders (default 5, 1–64), written into
+note-processor's own `config.toml` as `[search] rerank_top_n`.
+
+Measured on this Windows asset: the model loads per search, so a reranked search costs about **2.2 s plus ~0.25 s per
+result reordered** (≈3.4 s at 5). That is why it is a second step — what to check:
+
+1. **The first open of a folder starts the download** (Settings → Reranking says *Downloading the ranking model… N of
+   606 MB*). A search never fetches it, so this is the only place it happens. Switching reranking off before opening a
+   folder downloads nothing.
+2. **Type a query that matches several notes.** The list must appear at once, the header says *reranking the top
+   results…*, and a few seconds later the rows reorder: the header says *top 5 reordered by the ranking model*, and a
+   row the model moved says *moved up from #4* (hover it for the model's raw score). Typing on must never wait for it.
+3. **Before the model is there** the list still arrives, unreordered, with *not reranked — the ranking model is not
+   ready (see Settings)*; hovering that shows note-processor's own sentence.
+4. **Close Jott in the middle of the download**, then open it again. The download starts over by itself; it must not
+   say "a fetch is already recorded" and stop there.
+5. **On a work network that inspects encrypted traffic** (Zscaler measured here) np cannot download the model: it says
+   *could not resolve the configured host*, which is np mislabelling a certificate refusal. Settings then shows the
+   by-hand path — open the address in your browser, then **Choose the downloaded file…**. note-processor copies the file
+   and refuses it unless it hashes to `d32a877b…3389201e`, so a half-finished browser download is refused, not used. The
+   same network also blocks np's download of the *embedding* model; that is not new in this release, only newly noticed.
+
+np keeps the model **per folder**, like everything else it stores: a second vault downloads its own copy.
 
 ## 4. The question only Windows can answer: write-lock contention
 

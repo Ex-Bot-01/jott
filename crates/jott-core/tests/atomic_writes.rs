@@ -2,7 +2,7 @@
 //!
 //! `VaultStore::save` says the rule out loud ("a temp file in the same directory, then one rename. A crash leaves
 //! either the old file or the new one, never half of either"), and `Stamps::save` repeats it in its own words.
-//! `set_auto_fetch` wrote np's `config.toml` with a plain `std::fs::write`: a crash or a power loss mid-write left
+//! `set_auto_fetch` (now `set_key`, which also writes `[search] rerank_top_n`) wrote np's `config.toml` with a plain `std::fs::write`: a crash or a power loss mid-write left
 //! a truncated file, np then answered its own *config parse error in <path>*, Jott reported `configUnreadable`,
 //! and the two keys that carry the consent answer — `embeddings.provider` and `embeddings.model`, written by np
 //! itself since note-processor#7 — went with it. It is also the file nobody owns: it may hold somebody's mirror
@@ -50,7 +50,7 @@ fn a_rewritten_file_is_written_aside_and_moved_into_place() {
     let writers = [
         ("crates/jott-core/src/vault/store.rs", "fn save(&self, entries: &[VaultEntry])"),
         ("crates/jott-core/src/vault/stamps.rs", "pub fn save(&self) -> Result<(), StoreError>"),
-        ("crates/jott-core/src/ingest/consent.rs", "pub fn set_auto_fetch(path: &Path, allow: bool)"),
+        ("crates/jott-core/src/ingest/consent.rs", "fn set_key(path: &Path, table: &'static str"),
     ];
     for (file, signature) in writers {
         let name = file.rsplit('/').next().unwrap();
@@ -75,7 +75,7 @@ fn the_temporary_lives_in_the_same_directory_as_the_file() {
     for (file, signature) in [
         ("crates/jott-core/src/vault/store.rs", "fn save(&self, entries: &[VaultEntry])"),
         ("crates/jott-core/src/vault/stamps.rs", "pub fn save(&self) -> Result<(), StoreError>"),
-        ("crates/jott-core/src/ingest/consent.rs", "pub fn set_auto_fetch(path: &Path, allow: bool)"),
+        ("crates/jott-core/src/ingest/consent.rs", "fn set_key(path: &Path, table: &'static str"),
     ] {
         let body = body(file, signature);
         assert!(

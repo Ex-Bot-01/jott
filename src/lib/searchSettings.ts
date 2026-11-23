@@ -15,14 +15,20 @@ export type SearchMode = 'keyword' | 'hybrid' | 'semantic'
 /** The one key each half owns. Namespaced so another app sharing an origin cannot answer for Jott. */
 export const MODE_KEY = 'jott.search.mode'
 export const PREFIX_KEY = 'jott.search.prefix'
+/** Whether a second step reorders the top results with note-processor's ranking model (np 0.7.0). */
+export const RERANK_KEY = 'jott.search.rerank'
 
 export interface SearchSettings {
   mode: SearchMode
   prefix: boolean
+  rerank: boolean
 }
 
-/** What a window with no stored choice does — which is also the reading of any value this version cannot parse. */
-export const DEFAULTS: SearchSettings = { mode: 'hybrid', prefix: false }
+/** What a window with no stored choice does — which is also the reading of any value this version cannot parse.
+ *
+ *  `rerank` is the one default that is Jott's rather than note-processor's (np ships its stage off): it was asked for
+ *  on by default, and it changes only the *order* of what retrieval already found, never which notes match. */
+export const DEFAULTS: SearchSettings = { mode: 'hybrid', prefix: false, rerank: true }
 
 const MODES: readonly SearchMode[] = ['keyword', 'hybrid', 'semantic']
 
@@ -36,11 +42,13 @@ type WritableStore = Pick<Storage, 'setItem'>
 export function loadSettings(store: Store | null | undefined): SearchSettings {
   let modeRaw: string | null = null
   let prefixRaw: string | null = null
+  let rerankRaw: string | null = null
   try {
     modeRaw = store?.getItem(MODE_KEY) ?? null
     // Read both in one `try`: a webview that throws on the first key throws on the second, and half a setting read is
     // worse than none because it would silently pair a remembered mode with a default toggle.
     prefixRaw = store?.getItem(PREFIX_KEY) ?? null
+    rerankRaw = store?.getItem(RERANK_KEY) ?? null
   } catch {
     return { ...DEFAULTS }
   }
@@ -51,6 +59,8 @@ export function loadSettings(store: Store | null | undefined): SearchSettings {
     mode: MODES.includes(modeRaw as SearchMode) ? (modeRaw as SearchMode) : DEFAULTS.mode,
     // Exactly `"1"`, for the same reason as v0.0.15: "true"/"yes"/"on" are guesses about intent.
     prefix: prefixRaw === '1',
+    // Default on, so only the exact "no" this module writes turns it off.
+    rerank: rerankRaw !== '0',
   }
 }
 
@@ -69,6 +79,15 @@ export function saveMode(store: WritableStore | null | undefined, mode: SearchMo
 export function savePrefix(store: WritableStore | null | undefined, on: boolean): void {
   try {
     store?.setItem(PREFIX_KEY, on ? '1' : '0')
+  } catch {
+    // Nothing to do. The toggle works until the window closes.
+  }
+}
+
+/** Remember whether search reranks. Same spelling as the prefix toggle: `"1"` or `"0"`, never a deleted key. */
+export function saveRerank(store: WritableStore | null | undefined, on: boolean): void {
+  try {
+    store?.setItem(RERANK_KEY, on ? '1' : '0')
   } catch {
     // Nothing to do. The toggle works until the window closes.
   }

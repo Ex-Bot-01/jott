@@ -374,6 +374,32 @@ pub struct Hit {
     /// never word-tested it — a vector-only hit — and is not the same answer as `true`.
     #[serde(default)]
     pub matched_exactly: Option<bool>,
+    /// 0.7.0 (F51): the cross-encoder's raw score for this hit. `None` when the rerank stage did not run, or did not
+    /// score this hit (beyond the top N, or a figure) — `score` stays retrieval's number either way.
+    #[serde(default)]
+    pub rerank_score: Option<f64>,
+    /// 1-based position in retrieval's order and after the reorder. Both `None` exactly when `rerank_score` is.
+    #[serde(default)]
+    pub rerank_rank_before: Option<u32>,
+    #[serde(default)]
+    pub rerank_rank_after: Option<u32>,
+}
+
+/// np 0.7.0's `rerank` object on a search answer: whether the stage ran, and np's token for why not. Absent from an
+/// older np, which has no stage — `None` on [`SearchAnswer::rerank`], never a made-up "disabled".
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct RerankReport {
+    pub ran: bool,
+    /// `disabled`, `no-candidates`, or a decline cause (`rerank-artifact-missing`, …). `None` when it ran.
+    #[serde(default)]
+    pub reason: Option<String>,
+    /// np's own sentence about a decline, verbatim.
+    #[serde(default)]
+    pub note: Option<String>,
+    #[serde(default)]
+    pub candidates: u32,
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 /// A search answer plus its provenance: the four keys that let an empty or half list explain
@@ -404,6 +430,8 @@ pub struct SearchAnswer {
     /// Which words np widened, as it named them. Empty whenever `prefix_used` is not true, and also when np widened
     /// without telling us which; the window only ever claims the words in this list.
     pub prefix_terms: Vec<String>,
+    /// 0.7.0: what the rerank stage did with this answer. `None` from an np that has no stage.
+    pub rerank: Option<RerankReport>,
 }
 
 #[derive(Deserialize)]
@@ -425,6 +453,8 @@ struct RawSearchAnswer {
     prefix_used: Option<bool>,
     #[serde(default)]
     prefix_terms: Vec<String>,
+    #[serde(default)]
+    rerank: Option<RerankReport>,
 }
 
 pub fn search_answer(value: &Value) -> Result<SearchAnswer, NpFault> {
@@ -461,6 +491,7 @@ pub fn search_answer(value: &Value) -> Result<SearchAnswer, NpFault> {
             note: r.note,
             prefix_used: r.prefix_used,
             prefix_terms: r.prefix_terms,
+            rerank: r.rerank,
         })
         .map_err(|e| shape_fault("search", e))
 }
@@ -533,6 +564,29 @@ pub struct ModelListing {
     /// not "bytes are moving"; the window shows this only while the count advances (`modelStatus.ts`,
     /// `bytesAdvanced`), and asks again rather than trusting one reading.
     pub fetching: Vec<FetchProgress>,
+    /// 0.7.0: the reranker this np pins and what its models directory holds for it. `None` from an older np, and
+    /// from a 0.7.0 build that pins none (np sends `null` there).
+    pub reranker: Option<RerankerListing>,
+}
+
+/// np's `reranker` entry in `models.list`. It is deliberately not a [`ModelRow`]: a reranker has no `models` row in
+/// np, so it can never be picked as an embedder.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct RerankerListing {
+    pub id: String,
+    /// np's verdict on the file, in its own words: `absent`, `present, size matches the pin`,
+    /// `present, size differs from the pin`.
+    pub state: String,
+    #[serde(default)]
+    pub pinned_bytes: Option<u64>,
+}
+
+impl RerankerListing {
+    /// The one state in which a reranked search can run. Size only, which is what np's listing can say without
+    /// reading 636 MB; np checks the digest itself before it loads the bytes.
+    pub fn present(&self) -> bool {
+        self.state == "present, size matches the pin"
+    }
 }
 
 /// One of np's fetch markers: a model id and how far its bytes have come.
@@ -574,7 +628,20 @@ impl ModelListing {
     /// byte counts that measure different files. Lowest id first, because a person re-reading the banner seconds
     /// later must not see it switch models for no reason.
     pub fn download(&self) -> Option<FetchProgress> {
-        self.fetching.iter().min_by(|a, b| a.id.cmp(&b.id)).cloned()
+        let reranker = self.reranker.as_ref().map(|r| r.id.as_str());
+        // The reranker's fetch has its own line in the window (`reranker_download`); counting it here would put
+        // 636 MB of ranking model under a banner about the embedding model.
+        self.fetching
+            .iter()
+            .filter(|f| Some(f.id.as_str()) != reranker)
+            .min_by(|a, b| a.id.cmp(&b.id))
+            .cloned()
+    }
+
+    /// np's marker for a reranker download in flight, when there is one.
+    pub fn reranker_download(&self) -> Option<FetchProgress> {
+        let id = self.reranker.as_ref()?.id.as_str();
+        self.fetching.iter().find(|f| f.id == id).cloned()
     }
 
     pub fn only_price(&self) -> Option<u64> {
@@ -593,6 +660,8 @@ struct RawListing {
     pinned: Option<Vec<RawPinned>>,
     #[serde(default)]
     fetching: Option<Vec<RawFetching>>,
+    #[serde(default)]
+    reranker: Option<RerankerListing>,
 }
 
 #[derive(Deserialize)]
@@ -629,6 +698,7 @@ pub fn model_listing(value: &Value) -> Result<ModelListing, NpFault> {
                 .into_iter()
                 .map(|f| FetchProgress { id: f.id, bytes_done: f.bytes_done, bytes_total: f.bytes_total })
                 .collect(),
+            reranker: r.reranker,
         })
         .map_err(|e| shape_fault("models.list", e))
 }

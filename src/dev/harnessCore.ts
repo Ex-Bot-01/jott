@@ -14,6 +14,7 @@ import type {
   NoteContent,
   RegistryInfo,
   RenameOutcome,
+  RerankerStatus,
   ScanReport,
   SearchHit,
   SearchResults,
@@ -30,7 +31,7 @@ function later<T>(value: T, ms = 40): Promise<T> {
 }
 
 /** np's own arithmetic, kept honest: `score` is reciprocal-rank fusion of the two rankings, not a similarity. */
-function search(query: string, prefix: boolean, mode: string): SearchResults {
+function search(query: string, prefix: boolean, mode: string, rerank = false): SearchResults {
   const words = query.toLowerCase().split(/\s+/).filter(Boolean)
   const scored: { file: (typeof vault.files)[number]; kwRank: number; semRank: number | null; exact: boolean }[] = []
   for (const file of vault.files) {
@@ -49,8 +50,27 @@ function search(query: string, prefix: boolean, mode: string): SearchResults {
     bm25: -0.51 + 0.1 * (s.kwRank ?? 0),
     cosine: s.semRank === null ? null : 0.82 - 0.03 * s.semRank,
     matchedExactly: mode === 'semantic' && !s.exact ? null : s.exact,
+    rerankScore: null,
+    rerankRankBefore: null,
+    rerankRankAfter: null,
   }))
   const widened = prefix ? words.filter((w) => !hits.some((h) => h.matchedExactly === true)) : []
+  // The ranking model, faked as "reverse the top five": enough to see rows move and their marks appear.
+  let rerankInfo: SearchResults['rerank'] = { ran: false, reason: 'disabled', notice: null, candidates: 0 }
+  if (rerank && reranker.present !== true) {
+    rerankInfo = {
+      ran: false,
+      reason: 'unavailable',
+      notice: 'rerank was requested and could not run: the reranker `bge-reranker-v2-m3` is not installed',
+      candidates: 0,
+    }
+  } else if (rerank && hits.length > 0) {
+    const n = Math.min(5, hits.length)
+    const top = hits.slice(0, n).map((hit, index) => ({ ...hit, rerankRankBefore: index + 1, rerankScore: 1.5 - index }))
+    top.reverse().forEach((hit, index) => (hit.rerankRankAfter = index + 1))
+    hits.splice(0, n, ...top)
+    rerankInfo = { ran: true, reason: null, notice: null, candidates: n }
+  }
   return {
     hits,
     mode: mode === 'semantic' ? 'hybrid' : 'keyword',
@@ -63,6 +83,32 @@ function search(query: string, prefix: boolean, mode: string): SearchResults {
     notice: null,
     prefixUsed: prefix && widened.length > 0,
     prefixTerms: widened,
+    rerank: rerankInfo,
+  }
+}
+
+/** The ranking model on the harness's pretend disk: there in a normal folder, unreachable in `?s=rerank-fail`. */
+const reranker: { present: boolean; error: string | null } = { present: scenario !== 'rerank-fail', error: null }
+
+function rerankerStatus(): RerankerStatus {
+  return {
+    supported: true,
+    npVersion: '0.7.0',
+    modelId: 'bge-reranker-v2-m3',
+    present: reranker.present,
+    state: reranker.present ? 'present, size matches the pin' : 'absent',
+    downloading: null,
+    busy: null,
+    error: reranker.error,
+    manual: {
+      url: 'https://huggingface.co/smarttasks/bge-reranker-v2-m3-GGUF/resolve/main/bge-reranker-v2-m3-Q8_0.gguf',
+      fileName: 'bge-reranker-v2-m3-Q8_0.gguf',
+      sha256: 'd32a877b7266f5275172458616824ce6728502416672052c2da795da3389201e',
+      bytes: 635_674_432,
+    },
+    topN: null,
+    topNDefault: 5,
+    configPath: '/home/example/.config/note-processor/config.toml',
   }
 }
 
@@ -283,7 +329,21 @@ export async function invoke<T>(cmd: string, args: Record<string, unknown> = {})
       case 'discard_mirror':
         return undefined
       case 'search_vault':
-        return search(String(args.query ?? ''), Boolean(args.prefix), String(args.mode ?? 'hybrid'))
+        return search(String(args.query ?? ''), Boolean(args.prefix), String(args.mode ?? 'hybrid'), Boolean(args.rerank))
+      case 'reranker_status':
+        return rerankerStatus()
+      case 'prepare_reranker':
+        if (scenario === 'rerank-fail' && !reranker.present) {
+          // The sentence np 0.7.0 prints behind a TLS-inspecting proxy, measured.
+          reranker.error = 'could not open main for bge-reranker-v2-m3: could not resolve the configured host'
+        }
+        return rerankerStatus()
+      case 'install_reranker':
+        reranker.present = true
+        reranker.error = null
+        return rerankerStatus()
+      case 'set_rerank_top_n':
+        return undefined
       case 'ingest_all': {
         // Watch the status line: the same three lines core would send, on the same channel.
         setTimeout(() => bus.emit('ingest://event', { working: { phase: 'embedding', done: 0, total: 12, memberIndex: null, memberCount: null } }), 300)

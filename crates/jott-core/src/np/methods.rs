@@ -61,12 +61,16 @@ pub async fn search(
     // off and Jott's toggle is off until asked, so `false` is the honest value rather than an omitted key that lets
     // somebody else's default decide what a person's search meant.
     prefix: bool,
+    // 0.7.0 (F51): ask for the rerank stage, or say explicitly that it is not wanted — never omitted, so np's own
+    // `[search] rerank` cannot decide for the window. An older np ignores the key and answers without a stage.
+    rerank: bool,
 ) -> Result<SearchAnswer, NpFault> {
     let mut params = workspace_params(workspace);
     params["query"] = json!(query);
     params["limit"] = json!(limit);
     params["mode"] = json!(mode.label());
     params["prefix"] = json!(prefix);
+    params["rerank"] = json!(rerank);
     let value = client.request("search", params).await?;
     search_answer(&value)
 }

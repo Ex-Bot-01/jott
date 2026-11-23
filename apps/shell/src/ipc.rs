@@ -13,7 +13,7 @@ use jott_core::diagnostics::{Journal, LocalRecord, RunRecord};
 use jott_core::ingest::consent::np_config_path;
 use jott_core::ingest::queue::ConsentOffer;
 use jott_core::ipc::{
-    self, ConsentAnswerDto, ConsentHelp, Diagnostics, EmbeddingsStatus, IpcError, NpMissingPayload,
+    self, ConsentAnswerDto, ConsentHelp, Diagnostics, EmbeddingsStatus, IpcError, NpMissingPayload, RerankerStatus,
     NoteContent, RegistryInfo, RenameOutcome, SearchResults, VaultListing, VaultSession, WriteResult,
 };
 use jott_core::np::client::NpClient;
@@ -435,11 +435,37 @@ pub async fn search_vault(
     limit: u8,
     prefix: bool,
     mode: String,
+    rerank: bool,
     app: State<'_, App>,
 ) -> Result<SearchResults, IpcError> {
     // The label is checked in core rather than here: the verdict and the request belong to the same code, and this
     // file's job stays "carry it".
-    app.current()?.search(&query, limit, prefix, &mode).await
+    app.current()?.search(&query, limit, prefix, &mode, rerank).await
+}
+
+/// The ranking model's standing for the open folder: can this np rerank, are the bytes here, is a download running,
+/// and where to get the file by hand.
+#[tauri::command]
+pub async fn reranker_status(app: State<'_, App>) -> Result<RerankerStatus, IpcError> {
+    Ok(app.current()?.reranker_status().await)
+}
+
+/// Start downloading the ranking model if np says it is missing. Answers at once; the download runs on.
+#[tauri::command]
+pub async fn prepare_reranker(app: State<'_, App>) -> Result<RerankerStatus, IpcError> {
+    Ok(app.current()?.prepare_reranker().await)
+}
+
+/// Hand np a ranking model the person downloaded themselves; np checks it against the pinned digest.
+#[tauri::command]
+pub async fn install_reranker(path: String, app: State<'_, App>) -> Result<RerankerStatus, IpcError> {
+    Ok(app.current()?.install_reranker(Path::new(&path)).await)
+}
+
+/// How many top results the ranking model reorders — np's `[search] rerank_top_n`.
+#[tauri::command]
+pub fn set_rerank_top_n(n: i64, app: State<'_, App>) -> Result<(), IpcError> {
+    app.current()?.set_rerank_top_n(n)
 }
 
 #[tauri::command]

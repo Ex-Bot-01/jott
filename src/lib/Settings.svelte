@@ -1,5 +1,5 @@
 <script lang="ts">
-  // The window's two search choices and the one permission, in one panel.
+  // The window's search choices — engine, word beginnings, reranking — and the one permission, in one panel.
   //
   // It exists because the tester could not find them: "a settings menu to show this, so it isn't hidden" — a toggle
   // beside the search box is discoverable until you want the *other* setting, and after that there was nothing at all.
@@ -8,10 +8,16 @@
   import { modeSentence, type SearchMode } from './searchSettings'
   import { cardClipboard, panelLines, type ConsentFacts } from './consentHelp'
   import { meaningsNotice } from './searchState'
+  import { manualSteps, rerankerSummary, topNAccepted, topNValue } from './rerankStatus'
+  import type { RerankerStatus } from './ipc'
+  import { openUrl } from '@tauri-apps/plugin-opener'
 
   let {
     mode,
     prefix,
+    rerank,
+    reranker = null,
+    rerankerInstalling = false,
     vectors,
     cardFacts,
     /** True while the read that fills `cardFacts` is in flight. Without it, "no lines yet" cannot be told apart from
@@ -21,11 +27,20 @@
     consentBusy = false,
     onmode,
     onprefix,
+    onrerank,
+    onrerankretry,
+    onrerankinstall,
+    ontopn,
     onconsent,
     onClose,
   }: {
     mode: SearchMode
     prefix: boolean
+    /** Whether a second step reorders the top results with note-processor's ranking model. */
+    rerank: boolean
+    /** The ranking model's standing for this folder; `null` until asked. */
+    reranker?: RerankerStatus | null
+    rerankerInstalling?: boolean
     /** What np said about vectors in the last search: `null` when nobody has searched yet, which is not the same as
      *  "no vectors" and must not be shown as such. */
     vectors: boolean | null
@@ -35,6 +50,10 @@
     consentBusy?: boolean
     onmode: (mode: SearchMode) => void
     onprefix: (on: boolean) => void
+    onrerank: (on: boolean) => void
+    onrerankretry: () => void
+    onrerankinstall: () => void
+    ontopn: (n: number) => void
     onconsent: (granted: boolean) => void
     onClose: () => void
   } = $props()
@@ -60,6 +79,17 @@
   }
   const notice = $derived(meaningsNotice(vectors))
   const embeddingsLines = $derived(cardFacts ? panelLines(cardFacts) : [])
+  const rerankSummary = $derived(rerankerSummary(reranker, rerank, rerankerInstalling))
+  // The field holds what is typed; np's value is only written when it is one np accepts.
+  let topNDraft = $state<number | null>(null)
+  const topNShown = $derived(topNDraft ?? topNValue(reranker))
+  const topNValid = $derived(topNAccepted(topNShown))
+
+  function commitTopN() {
+    if (topNDraft === null || !topNValid || topNDraft === topNValue(reranker)) return
+    ontopn(topNDraft)
+    topNDraft = null
+  }
 
   let panel = $state<HTMLElement | undefined>()
   $effect(() => {
@@ -110,6 +140,67 @@
       <input type="checkbox" checked={prefix} data-testid="settings-prefix" onchange={() => onprefix(!prefix)} />
       <span>Match word beginnings — “grand” finds grandmother</span>
     </label>
+  </fieldset>
+
+  <fieldset data-testid="settings-rerank">
+    <legend>Reranking</legend>
+    <label class="prefix">
+      <input type="checkbox" checked={rerank} data-testid="settings-rerank-toggle" onchange={() => onrerank(!rerank)} />
+      <span>
+        After each search, reorder the top results with note-processor’s ranking model. Which notes match does not
+        change — only their order. The list appears at once and is reordered a few seconds later.
+      </span>
+    </label>
+    <p class="quiet" data-testid="rerank-status">{rerankSummary.line}</p>
+    {#if rerankSummary.manual && reranker}
+      <!-- The by-hand path, for when note-processor cannot fetch the file itself (a proxy that inspects TLS is the case
+           measured so far). np checks the chosen file against its pinned digest before it accepts it. -->
+      <ol class="lines" data-testid="rerank-manual">
+        {#each manualSteps(reranker) as step}<li>{step}</li>{/each}
+      </ol>
+      <input class="url" readonly value={reranker.manual.url} aria-label="Download address" onfocus={(e) => e.currentTarget.select()} />
+      <p class="quiet digest">SHA-256 {reranker.manual.sha256}</p>
+    {/if}
+    {#if rerankSummary.manual || rerankSummary.retry}
+      <div class="buttons">
+        {#if rerankSummary.retry}
+          <button type="button" data-testid="rerank-retry" onclick={onrerankretry}>Try the download again</button>
+        {/if}
+        {#if rerankSummary.manual && reranker}
+          <button type="button" data-testid="rerank-open-url" onclick={() => void openUrl(reranker.manual.url).catch(() => {})}>
+            Open the download in the browser
+          </button>
+          <button type="button" data-testid="rerank-install" disabled={rerankerInstalling} onclick={onrerankinstall}>
+            Choose the downloaded file…
+          </button>
+        {/if}
+      </div>
+    {/if}
+    <details class="advanced">
+      <summary>Advanced</summary>
+      <label class="topn">
+        <span>Results the ranking model reorders</span>
+        <input
+          type="number"
+          min="1"
+          max="64"
+          step="1"
+          data-testid="rerank-topn"
+          value={topNShown}
+          aria-invalid={!topNValid}
+          oninput={(e) => (topNDraft = e.currentTarget.valueAsNumber)}
+          onchange={commitTopN}
+        />
+      </label>
+      <p class="quiet">
+        {#if topNValid}
+          Default {reranker?.topNDefault ?? 5}. More results cost more time per search — about a quarter of a second
+          each. Saved as <code>[search] rerank_top_n</code> in note-processor’s settings{reranker?.configPath ? ` (${reranker.configPath})` : ''}.
+        {:else}
+          note-processor accepts a whole number from 1 to 64.
+        {/if}
+      </p>
+    </details>
   </fieldset>
 
   <fieldset>
@@ -239,5 +330,36 @@
   .quiet {
     font-size: 0.86rem;
     margin: 0.2rem 0 0.4rem;
+  }
+
+  .url {
+    width: 100%;
+    font-size: 0.78rem;
+    margin: 0.2rem 0;
+  }
+
+  .digest {
+    font-size: 0.72rem;
+    overflow-wrap: anywhere;
+  }
+
+  .advanced {
+    margin-top: 0.6rem;
+    font-size: 0.86rem;
+  }
+
+  .topn {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    margin: 0.4rem 0 0.2rem;
+  }
+
+  .topn input {
+    width: 4.5rem;
+  }
+
+  .topn input[aria-invalid='true'] {
+    outline: 2px solid #b91c1c;
   }
 </style>

@@ -150,7 +150,7 @@ impl Stamps {
 /// The directory name for one vault: the first 16 hex of its absolute path's digest, which is how
 /// np names a workspace's own files (§18.6). Same derivation, so "which folder is this" has one
 /// answer in two programs.
-fn workspace_key(vault: &Path) -> String {
+pub(crate) fn workspace_key(vault: &Path) -> String {
     let abs = to_abs(vault);
     sha256_prefix(abs.to_string_lossy().as_bytes(), 16)
 }

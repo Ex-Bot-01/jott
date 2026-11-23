@@ -145,9 +145,10 @@ impl NpPool {
         limit: u8,
         prefix: bool,
         mode: Mode,
+        rerank: bool,
     ) -> Result<SearchAnswer, NpFault> {
         let reader = self.reader().await?;
-        methods::search(&reader, workspace, query, limit, mode, prefix).await
+        methods::search(&reader, workspace, query, limit, mode, prefix, rerank).await
     }
 
     /// What models this np knows about and where their artifacts stand, on the reader: it answers in

@@ -156,6 +156,39 @@ export function semanticEmptySentence(facts: { vectors?: boolean | null }, query
   )
 }
 
+/** What the window says about the ranking step under a result list. `null` means say nothing: reranking was not asked
+ *  for, an older np has no stage (`rerank: null`), or there was nothing to reorder.
+ *
+ *  Jott's words rather than np's when the model is not ready: np's refusal names terminal commands (`np models
+ *  install …`), and the person reading this has a Settings panel with a button for it — the same reasoning as
+ *  `emptySearchSentence` keeping its own sentence for an unscanned folder. np's sentence travels in `title`. */
+export function rerankSentence(
+  rerank: { ran: boolean; reason: string | null; notice: string | null; candidates: number } | null,
+  asked: boolean,
+  pending: boolean,
+): { text: string; title: string | null } | null {
+  if (!asked) return null
+  if (pending) return { text: 'reranking the top results…', title: null }
+  if (rerank === null) return null
+  if (rerank.ran) {
+    const n = rerank.candidates
+    return { text: n === 1 ? 'top result checked by the ranking model' : `top ${n} reordered by the ranking model`, title: null }
+  }
+  if (rerank.reason === 'no-candidates' || rerank.reason === 'disabled') return null
+  return {
+    text: 'not reranked — the ranking model is not ready (see Settings)',
+    title: rerank.notice?.trim() || rerank.reason,
+  }
+}
+
+/** A row the ranking model moved says where it came from — the reorder is otherwise invisible, and "why is this
+ *  first?" has an answer. Rows it scored but left in place, and rows it never scored, say nothing. */
+export function rerankMove(hit: { rerankRankBefore: number | null; rerankRankAfter: number | null }): string | null {
+  const { rerankRankBefore: before, rerankRankAfter: after } = hit
+  if (before === null || after === null || before === after) return null
+  return `${after < before ? 'moved up' : 'moved down'} from #${before}`
+}
+
 /** The line under the *meanings only* choice, from np's own `vectors` fact about the last search.
  *
  *  Silence answers with silence: before anyone has searched, Jott does not know whether this folder has vectors, and

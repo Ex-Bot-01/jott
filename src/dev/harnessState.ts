@@ -14,11 +14,12 @@
 import type { EntryKind, NodeEntry, StampState } from '../lib/ipc'
 
 /** Which story the harness tells. `?s=np-missing` and friends are in the URL so a screenshot names its own scenario. */
-export type Scenario = 'empty' | 'folder' | 'indexing' | 'np-missing' | 'consent'
+/** `rerank-fail`: note-processor cannot fetch the ranking model, so Settings shows the by-hand path. */
+export type Scenario = 'empty' | 'folder' | 'indexing' | 'np-missing' | 'consent' | 'rerank-fail'
 
 export function scenarioFrom(search: string): Scenario {
   const q = new URLSearchParams(search).get('s')
-  return q === 'empty' || q === 'indexing' || q === 'np-missing' || q === 'consent' ? q : 'folder'
+  return q === 'empty' || q === 'indexing' || q === 'np-missing' || q === 'consent' || q === 'rerank-fail' ? q : 'folder'
 }
 
 interface File extends NodeEntry {

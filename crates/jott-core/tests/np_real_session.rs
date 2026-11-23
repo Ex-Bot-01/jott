@@ -92,7 +92,7 @@ async fn a_real_np_indexes_a_note_jott_just_wrote_and_finds_it_again() {
 
     // Keyword mode, because this box has no embedding artifact installed and a meanings-only answer here would be a
     // statement about the machine rather than about np's protocol.
-    let answers = session.search("kestrel", 8, false, "keyword").await.expect("search answers");
+    let answers = session.search("kestrel", 8, false, "keyword", false).await.expect("search answers");
     let (rel, exact) = match answers.hits.first() {
         Some(hit) => (hit.path.clone(), hit.matched_exactly),
         None => panic!("no hit for a word written into the note seconds ago: {:?}", answers),
@@ -147,7 +147,7 @@ async fn a_vault_full_of_attachments_still_indexes_and_searches() {
     session.ingest_all();
     await_indexed(&session, "kestrel.md").await;
 
-    let answers = session.search("orchard", 8, false, "keyword").await.expect("search answers");
+    let answers = session.search("orchard", 8, false, "keyword", false).await.expect("search answers");
     assert!(!answers.hits.is_empty(), "the attachments did not stop the one note being found: {answers:?}");
 
     // The tree keeps its own opinion about what is a note: `.org` and `.rst` are rows with no marker, whatever np
@@ -211,7 +211,7 @@ async fn a_real_np_notices_a_note_changed_outside_jott() {
     // bytes rather than accepting the old stamp.
     await_indexed(&session, "shelf.md").await;
 
-    let answers = session.search("quarkkessel", 8, false, "keyword").await.expect("search answers");
+    let answers = session.search("quarkkessel", 8, false, "keyword", false).await.expect("search answers");
     assert!(
         answers.hits.iter().any(|hit| hit.path == "shelf.md"),
         "words written outside Jott never reached np: {:?}",
@@ -221,4 +221,118 @@ async fn a_real_np_notices_a_note_changed_outside_jott() {
     tokio::time::timeout(Duration::from_secs(20), session.close())
         .await
         .expect("the close-out returns on its own");
+}
+
+/// np 0.7.0's rerank stage, end to end through Jott's own doors: a search that asks for it before the model is there
+/// still answers (and says why it was not reranked); a file installed through `install_reranker` is accepted by np
+/// against the pin; the next search is reranked.
+///
+/// ```text
+/// JOTT_REAL_NP=apps/shell/np/np JOTT_REAL_RERANK_FILE=/path/to/bge-reranker-v2-m3-Q8_0.gguf \
+///   cargo test -p jott-core --test np_real_session
+/// ```
+///
+/// Needs the 636 MB file on disk, which is why it has a variable of its own. Run it with a scratch `HOME`: np keeps
+/// the installed copy in its own per-workspace data directory.
+#[tokio::test]
+async fn a_real_np_reranks_once_its_model_is_installed() {
+    let _turn = SERIAL.lock().await;
+    let Some(path) = real_np() else {
+        eprintln!("JOTT_REAL_NP unset: skipping the real rerank check");
+        return;
+    };
+    let Some(model) = std::env::var_os("JOTT_REAL_RERANK_FILE").map(PathBuf::from) else {
+        eprintln!("JOTT_REAL_RERANK_FILE unset: skipping the real rerank check");
+        return;
+    };
+    assert!(model.is_file(), "JOTT_REAL_RERANK_FILE names {}, which is not a file", model.display());
+
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let vault = tmp.path().join("vault");
+    std::fs::create_dir_all(&vault).expect("vault folder");
+    let source = NpSource::Bundled(path);
+    let (warm, info) = ipc::read_np_info_warm(&source).await.expect("the real np answers the handshake");
+    let session = VaultSession::open_in_with(source, info, Some(warm), &vault, Consent::Declined, None, tmp.path().join("appdata"));
+
+    session.save_note("coffee.md", "# Kaffeemühle\n\nWie man eine Kaffeemühle entkalkt: Essig und Wasser.\n").unwrap();
+    session.save_note("bills.md", "# Rechnung\n\nDie Rechnung für die Kaffeemühle liegt im Ordner.\n").unwrap();
+    session.ingest_all();
+    await_indexed(&session, "coffee.md").await;
+    await_indexed(&session, "bills.md").await;
+
+    let before = session.reranker_status().await;
+    assert!(before.supported, "the shipped np has the stage: {before:?}");
+    assert_eq!(before.present, Some(false), "a fresh workspace has no model: {before:?}");
+    let declined = session.search("Kaffeemühle", 8, false, "keyword", true).await.expect("answers without the stage");
+    assert_eq!(declined.hits.len(), 2);
+    let rerank = declined.rerank.expect("the stage reports");
+    assert_eq!((rerank.ran, rerank.reason.as_deref()), (false, Some("unavailable")), "{rerank:?}");
+
+    let installed = session.install_reranker(&model).await;
+    assert_eq!(installed.error, None, "np accepted the file against its pin: {installed:?}");
+    assert_eq!(installed.present, Some(true));
+
+    let reranked = session.search("wie entkalkt man eine Kaffeemühle", 8, true, "keyword", true).await.expect("reranked");
+    let rerank = reranked.rerank.expect("the stage reports");
+    assert!(rerank.ran, "{rerank:?}");
+    assert!(reranked.hits.iter().all(|h| h.rerank_score.is_some()), "every candidate was scored: {:?}", reranked.hits);
+
+    tokio::time::timeout(Duration::from_secs(20), session.close()).await.expect("the close-out returns on its own");
+}
+/// Jott's download of the ranking model, stopped by closing the folder, resumes by itself on the next open — against
+/// the real np, whose marker outlives a killed fetch and refuses every later fetch until it is discarded.
+///
+/// ```text
+/// JOTT_REAL_NP=apps/shell/np/np JOTT_REAL_RERANK_MIRROR=http://127.0.0.1:8765 \
+///   cargo test -p jott-core --test np_real_session
+/// ```
+///
+/// The mirror is any folder holding `bge-reranker-v2-m3-Q8_0.gguf` behind an HTTP server
+/// (`python3 -m http.server 8765`): np takes it as `NP_MODELS_BASE_URL` and still checks the bytes against its pin.
+#[tokio::test]
+async fn a_real_np_download_stopped_by_closing_resumes_on_the_next_open() {
+    let _turn = SERIAL.lock().await;
+    let Some(path) = real_np() else {
+        eprintln!("JOTT_REAL_NP unset: skipping the real resume check");
+        return;
+    };
+    let Some(mirror) = std::env::var_os("JOTT_REAL_RERANK_MIRROR") else {
+        eprintln!("JOTT_REAL_RERANK_MIRROR unset: skipping the real resume check");
+        return;
+    };
+    std::env::set_var("NP_MODELS_BASE_URL", &mirror);
+
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let vault = tmp.path().join("vault");
+    std::fs::create_dir_all(&vault).expect("vault folder");
+    let appdata = tmp.path().join("appdata");
+    let source = NpSource::Bundled(path);
+
+    let (warm, info) = ipc::read_np_info_warm(&source).await.expect("the real np answers the handshake");
+    let first = VaultSession::open_in_with(source.clone(), info.clone(), Some(warm), &vault, Consent::Declined, None, appdata.clone());
+    let started = first.prepare_reranker().await;
+    assert_eq!(started.busy.as_deref(), Some("fetching"), "{started:?}");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    tokio::time::timeout(Duration::from_secs(20), first.close()).await.expect("closing does not wait for the download");
+    drop(first);
+    // The point of the test is an *interrupted* download; a fetch that already finished would prove nothing.
+    let noted = std::fs::read_dir(appdata.join("state"))
+        .map(|dirs| dirs.flatten().any(|dir| dir.path().join("reranker-fetch-interrupted").exists()))
+        .unwrap_or(false);
+    assert!(noted, "closing stopped a download in flight and Jott wrote down that it was its own");
+
+    let second = VaultSession::open_in(source, info, &vault, Consent::Declined, None, appdata);
+    second.prepare_reranker().await;
+    let mut status = second.reranker_status().await;
+    for _ in 0..600 {
+        if status.busy.is_none() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        status = second.reranker_status().await;
+    }
+    std::env::remove_var("NP_MODELS_BASE_URL");
+    assert_eq!(status.error, None, "the second open finished the download: {status:?}");
+    assert_eq!(status.present, Some(true), "{status:?}");
+    tokio::time::timeout(Duration::from_secs(20), second.close()).await.expect("the close-out returns on its own");
 }

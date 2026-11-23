@@ -196,7 +196,7 @@ async fn an_outcome_this_build_does_not_know_still_arrives_as_a_state() {
 async fn a_keyword_only_search_keeps_mode_vectors_and_reason_together() {
     let (_d, client) = spawn(json!({"replies": {"search": fixture_result(3)}})).await;
 
-    let answer = search(&client, &vault(), "hash", 8, Mode::Hybrid, false).await.unwrap();
+    let answer = search(&client, &vault(), "hash", 8, Mode::Hybrid, false, false).await.unwrap();
     assert_eq!(answer.mode, Mode::Keyword, "np answered which half ran, in `mode`");
     assert!(!answer.vectors);
     assert!(!answer.offline);
@@ -222,7 +222,7 @@ async fn a_search_that_names_why_a_half_was_missing_says_so() {
     }}}))
     .await;
 
-    let answer = search(&client, &vault(), "anything", 8, Mode::Hybrid, false).await.unwrap();
+    let answer = search(&client, &vault(), "anything", 8, Mode::Hybrid, false, false).await.unwrap();
     assert_eq!(answer.mode, Mode::Hybrid);
     assert!(!answer.vectors);
     assert_eq!(answer.reason.as_deref(), Some("provider-disabled"));
@@ -245,7 +245,7 @@ async fn a_semantic_only_hit_stays_distinguishable_from_a_zero_bm25() {
     }}}))
     .await;
 
-    let answer = search(&client, &vault(), "meaning", 8, Mode::Hybrid, false).await.unwrap();
+    let answer = search(&client, &vault(), "meaning", 8, Mode::Hybrid, false, false).await.unwrap();
     assert_eq!(answer.hits[0].bm25, None, "a hit only the vector list held has no bm25 at all");
     assert_eq!(answer.hits[0].snippet, None);
     assert_eq!(answer.hits[1].bm25, Some(0.0), "a real zero is a number np computed");
@@ -267,7 +267,7 @@ async fn a_newline_in_a_snippet_does_not_split_the_frame() {
     }}))
     .await;
 
-    let answer = search(&client, &vault(), "one\ntwo", 5, Mode::Keyword, false).await.unwrap();
+    let answer = search(&client, &vault(), "one\ntwo", 5, Mode::Keyword, false, false).await.unwrap();
     assert_eq!(answer.hits[0].snippet.as_deref(), Some("one\ntwo\nthree"));
     // The stream is still aligned: the next request gets its own answer, not the tail of that one.
     assert!(matches!(scan(&client, &vault()).await.unwrap(), ScanOutcome::Applied(_)));
@@ -358,7 +358,7 @@ async fn both_flavours_of_bad_params_keep_their_own_sentence() {
     }}))
     .await;
 
-    let mode = search(&client, &vault(), "q", 5, Mode::Keyword, false).await.unwrap_err();
+    let mode = search(&client, &vault(), "q", 5, Mode::Keyword, false, false).await.unwrap_err();
     assert_eq!((mode.code, mode.message.as_str()), (-32602, "unknown mode `telepathy`: write hybrid, semantic or keyword"));
     let query = scan(&client, &vault()).await.unwrap_err();
     assert_eq!((query.code, query.message.as_str()), (-32602, "params need a \"query\" string"));
@@ -437,7 +437,7 @@ async fn a_search_answer_says_whether_the_folder_was_ever_indexed() {
     }}}))
     .await;
 
-    let answer = search(&client, &vault(), "kumquat", 8, Mode::Hybrid, false).await.unwrap();
+    let answer = search(&client, &vault(), "kumquat", 8, Mode::Hybrid, false, false).await.unwrap();
     assert_eq!(answer.indexed, Some(false), "nothing matched and nothing *could* have: different sentences");
     assert_eq!(answer.keyword_used, Some(true));
     assert_eq!(answer.semantic_used, Some(false), "the meaning half did not run, whatever `mode` says");
@@ -451,7 +451,7 @@ async fn a_search_answer_says_whether_the_folder_was_ever_indexed() {
 async fn an_older_np_leaves_the_new_keys_absent_rather_than_false() {
     let (_d, client) = spawn(json!({"replies": {"search": fixture_result(3)}})).await;
 
-    let answer = search(&client, &vault(), "hash", 8, Mode::Hybrid, false).await.unwrap();
+    let answer = search(&client, &vault(), "hash", 8, Mode::Hybrid, false, false).await.unwrap();
     assert_eq!(answer.indexed, None);
     assert_eq!(answer.keyword_used, None);
     assert_eq!(answer.semantic_used, None);
@@ -615,7 +615,7 @@ async fn enabling_embeddings_reports_what_np_changed_and_what_it_costs() {
 async fn a_search_answered_with_nothing_at_all_says_why_and_names_the_issue() {
     let (_d, client) = spawn(json!({"replies": {"search": null}})).await;
 
-    let fault = search(&client, &vault(), "grandmother", 8, Mode::Semantic, false).await.expect_err("null is not an answer");
+    let fault = search(&client, &vault(), "grandmother", 8, Mode::Semantic, false, false).await.expect_err("null is not an answer");
     let message = fault.message.to_lowercase();
     assert!(fault.message.contains("note-processor#11"), "the sentence should point at the open issue: {fault}");
     assert!(message.contains("vector"), "it should name the known cause: {fault}");
@@ -784,7 +784,7 @@ async fn an_ordinary_search_says_nothing_was_widened() {
     }))
     .await;
 
-    let answer = search(&client, &vault(), "grand", 8, Mode::Hybrid, false).await.expect("np answered");
+    let answer = search(&client, &vault(), "grand", 8, Mode::Hybrid, false, false).await.expect("np answered");
     assert_eq!(answer.prefix_used, Some(false), "np said it did not widen");
     assert_eq!(answer.prefix_terms, Vec::<String>::new());
 
@@ -815,7 +815,7 @@ async fn a_widened_search_names_the_words_np_used() {
     }))
     .await;
 
-    let answer = search(&client, &vault(), "grand", 8, Mode::Hybrid, true).await.expect("np widened");
+    let answer = search(&client, &vault(), "grand", 8, Mode::Hybrid, true, false).await.expect("np widened");
     assert_eq!(answer.prefix_used, Some(true));
     assert_eq!(answer.prefix_terms, vec!["grand".to_string()]);
     assert_eq!(answer.hits.len(), 1);
@@ -844,7 +844,7 @@ async fn a_hit_np_never_word_tested_stays_unknown() {
     })}}))
     .await;
 
-    let answer = search(&client, &vault(), "grand", 8, Mode::Semantic, false).await.expect("answered");
+    let answer = search(&client, &vault(), "grand", 8, Mode::Semantic, false, false).await.expect("answered");
     assert_eq!(answer.hits[0].matched_exactly, None, "absence is not exactness");
     // An np that predates the flag answers nothing about widening — and that stays unknown rather than "did not".
     assert_eq!(answer.prefix_used, None, "silence from an older np is not a No");
@@ -939,4 +939,28 @@ async fn a_scan_answer_from_np_0_6_0_parses_and_the_new_keys_are_ignored() {
     let ScanOutcome::Applied(older) = older else { panic!("not a lock: {older:?}") };
     assert_eq!(older.notes, 3, "the same fields, the same reading");
     client.shutdown().await.unwrap();
+}
+
+/// np 0.7.0's `models.list` carries the reranker beside — never among — the embedding models. Its fetch marker belongs
+/// to the reranker's own line: the embedding banner must not show 636 MB of ranking model as its download.
+#[test]
+fn the_reranker_is_listed_and_downloaded_apart_from_the_embedders() {
+    let listing = jott_core::np::outcomes::model_listing(&serde_json::json!({
+        "models": [], "models_dir_error": null, "pinned": [], "unclaimed": [],
+        "fetching": [
+            { "id": "bge-reranker-v2-m3", "bytes_done": 10, "bytes_total": 635674432 },
+            { "id": "embeddinggemma-2", "bytes_done": 20, "bytes_total": 309855456 },
+        ],
+        "reranker": { "id": "bge-reranker-v2-m3", "file": "bge-reranker-v2-m3", "pinned_bytes": 635674432,
+                      "role": "rerank", "state": "present, size differs from the pin" },
+    }))
+    .expect("0.7.0's listing parses");
+    let reranker = listing.reranker.as_ref().expect("the reranker entry");
+    assert!(!reranker.present(), "a file of the wrong size is not a model that can rank");
+    assert_eq!(listing.download().map(|d| d.id).as_deref(), Some("embeddinggemma-2"));
+    assert_eq!(listing.reranker_download().map(|d| d.bytes_done), Some(10));
+
+    let older = jott_core::np::outcomes::model_listing(&serde_json::json!({ "models": [], "models_dir_error": null }))
+        .expect("an older listing still parses");
+    assert_eq!(older.reranker, None);
 }

@@ -23,8 +23,10 @@ pub enum ConsentError {
     Write { path: PathBuf, source: std::io::Error },
     #[error("{} is not TOML I can edit: {message}", .path.display())]
     Parse { path: PathBuf, message: String },
-    #[error("{} holds something where `[models]` should be a table", .path.display())]
-    NotATable { path: PathBuf },
+    #[error("{} holds something where `[{table}]` should be a table", .path.display())]
+    NotATable { path: PathBuf, table: &'static str },
+    #[error("`{key}` must be between {min} and {max}, not {value}")]
+    OutOfRange { key: &'static str, value: i64, min: i64, max: i64 },
 }
 
 /// Where np looks for its config — np's own rule (`np-core/src/config.rs:1124`), not Jott's:
@@ -295,6 +297,49 @@ pub async fn answer_consent(
 }
 
 pub fn set_auto_fetch(path: &Path, allow: bool) -> Result<(), ConsentError> {
+    set_key(
+        path,
+        "models",
+        "auto_fetch",
+        toml_edit::Value::from(allow),
+        "# Added by Jott: whether note-processor may download the embedding model it needs.\n",
+    )
+}
+
+/// The rerank stage's depth as np's config states it (`[search] rerank_top_n`, np 0.7.0+). `None` when the file or
+/// the key is absent — np's own default (5) then applies — and also when the file cannot be read or holds something
+/// that is not an integer: np refuses that value itself, naming the key, and Jott must not print a number over it.
+pub fn rerank_top_n(path: &Path) -> Option<i64> {
+    let document = load(path).ok()??;
+    document.get("search")?.get("rerank_top_n")?.as_integer()
+}
+
+/// np's accepted range for `[search] rerank_top_n`. np refuses anything outside it rather than clamping, so Jott
+/// refuses first: a value np would reject turns every reranked search into a refusal.
+pub const RERANK_TOP_N_RANGE: std::ops::RangeInclusive<i64> = 1..=64;
+
+/// Write `[search] rerank_top_n`. Out-of-range values are refused here, before the file is touched.
+pub fn set_rerank_top_n(path: &Path, n: i64) -> Result<(), ConsentError> {
+    if !RERANK_TOP_N_RANGE.contains(&n) {
+        return Err(ConsentError::OutOfRange {
+            key: "search.rerank_top_n",
+            value: n,
+            min: *RERANK_TOP_N_RANGE.start(),
+            max: *RERANK_TOP_N_RANGE.end(),
+        });
+    }
+    set_key(
+        path,
+        "search",
+        "rerank_top_n",
+        toml_edit::Value::from(n),
+        "# Added by Jott: how many top search results note-processor's ranking model reorders.\n",
+    )
+}
+
+/// Set one key in one table of np's config, keeping everything else in the file — formatting, comments, keys Jott
+/// has never heard of — exactly as it was.
+fn set_key(path: &Path, table: &'static str, key: &str, value: toml_edit::Value, header: &str) -> Result<(), ConsentError> {
     let existed = path.exists();
     let mut document = match load(path)? {
         Some(document) => document,
@@ -306,27 +351,24 @@ pub fn set_auto_fetch(path: &Path, allow: bool) -> Result<(), ConsentError> {
             if !existed {
                 // One line saying who wrote this file, because §12's rule about not overwriting a
                 // config Jott did not write starts by making that fact legible to whoever reads it.
-                fresh
-                    .as_table_mut()
-                    .decor_mut()
-                    .set_prefix("# Added by Jott: whether note-processor may download the embedding model it needs.\n");
+                fresh.as_table_mut().decor_mut().set_prefix(header);
             }
             fresh
         }
     };
 
-    if document.get("models").is_none() {
-        document["models"] = toml_edit::Item::Table(toml_edit::Table::new());
+    if document.get(table).is_none() {
+        document[table] = toml_edit::Item::Table(toml_edit::Table::new());
     }
-    let Some(models) = document["models"].as_table_like_mut() else {
-        return Err(ConsentError::NotATable { path: path.to_path_buf() });
+    let Some(section) = document[table].as_table_like_mut() else {
+        return Err(ConsentError::NotATable { path: path.to_path_buf(), table });
     };
     // The old value's decorations are copied onto the new one, because a trailing `# my own mirror`
     // is somebody's note to themselves and a key replacement would silently take it away.
-    let decor = models.get("auto_fetch").and_then(|item| item.as_value()).map(|value| value.decor().clone());
-    models.insert("auto_fetch", toml_edit::value(allow));
+    let decor = section.get(key).and_then(|item| item.as_value()).map(|value| value.decor().clone());
+    section.insert(key, toml_edit::Item::Value(value));
     if let Some(decor) = decor {
-        if let Some(value) = models.get_mut("auto_fetch").and_then(|item| item.as_value_mut()) {
+        if let Some(value) = section.get_mut(key).and_then(|item| item.as_value_mut()) {
             *value.decor_mut() = decor;
         }
     }

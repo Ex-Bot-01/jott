@@ -75,6 +75,21 @@ export interface SearchHit {
       note-processor#6) and the row says so beside the snippet. `null` means np never word-tested it — a meaning-only
       hit — which is a different answer from a yes, and must not be rendered as one. */
   matchedExactly: boolean | null
+  /** The ranking model's raw score for this hit (np 0.7.0), and its 1-based place before and after the reorder. All
+      three `null` when the stage did not score this row — beyond the top N, a figure, or no stage ran. */
+  rerankScore: number | null
+  rerankRankBefore: number | null
+  rerankRankAfter: number | null
+}
+
+/** What the rerank stage did with one answer. `reason` is np's token (`disabled`, `no-candidates`, …) or Jott's own
+    `unavailable`, meaning np refused the explicit request (model not on disk yet) and the list is retrieval's order. */
+export interface RerankInfo {
+  ran: boolean
+  reason: string | null
+  /** np's sentence about a decline, byte for byte. */
+  notice: string | null
+  candidates: number
 }
 
 export interface SearchResults {
@@ -96,6 +111,8 @@ export interface SearchResults {
   prefixUsed: boolean | null
   /** Which words np widened, as it named them. The header may print these words and no others. */
   prefixTerms: string[]
+  /** What the ranking model did with this list. `null` from an np that has no rerank stage (before 0.7.0). */
+  rerank: RerankInfo | null
 }
 
 /** np's `models.list` cannot report an artifact size in 0.3.1, so `bytes` is null until something does. */
@@ -282,8 +299,8 @@ export const discardMirror = (rel: string) => completed(invoke<void>('discard_mi
 /** Ask note-processor. `prefix` (the "match word beginnings" toggle) and `mode` (which engine matches) are sent every
  *  time rather than omitted: both change what the query *means*, and leaving either out hands the decision to a
  *  default in another process — which is how a search ends up answering a question nobody asked. */
-export const searchVault = (query: string, limit: number, prefix: boolean, mode: SearchMode) =>
-  invoke<SearchResults>('search_vault', { query, limit, prefix, mode })
+export const searchVault = (query: string, limit: number, prefix: boolean, mode: SearchMode, rerank: boolean) =>
+  invoke<SearchResults>('search_vault', { query, limit, prefix, mode, rerank })
 export const ingestAll = () => completed(invoke<void>('ingest_all'))
 /** What np answered when the consent button was pressed (`ConsentAnswerDto` in Rust). The four words of `autoFetch`
  *  are the whole difference between "the guardrail is down" and "Jott could not lower it", so they travel as data. */
@@ -342,6 +359,54 @@ export interface ModelStatus {
   modelsDirError: string | null
 }
 export const embeddingsStatus = () => invoke<ModelStatus>('embeddings_status')
+
+/** Where to download the ranking model by hand, and the digest note-processor will check it against. */
+export interface ManualDownload {
+  url: string
+  fileName: string
+  sha256: string
+  bytes: number
+}
+
+/** The ranking model's standing for the open folder (np 0.7.0). Every `null` is "nobody said". */
+export interface RerankerStatus {
+  /** This np has the rerank stage (0.7.0+, built with its model runtime). */
+  supported: boolean
+  npVersion: string
+  modelId: string
+  /** The file is on disk at the pinned size. `null`: np was not asked or did not answer. */
+  present: boolean | null
+  /** np's own words for the file (`absent`, `present, size matches the pin`, …). */
+  state: string | null
+  /** np's fetch marker for the reranker, when there is one. */
+  downloading: Downloading | null
+  /** `fetching` or `installing` while a child Jott started is running. */
+  busy: string | null
+  /** The last fetch or install that failed, in np's words. */
+  error: string | null
+  manual: ManualDownload
+  /** np's `[search] rerank_top_n` as its config states it; `null` means np's default (`topNDefault`) applies. */
+  topN: number | null
+  topNDefault: number
+  /** The np config file `topN` is read from and written to. */
+  configPath: string | null
+}
+export const rerankerStatus = () => invoke<RerankerStatus>('reranker_status')
+/** Start np's download of the ranking model if it is missing. Answers at once; the download runs on. */
+export const prepareReranker = () => invoke<RerankerStatus>('prepare_reranker')
+/** Hand np a ranking model somebody downloaded themselves; np checks it against the pinned digest. */
+export const installReranker = (path: string) => invoke<RerankerStatus>('install_reranker', { path })
+export const setRerankTopN = (n: number) => completed(invoke<void>('set_rerank_top_n', { n }))
+/** The native file picker, for the hand-downloaded model. `null` is a cancelled dialog. */
+export async function pickRerankerFile(): Promise<string | null> {
+  const picked = await open({
+    directory: false,
+    multiple: false,
+    title: 'Choose the downloaded ranking model',
+    filters: [{ name: 'GGUF model', extensions: ['gguf'] }],
+  })
+  return typeof picked === 'string' ? picked : null
+}
 
 /** A question with two answers, asked outside the status line. False when nobody answered. */
 export const askConfirm = (message: string, title: string) => confirm(message, { title })

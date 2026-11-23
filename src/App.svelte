@@ -27,6 +27,8 @@
   import {
     emptySearchSentence,
     hitSuffix,
+    rerankMove,
+    rerankSentence,
     resultsHeadline,
     searchCaveat,
     searchIsCurrent,
@@ -49,7 +51,7 @@
   import { notifyBody, shouldNotify, type Permission } from './lib/notify'
   import type { SavePhase } from './lib/saveState'
   import * as ipc from './lib/ipc'
-  import { loadSettings, saveMode, savePrefix, type SearchMode } from './lib/searchSettings'
+  import { loadSettings, saveMode, savePrefix, saveRerank, type SearchMode } from './lib/searchSettings'
   import {
     SIDE_DEFAULT,
     SIDE_MIN,
@@ -292,6 +294,15 @@
   let hitQuery = $state('')
   let results = $state<SearchResults | null>(null)
   let searching = $state(false)
+  /** Whether a second step reorders the top results with np's ranking model. Remembered per app, on by default. */
+  let rerankOn = $state(storedSettings.rerank)
+  /** True while that second step is running for the answer on screen. */
+  let reranking = $state(false)
+  /** The ranking model's standing for the open folder: supported, on disk, downloading, failed — and how to get it by
+   *  hand. `null` until asked. */
+  let reranker = $state<ipc.RerankerStatus | null>(null)
+  let rerankerAskedFor: string | null = null
+  let rerankerInstalling = $state(false)
   let searchTimer: ReturnType<typeof setTimeout> | undefined
 
   /** `folder` is where a new note or folder lands; `rel` is what is being moved. */
@@ -382,6 +393,10 @@
       // folder nobody has queried yet would light a green bead over a vault with no vectors at all.
       modelStatus = null
       modelAskedFor = null
+      // The ranking model lives per folder too: np keeps one copy per workspace.
+      reranker = null
+      rerankerAskedFor = null
+      reranking = false
     }
 
     // Every path that installs a listing comes through here, so this is where the embeddings offer is asked. It used
@@ -390,6 +405,7 @@
     // meaning had no way to appear until some later re-list happened to come along.
     void askOffer()
     void askModel()
+    void askReranker()
   }
 
   async function openRecent(folder: string) {
@@ -488,6 +504,42 @@
     offerAskedFor = vault
     embeddingsOffer = await call(ipc.embeddingsOffer)
   }
+
+  /** Once per opened folder: with reranking on, make sure the ranking model is there — np downloads it now rather
+      than at the first search, because a search never fetches it (np's own rule) and the first reranked list should
+      not have to wait for 636 MB. With reranking off, nothing is asked: the model is not needed. */
+  async function askReranker() {
+    const vault = listing?.vault ?? null
+    if (!vault || !rerankOn || rerankerAskedFor === vault) return
+    rerankerAskedFor = vault
+    await readReranker(vault, ipc.prepareReranker)
+  }
+
+  /** The ranking model's status, without the `problem` banner: a status line that fails is not the window failing. */
+  async function readReranker(vault: string, ask: () => Promise<ipc.RerankerStatus> = ipc.rerankerStatus) {
+    let answer: ipc.RerankerStatus | null = null
+    try {
+      answer = await ask()
+    } catch {
+      return
+    }
+    // Same guard as the model dot: a late answer about the previous folder must not land on this one.
+    if (listing?.vault !== vault) return
+    reranker = answer
+  }
+
+  // While Jott's own download or install runs, or np reports a marker for one, ask again every 1.5 s — that is what
+  // moves the progress line and notices the end. Keyed on "is something happening", not on the object, so the timer
+  // is not recreated on every reading.
+  $effect(() => {
+    const active = reranker !== null && (reranker.busy !== null || reranker.downloading !== null)
+    if (!active) return
+    const timer = setInterval(() => {
+      const vault = listing?.vault ?? null
+      if (vault) void readReranker(vault)
+    }, 1500)
+    return () => clearInterval(timer)
+  })
 
   async function openVault(path: string) {
     const next = await call(() => ipc.openVault(path))
@@ -837,16 +889,35 @@
     if (!query) {
       results = null
       searching = false
+      reranking = false
       return
     }
     const seq = ++searchSeq
     searching = true
-    const answer = await call(() => ipc.searchVault(query, 12, prefixOn || prefixOnce, searchMode))
+    reranking = false
+    const prefix = prefixOn || prefixOnce
+    const answer = await call(() => ipc.searchVault(query, 12, prefix, searchMode, false))
     // Typing "abc" fires three requests and np is free to answer them in any order. Without this guard the slowest
     // one wins, which reads as the search box ignoring what you typed last.
     if (!searchIsCurrent(seq, searchSeq)) return
     results = answer
     searching = false
+
+    // The second step. Retrieval's list is on screen already; the ranking model costs np seconds per search (it loads
+    // per request), so it reorders that list when it is done instead of holding the first answer back. Skipped where
+    // it cannot change anything: one hit or none, or an np without the stage.
+    if (!answer || !rerankOn || answer.hits.length < 2 || reranker?.supported === false) return
+    reranking = true
+    let reranked: SearchResults | null = null
+    try {
+      reranked = await ipc.searchVault(query, 12, prefix, searchMode, true)
+    } catch {
+      // The list on screen is a good answer already; a failed second step keeps it rather than replacing it with an
+      // error about a step somebody did not have to wait for.
+    }
+    if (!searchIsCurrent(seq, searchSeq)) return
+    reranking = false
+    if (reranked) results = reranked
   }
 
   /** The "match word beginnings" toggle. Saving and re-running are both immediate: someone flipping it wants to see
@@ -877,11 +948,59 @@
     if (searchQuery.trim()) void runSearch()
   }
 
+  /** The panel's reranking switch. Turning it on is also when the model gets fetched if this folder lacks it. */
+  function chooseRerank(on: boolean) {
+    rerankOn = on
+    saveRerank(typeof localStorage === 'undefined' ? null : localStorage, on)
+    const vault = listing?.vault ?? null
+    if (on && vault) {
+      rerankerAskedFor = vault
+      void readReranker(vault, ipc.prepareReranker)
+    }
+    if (searchQuery.trim()) void runSearch()
+  }
+
+  /** *Try again*: the same door as opening the folder — np fetches if the model is still missing. */
+  function retryReranker() {
+    const vault = listing?.vault ?? null
+    if (vault) void readReranker(vault, ipc.prepareReranker)
+  }
+
+  /** The by-hand path: pick the file somebody downloaded, and np checks it against its pin before accepting it. */
+  async function installRerankerFile() {
+    const vault = listing?.vault ?? null
+    if (!vault || rerankerInstalling) return
+    let file: string | null = null
+    try {
+      file = await ipc.pickRerankerFile()
+    } catch {
+      return
+    }
+    if (!file) return
+    rerankerInstalling = true
+    try {
+      await readReranker(vault, () => ipc.installReranker(file as string))
+    } finally {
+      rerankerInstalling = false
+    }
+    if (reranker?.present && searchQuery.trim()) void runSearch()
+  }
+
+  /** The Advanced setting: how many top results the model reorders, written into np's own config. */
+  async function chooseTopN(n: number) {
+    const vault = listing?.vault ?? null
+    const done = await call(() => ipc.setRerankTopN(n))
+    if (done && vault) await readReranker(vault)
+    if (done && searchQuery.trim()) void runSearch()
+  }
+
   async function openSettings() {
     showSettings = true
     // Read what note-processor has recorded when the panel opens rather than trusting an older card: this is the
     // place somebody comes to find out what is switched on, and the file may have been edited since we last looked.
     void readConsentHelp()
+    const vault = listing?.vault ?? null
+    if (vault) void readReranker(vault)
   }
 
   /** The panel's two permission buttons. The same code path as the consent card's own button — one answer, one
@@ -1277,6 +1396,7 @@
     {#if results}
       {@const caveat = searchCaveat(results, results.hits.length)}
       {@const widened = wideningSentence(results)}
+      {@const ranked = rerankSentence(results.rerank ?? null, rerankOn, reranking)}
       <ul class="results">
         {#if results.hits.length === 0}
           <!-- An empty list is two different facts and only one of them is about the words. np 0.4.0 answers
@@ -1343,6 +1463,13 @@
                      stays unmarked: two absences are not a finding. -->
                 <span class="hit-kind">{hitSuffix(hit)}</span>
               {/if}
+              {#if rerankMove(hit) !== null}
+                <!-- The ranking model's reorder, made visible: without it a row jumping from fourth to first looks like
+                     the search changing its mind. The raw score is np's number and goes in the tooltip, unconverted. -->
+                <span class="hit-kind" data-testid="hit-rerank" title={`ranking model score ${hit.rerankScore}`}>
+                  {rerankMove(hit)}
+                </span>
+              {/if}
             </button>
           </li>
         {/each}
@@ -1353,6 +1480,7 @@
             {resultsHeadline(results.hits.length)}{searching ? ' · searching…' : ''}
             {#if widened}<span class="caveat">· {widened}</span>{/if}
             {#if caveat}<span class="caveat">· {caveat}</span>{/if}
+            {#if ranked}<span class="caveat" data-testid="rerank-line" title={ranked.title ?? undefined}>· {ranked.text}</span>{/if}
           </li>
         {:else}
           {#if caveat}<li class="mode quiet">{caveat}</li>{/if}
@@ -1685,12 +1813,19 @@
     <Settings
       mode={searchMode}
       prefix={prefixOn}
+      rerank={rerankOn}
+      {reranker}
+      {rerankerInstalling}
       vectors={results?.vectors ?? null}
       cardFacts={cardFacts}
       embeddingsLoading={embeddingsLoading}
       consentBusy={consentBusy}
       onmode={chooseMode}
       onprefix={choosePrefix}
+      onrerank={chooseRerank}
+      onrerankretry={retryReranker}
+      onrerankinstall={() => void installRerankerFile()}
+      ontopn={(n) => void chooseTopN(n)}
       onconsent={(granted) => void setEmbeddings(granted)}
       onClose={() => (showSettings = false)}
     />

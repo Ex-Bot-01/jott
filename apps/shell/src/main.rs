@@ -70,6 +70,10 @@ fn main() {
             ipc::embeddings_offer,
             ipc::embeddings_help,
             ipc::embeddings_status,
+            ipc::reranker_status,
+            ipc::prepare_reranker,
+            ipc::install_reranker,
+            ipc::set_rerank_top_n,
             ipc::diagnostics,
             ipc::flush_on_close
         ])
