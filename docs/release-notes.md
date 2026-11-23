@@ -1,49 +1,65 @@
-# Jott 0.0.31 — the backend moves to note-processor 0.6.1
+# Jott 0.0.32 — a ranking model reorders the top of every search
 
-The np inside the installer goes from **0.6.0** to **0.6.1**. Upstream spent that release moving code around: `crates/np-cli/src/main.rs` went from 3,234 lines to 328 with one module per command, `np-core`'s `db.rs` split into nine modules along the seams its own schema already had, and 1,133 comment lines that cited design documents, round ids and issue numbers were deleted. Their release page promises that nothing a client can see changed.
-
-That promise is the kind you check rather than accept, because a Jott release that ships a backend nobody verified is how somebody's note index becomes the test case. So: **the success criterion for this release is that nothing happens on your machine.** If something does happen — a folder re-indexing itself, a search ranking differently, a number moving — that is a bug report, not background noise.
+The np inside the installer goes from **0.6.1** to **0.7.0**, and Jott uses what it adds: a ranking model
+(`bge-reranker-v2-m3`, a cross-encoder) that reads your query beside each of the top results and puts the one that
+actually answers it first. It changes **only the order** — which notes match is still decided by words, meanings or
+both, exactly as before. It works in all three search modes, including *Words only*, and needs no embeddings.
 
 ## What you'll see
 
-- **About says `note-processor (np) 0.6.1`.** That line is the only visible change.
-- **Your folder does not re-index.** A vault indexed under 0.0.29 or 0.0.30 opens with its green dots intact: no scan pass, no re-embed, no `INDEX.md` rewrite.
-- **Search gives back the same numbers, in the same order, with the same marks** — including last release's *by meaning only*.
-- **The download strip is unchanged**, because it had to keep working: a second child watching a fetch still sees np's `fetching` rows with `bytes_done` climbing toward `bytes_total 309855456`.
+- **Search answers at once, then reorders.** The list appears as before; the line under it says *reranking the top
+  results…*, and a few seconds later the rows settle into the model's order and the line says *top 5 reordered by the
+  ranking model*. A row the model moved says so — *moved up from #4* — and hovering it shows the model's raw score.
+- **Settings → Reranking.** On by default. Switch it off and search is exactly what it was in 0.0.31, and the model is
+  never downloaded. **Advanced** sets how many top results it reorders: 5 by default, 1 to 64, saved as
+  `[search] rerank_top_n` in note-processor's own `config.toml`.
+- **The model downloads when a folder opens** (606 MB, once per folder — note-processor keeps one copy per vault).
+  Settings shows the progress. A search never downloads it; until it is there, results arrive unreordered with
+  *not reranked — the ranking model is not ready (see Settings)*.
+- **Closing Jott mid-download is fine**: the next open starts the download again by itself.
+
+## If the download fails
+
+On networks that inspect encrypted traffic — common at work, measured here behind Zscaler — note-processor cannot
+download any model itself and says *could not resolve the configured host*, which is a mislabelled certificate
+refusal. Settings then offers the way round it:
+
+1. **Open the download in the browser** — your browser trusts the network's certificate, note-processor does not.
+2. **Choose the downloaded file…** — note-processor copies it into the folder's index and refuses it unless it hashes
+   to `d32a877b7266f5275172458616824ce6728502416672052c2da795da3389201e`, so a half-finished download is refused, not
+   used.
+
+The same network blocks note-processor's download of the embedding model too; that is not new in this release, only
+newly noticed.
+
+## What it costs
+
+note-processor loads the model for every reranked search. Measured on the Windows asset: about **2.2 s plus 0.25 s per
+result reordered** — roughly 3.4 s at the default of 5. That is why the reorder is a second step you never wait for,
+and why the Advanced number says what more results cost. Retrieval alone stays in milliseconds.
 
 ## What I measured before shipping it
 
-Against the published assets — both downloaded, both checked with `sha256sum -c` against the release's own `SHA256SUMS.txt`, the Linux binary driven over fixture vaults next to 0.6.0's own binary, one scratch `HOME` per side:
+Both 0.7.0 assets downloaded and checked against the release's own `SHA256SUMS.txt` (`47fda373…` Windows,
+`dc052c0c…` Linux). Against the binaries themselves: the handshake still names the same ten methods at protocol `1`;
+`search` takes `rerank: true | false` and answers three new keys per hit plus a `rerank` object; a reranked search with
+no model on disk is a refusal Jott now answers with retrieval's list instead of an error; 0.6.1 ignores the new key, so
+an older np keeps working without the stage. The real-backend gate ran against the Linux asset, including a reranked
+search after a hand install and a download interrupted by closing and resumed on the next open.
 
-| surface | 0.6.0 → 0.6.1 |
-|---|---|
-| handshake | same ten methods, protocol `1`, same `features` — only the version string differs |
-| `scan`, `search`, `links.list`, `models.list`, `status.get`, `shutdown` | transcripts diff clean apart from the version |
-| `INDEX.md` | identical bytes: `sha256 e11a2c01b67dd647…`, percent-encoding of `deep%weird [x].md` included |
-| prefix widening | still `matched_exactly: false` on widened hits, `true` on verbatim ones — the two marks a result row shows are keyed to those values |
-| an index **and embeddings** built by 0.6.0 | opens with every note `unchanged`; no re-scan, no re-embed |
-| the same queries over that existing index | identical cosines to the last digit: `0.7195178188075159`, `0.7139600217985886` |
-| a fresh fetch + embed on 0.6.1 | artifact digest-verified at 309,855,456 bytes, six chunks embedded, same ranking |
-| the installer path | `scripts/fetch-np.sh` downloads the pinned asset, `sha256sum -c` passes, and the bundled binary answers `np 0.6.1` |
+## What this release deliberately does not claim
 
-The last row matters more than it looks: the pin in `packaging/np-pin.json` is by hash (`f3fc23f7…` Linux, `cc54b917…` Windows), so a half-downloaded or swapped asset fails the build instead of becoming somebody's index.
-
-## What this release deliberately does not do
-
-- **The floor stays 0.5.1.** Jott ships at or above the floor, never below it, and refusing a person's working older np is not an upgrade for them. Nothing in Jott needs 0.6.x behaviour — that is what the diff-clean transcripts above are evidence *of*.
-- **No client-side retry for the first-index race.** `note-processor#18` (two children creating a brand-new index can answer `sqlite: table files already exists`) is still open upstream. I re-ran it for this release: two children over ten brand-new vaults, no refusal on either build — which is "did not see it today", not "fixed", since inside Jott's real flow it came up about once in eight. `jott#23` keeps the client-side options; none of them go in as a side effect of a version bump.
-- **No new claim about search quality.** `note-processor#19` — one-word queries leaving a whole folder inside ~0.03 of cosine — is still open, and the meaning tooltip still quotes a measurement rather than inventing a threshold. One thing did get corrected while re-measuring: the tooltip's quoted pair now reads **0.7195 against 0.7140**, both from a single index and identical on both builds. It previously quoted `0.7101` for the calendar, taken from a differently built index of a near-identical folder. The four-thousandths drift between two indexes of nearly the same notes is not a contradiction of the sentence — it is another instance of it, and it is written down where the number lives.
+- **No measured improvement in ranking quality.** note-processor ships the stage without one, and so does Jott. Try
+  your own one-word and question-shaped searches with it on and off — that comparison is the report I want.
+- **The floor stays 0.5.1.** Only the ranking step needs 0.7.0; on an older np Settings says so and search works as
+  before.
 
 ## Numbers
 
-380 Rust tests (26 integration binaries plus the library's own), `cargo clippy --all-targets -- -D warnings` clean, 503 front-end tests, `svelte-check` with 0 errors and 0 warnings. The real-backend gate — open a folder, save a note through Jott's own write path, index it, find it again, close np politely — ran against the exact binary this installer will carry:
-
-```text
-JOTT_REAL_NP=apps/shell/np/np cargo test -p jott-core --test np_real_session
-test a_real_np_indexes_a_note_jott_just_wrote_and_finds_it_again ... ok
-test a_vault_full_of_attachments_still_indexes_and_searches ... ok
-```
+401 Rust tests, `cargo clippy --all-targets -- -D warnings` clean, `svelte-check` with 0 errors and 0 warnings, the
+front-end suites green. What to try on a real Windows machine is in `docs/testing-on-windows.md` §2b-zi.
 
 ## Upgrading
 
-Nothing to do, nothing to re-index, nothing to re-embed. The floor is unchanged, so an ambient np of 0.5.1 or newer still works if you keep one on `PATH` — Jott will simply use the one inside the app unless you point `$NP_PATH` somewhere else.
+Install over 0.0.31. Nothing re-indexes and nothing re-embeds; the first open of each folder downloads the ranking
+model unless you switch reranking off first.

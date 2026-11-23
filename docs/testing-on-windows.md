@@ -139,7 +139,7 @@ Two more things to report on:
 
 ## 2b-iii. Since 0.0.13: the np inside is 0.4.0, and search stopped guessing
 
-*(Historic: Jott ships np 0.7.0 since the reranking change (§2b-zi) — 0.6.1 from 0.0.31, 0.6.0 from 0.0.29 — so read every `0.4.0` and `0.5.1` below as the shipped build. The behaviours asked for in §2b-v still apply; §2b-ze adds what 0.6.0 changed, §2b-zg is what 0.6.1 adds on top: nothing you can see, which is exactly what to check, and §2b-zi is 0.7.0's ranking model.)*
+*(Historic: Jott ships np 0.7.0 since 0.0.32 — 0.6.1 from 0.0.31, 0.6.0 from 0.0.29 — so read every `0.4.0` and `0.5.1` below as the shipped build. The behaviours asked for in §2b-v still apply; §2b-ze adds what 0.6.0 changed, §2b-zg is what 0.6.1 adds on top: nothing you can see, which is exactly what to check, and §2b-zi is 0.7.0's ranking model.)*
 
 Four things to check, all of them about what the window claims:
 
@@ -943,7 +943,7 @@ vault has a sync client that rewrites files constantly (Syncthing, Dropbox, OneD
 change worth watching: coalescing happens in the queue, so a sweep of forty notes should look like one indexing pass,
 not forty.
 
-## 2b-zi. np 0.7.0's ranking model reorders the top of every search
+## 2b-zi. Since 0.0.32: np 0.7.0's ranking model reorders the top of every search
 
 The np inside Jott is now **0.7.0**, and Jott uses what it adds: a cross-encoder (`bge-reranker-v2-m3`, 636 MB) that
 reads your query beside each of the top results and reorders them. It changes **only the order** — which notes match is
